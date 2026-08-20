@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omni-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: omni-api }
+  template:
+    metadata:
+      labels: { app: omni-api }
+    spec:
+      containers:
+        - name: omni
+          image: ghcr.io/YOUR_ORG/omni:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef: { name: omni-secrets }
+            - configMapRef: { name: omni-config }
+          readinessProbe:
+            httpGet: { path: /ready, port: 3000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omni-api
+spec:
+  selector: { app: omni-api }
+  ports:
+    - port: 80
+      targetPort: 3000
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: omni-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: omni-api
+  minReplicas: 3
+  maxReplicas: 300
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: omni-api
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: omni-api }

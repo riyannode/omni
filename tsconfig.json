@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "types": [
+      "bun",
+      "node"
+    ],
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "db/**/*.ts",
+    "scripts/**/*.ts"
+  ]
+}

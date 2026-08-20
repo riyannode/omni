@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_USER: omni
+      POSTGRES_PASSWORD: omni
+      POSTGRES_DB: omni
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omni -d omni"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - omni-postgres:/var/lib/postgresql
+
+  valkey:
+    image: valkey/valkey:9.1.1-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    env_file: .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["bun", "--sql-preconnect", "src/worker.ts"]
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+volumes:
+  omni-postgres:

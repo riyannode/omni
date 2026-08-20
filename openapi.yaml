@@ -1,0 +1,248 @@
+openapi: 3.1.0
+info:
+  title: OMNI Pre-Execution Trust & Risk API
+  version: 0.2.0
+  description: Machine-consumable pre-execution risk evidence for software supply chain and x402 services, paid per request with Circle Gateway nanopayments.
+servers:
+  - url: https://omni.example.com
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Report process liveness.
+      description: Returns HTTP 200 when the OMNI process is running and can serve HTTP responses. It does not check upstream evidence providers or history storage.
+      responses:
+        '200':
+          description: The OMNI process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [service, status]
+                properties:
+                  service: { type: string, const: OMNI }
+                  status: { type: string, const: healthy }
+  /ready:
+    get:
+      operationId: getReadiness
+      summary: Report whether this replica can accept paid API requests.
+      description: History storage is non-blocking for core assessments, so a degraded history store is reported under dependencies without changing the top-level ready status.
+      responses:
+        '200':
+          description: This replica can accept paid API requests.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [service, status, dependencies]
+                properties:
+                  service: { type: string, const: OMNI }
+                  status: { type: string, const: ready }
+                  dependencies:
+                    type: object
+                    additionalProperties: false
+                    required: [historyStore, threatIntelligence]
+                    properties:
+                      historyStore: { type: string, enum: [available, degraded] }
+                      threatIntelligence: { type: string, enum: [configured, unconfigured, degraded] }
+  /v1/package/risk:
+    get:
+      operationId: getPackageRisk
+      summary: Assess an exact package version before an agent installs it.
+      description: "Price: $0.005 USDC per request. npm assessments combine vulnerability/exploitation evidence with registry supply-chain metadata and optional licensed threat-intelligence matches."
+      parameters:
+        - { in: query, name: ecosystem, required: true, schema: { type: string, minLength: 1, maxLength: 32 }, example: npm }
+        - { in: query, name: name, required: true, schema: { type: string, minLength: 1, maxLength: 256 }, example: express }
+        - { in: query, name: version, required: true, schema: { type: string, minLength: 1, maxLength: 128 }, example: 5.2.1 }
+      responses:
+        '200':
+          description: Risk assessment with source-attributed evidence and explicit source failures.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskAssessment' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '503': { $ref: '#/components/responses/OverCapacity' }
+  /v1/repo/risk:
+    get:
+      operationId: getRepositoryRisk
+      summary: Assess GitHub repository security practices.
+      description: "Price: $0.01 USDC per request."
+      parameters:
+        - { in: query, name: owner, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_.-]{1,100}$' }, example: expressjs }
+        - { in: query, name: repo, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_.-]{1,100}$' }, example: express }
+      responses:
+        '200':
+          description: Risk assessment with source-attributed evidence and explicit source failures.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskAssessment' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '503': { $ref: '#/components/responses/OverCapacity' }
+  /v1/dependencies/risk:
+    post:
+      operationId: assessDependencies
+      summary: Assess up to 100 exact dependency versions.
+      description: "Price: $0.05 USDC per request. Packages are evaluated in bounded waves to protect upstream capacity."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [packages]
+              properties:
+                packages:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { $ref: '#/components/schemas/PackageCoordinate' }
+      responses:
+        '200':
+          description: Per-package assessments and aggregate summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DependencyAssessment' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '503': { $ref: '#/components/responses/OverCapacity' }
+  /v1/x402/endpoint/preflight:
+    get:
+      operationId: preflightX402Endpoint
+      summary: Assess an x402 endpoint before an agent decides to call or pay it.
+      description: "Price: $0.01 USDC per request. Combines Circle Discovery identity, constrained unpaid handshake evidence, OMNI change history, payout configuration drift, and licensed IOC matches when configured. Listed non-GET endpoints are not invoked."
+      parameters:
+        - { in: query, name: url, required: true, schema: { type: string, format: uri, maxLength: 2048 } }
+      responses:
+        '200':
+          description: Endpoint risk assessment with source-attributed evidence and explicit source failures.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskAssessment' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '503': { $ref: '#/components/responses/OverCapacity' }
+components:
+  responses:
+    InvalidRequest:
+      description: Request failed validation before payment was accepted.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PaymentRequired:
+      description: Payment is required. Read the PAYMENT-REQUIRED response header and retry with a valid x402 payment signature.
+      headers:
+        PAYMENT-REQUIRED:
+          required: true
+          schema: { type: string }
+    OverCapacity:
+      description: Replica admission limit reached before payment was accepted.
+      headers:
+        Retry-After:
+          schema: { type: string, example: '1' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    PackageCoordinate:
+      type: object
+      additionalProperties: false
+      required: [ecosystem, name, version]
+      properties:
+        ecosystem: { type: string, minLength: 1, maxLength: 32 }
+        name: { type: string, minLength: 1, maxLength: 256 }
+        version: { type: string, minLength: 1, maxLength: 128 }
+    Subject:
+      type: object
+      required: [type, id]
+      properties:
+        type: { type: string, enum: [package, repository, dependency_set, x402_endpoint] }
+        id: { type: string }
+    Evidence:
+      type: object
+      required: [source, kind, observedAt, detail]
+      properties:
+        source: { type: string }
+        kind: { type: string }
+        observedAt: { type: string, format: date-time }
+        detail: { type: object, additionalProperties: true }
+    RiskDimensions:
+      type: object
+      required: [knownVulnerabilities, knownExploitation, packageSupplyChain, repositorySecurityPractices, maliciousInfrastructure, serviceIdentity, paymentConfigurationRisk, endpointOperationalRisk]
+      properties:
+        knownVulnerabilities: { $ref: '#/components/schemas/RiskLevel' }
+        knownExploitation: { $ref: '#/components/schemas/RiskLevel' }
+        packageSupplyChain: { $ref: '#/components/schemas/RiskLevel' }
+        repositorySecurityPractices: { $ref: '#/components/schemas/RiskLevel' }
+        maliciousInfrastructure: { $ref: '#/components/schemas/RiskLevel' }
+        serviceIdentity: { $ref: '#/components/schemas/RiskLevel' }
+        paymentConfigurationRisk: { $ref: '#/components/schemas/RiskLevel' }
+        endpointOperationalRisk: { $ref: '#/components/schemas/RiskLevel' }
+    RiskLevel:
+      type: string
+      enum: [low, medium, high, critical, unknown]
+    RiskSignal:
+      type: object
+      required: [code, severity, source, detail]
+      properties:
+        code: { type: string }
+        severity: { type: string, enum: [low, medium, high, critical] }
+        source: { type: string }
+        detail: { type: object, additionalProperties: true }
+    RiskAssessment:
+      type: object
+      required: [subject, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt]
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        recommendation:
+          type: string
+          enum: [proceed, proceed_with_caution, manual_review, do_not_proceed]
+          description: Advisory next action derived from the risk score; it is not an authorization decision.
+        riskScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Conservative decision-risk score where 0 means lower observed risk and 100 means higher observed risk; source failures can increase the score.
+        evidenceCoverage:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Fraction of subject-specific evidence paths that completed successfully. It is not a probability that the recommendation is correct.
+        dimensions: { $ref: '#/components/schemas/RiskDimensions' }
+        signals:
+          type: array
+          items: { $ref: '#/components/schemas/RiskSignal' }
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/Evidence' }
+        sourceErrors:
+          type: array
+          items: { type: string }
+        assessedAt: { type: string, format: date-time }
+    DependencyAssessment:
+      type: object
+      required: [packages, summary, assessedAt]
+      properties:
+        packages:
+          type: array
+          items: { $ref: '#/components/schemas/RiskAssessment' }
+        summary:
+          type: object
+          required: [count, worstRiskScore, recommendations]
+          properties:
+            count: { type: integer, minimum: 1, maximum: 100 }
+            worstRiskScore: { type: integer, minimum: 0, maximum: 100 }
+            recommendations:
+              type: object
+              additionalProperties: { type: integer, minimum: 0 }
+        assessedAt: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        retryable: { type: boolean }

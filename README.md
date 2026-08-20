@@ -1,0 +1,74 @@
+# OMNI
+
+OMNI is a **pre-execution trust and risk layer for autonomous agents**. Before an agent installs software, consumes an API, or pays an x402 service, it can ask OMNI for deterministic, source-attributed risk evidence.
+
+OMNI is runtime-agnostic: Hermes, Codex, Claude, OpenClaw, MCP clients, CI, or plain HTTP clients can consume the same API. Circle CLI/Agent Wallet is the recommended buyer-wallet path; the seller uses Circle's official `@circle-fin/x402-batching` middleware.
+
+## What OMNI evaluates
+
+Three intelligence planes feed one deterministic `RiskEngine`:
+
+1. **Supply-chain intelligence** — OSV vulnerabilities, CISA KEV known exploitation, npm registry lifecycle/integrity/maintainer metadata, OpenSSF repository security practices, and licensed package IOC matches.
+2. **Service/identity intelligence** — Circle Discovery identity, safe x402 handshake observations, provider/schema history, and licensed URL/hostname IOC matches.
+3. **Payment intelligence** — x402 payout address/network/price history, payout-destination changes, and licensed wallet IOC matches.
+
+OMNI does **not** equate “not found in a threat feed” with “safe”. Results expose `evidenceCoverage`, `signals`, `sourceErrors`, and an advisory `recommendation`.
+
+## Paid endpoints
+
+| Endpoint | Price | Purpose |
+|---|---:|---|
+| `GET /v1/package/risk` | `$0.005` | Exact package/version risk before install |
+| `GET /v1/repo/risk` | `$0.01` | Repository security-practice evidence |
+| `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
+| `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
+
+Request path: **validate → admission control → Circle payment gate → cached evidence → RiskEngine → JSON**. Validation/capacity failures occur before payment.
+
+## Data sources
+
+Built-in network sources are OSV, CISA KEV, npm Registry, OpenSSF Scorecard, and Circle Discovery. The KEV loader tries `www.cisa.gov` first and falls back to the `cisagov/kev-data` mirror, because some egress ranges receive HTTP 403 from cisa.gov; override the ordered list with `OMNI_KEV_FEED_URLS`. The resolved `feedUrl` and `catalogVersion` are reported in the evidence detail. OMNI-owned PostgreSQL history accumulates endpoint/provider/schema/payment configuration changes over time.
+
+Commercial threat feeds are deliberately **not hard-coded**. `threat_indicators` is a vendor-neutral IOC store for URL, hostname, wallet, and package indicators. Import only data whose license permits your commercial use and derived API responses. This avoids coupling OMNI's business to a feed whose terms prohibit redistribution.
+
+```bash
+DATABASE_URL=... bun scripts/import-threat-intel.ts licensed-indicators.ndjson
+```
+
+Each NDJSON row:
+
+```json
+{"indicatorType":"wallet","indicator":"0xabc...","threatType":"reported_malicious","severity":"high","source":"licensed-feed","reference":"case-123"}
+```
+
+If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant assessments cannot claim full evidence coverage.
+
+## Stack
+
+- Bun 1.3.14
+- TypeScript 7 strict mode
+- Express 5.2.1
+- `@circle-fin/x402-batching` 3.3.0
+- PostgreSQL 18.4
+- Valkey 9.1.1 through Bun's native Redis client
+- Zod 4.4.3
+
+## Local start
+
+```bash
+cp .env.example .env
+# Set a non-zero testnet SELLER_ADDRESS.
+bun install
+
+docker compose up -d postgres valkey
+bun run db:init
+bun run dev
+```
+
+Health endpoints are `GET /health` and `GET /ready`. `openapi.yaml` is served at `/openapi.yaml`.
+
+## Maturity
+
+This repository is a **production-shaped MVP**, not a proven production deployment. The API/payment architecture is real, but production readiness still requires licensed threat-feed contracts, distributed observability, durable paid-request recovery/idempotency, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The 100k concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+
+See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.
