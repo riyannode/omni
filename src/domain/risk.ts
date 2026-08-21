@@ -1,3 +1,5 @@
+export const RISK_SNAPSHOT_SCHEMA_VERSION = 1 as const;
+
 export type Recommendation = "proceed" | "proceed_with_caution" | "manual_review" | "do_not_proceed";
 export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
 
@@ -81,6 +83,7 @@ export type RiskSnapshot = {
 
 export type RiskAssessment = {
   subject: RiskSnapshot["subject"];
+  policyVersion: string;
   recommendation: Recommendation;
   riskScore: number;
   evidenceCoverage: number;

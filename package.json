@@ -16,7 +16,9 @@
     "check": "bun run typecheck && bun test",
     "db:init": "bun db/init.ts",
     "load:unpaid": "bun scripts/load-unpaid.ts",
-    "threats:import": "bun scripts/import-threat-intel.ts"
+    "threats:import": "bun scripts/import-threat-intel.ts",
+    "label:assessment": "bun scripts/label-assessment.ts",
+    "evaluate:risk-policy": "bun scripts/evaluate-risk-policy.ts"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "3.3.0",
