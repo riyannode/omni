@@ -2,6 +2,14 @@ import type { RiskLevel } from "./risk.ts";
 
 export const RISK_POLICY_VERSION = "omni-risk-v1" as const;
 
+export type DeepReadonly<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly unknown[]
+    ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+    : T extends object
+      ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+      : T;
+
 type SeverityWeights = Record<RiskLevel, number>;
 type SeverityRanks = Record<RiskLevel, number>;
 
@@ -19,7 +27,17 @@ export type RiskPolicy = {
   payment: { payToChange: number; networkChange: number; priceChange: number; schemaChange: number; providerChange: number };
 };
 
-export const DEFAULT_RISK_POLICY: RiskPolicy = Object.freeze({
+export type ReadonlyRiskPolicy = DeepReadonly<RiskPolicy>;
+
+function deepFreeze<T>(value: T): DeepReadonly<T> {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+  }
+  return value as DeepReadonly<T>;
+}
+
+export const DEFAULT_RISK_POLICY: ReadonlyRiskPolicy = deepFreeze({
   version: RISK_POLICY_VERSION,
   severityWeights: { unknown: 30, low: 10, medium: 35, high: 60, critical: 85 },
   severityRanks: { unknown: 0, low: 1, medium: 2, high: 3, critical: 4 },

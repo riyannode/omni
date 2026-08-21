@@ -1,17 +1,17 @@
 import type { Recommendation, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot } from "./risk.ts";
 import { extractRiskFeatures, type RiskFeatures } from "./risk-features.ts";
-import { DEFAULT_RISK_POLICY, type RiskPolicy } from "./risk-policy.ts";
+import { DEFAULT_RISK_POLICY, type ReadonlyRiskPolicy } from "./risk-policy.ts";
 
-function scoreLevel(score: number, policy: RiskPolicy): RiskLevel {
+function scoreLevel(score: number, policy: ReadonlyRiskPolicy): RiskLevel {
   if (score >= policy.scoreLevelThresholds.critical) return "critical";
   if (score >= policy.scoreLevelThresholds.high) return "high";
   if (score >= policy.scoreLevelThresholds.medium) return "medium";
   return "low";
 }
-function worstSeverity(levels: RiskLevel[], policy: RiskPolicy): RiskLevel {
+function worstSeverity(levels: RiskLevel[], policy: ReadonlyRiskPolicy): RiskLevel {
   return levels.reduce<RiskLevel>((worst, current) => policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, "low");
 }
-function recommendation(score: number, policy: RiskPolicy): Recommendation {
+function recommendation(score: number, policy: ReadonlyRiskPolicy): Recommendation {
   if (score >= policy.recommendationThresholds.doNotProceed) return "do_not_proceed";
   if (score >= policy.recommendationThresholds.manualReview) return "manual_review";
   if (score >= policy.recommendationThresholds.caution) return "proceed_with_caution";
@@ -22,7 +22,7 @@ function push(signals: RiskSignal[], code: string, severity: Exclude<RiskLevel, 
 }
 
 export class RiskEngine {
-  constructor(private readonly policy: RiskPolicy = DEFAULT_RISK_POLICY) {}
+  constructor(private readonly policy: ReadonlyRiskPolicy = DEFAULT_RISK_POLICY) {}
 
   assess(snapshot: RiskSnapshot): RiskAssessment { return this.assessFeatures(snapshot, extractRiskFeatures(snapshot)); }
 

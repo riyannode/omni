@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createAssessmentJournal } from "../src/data/assessment-journal.ts";
-import { extractRiskFeatures } from "../src/domain/risk-features.ts";
+import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/risk-features.ts";
 import { DEFAULT_RISK_POLICY, type RiskPolicy } from "../src/domain/risk-policy.ts";
 import { RISK_SNAPSHOT_SCHEMA_VERSION } from "../src/domain/risk.ts";
 import { RiskEngine } from "../src/domain/risk-engine.ts";
@@ -51,7 +51,7 @@ const policy = candidatePath ? validatePolicy(JSON.parse(await readFile(candidat
 const rows = await createAssessmentJournal(process.env.DATABASE_URL).loadLabelled();
 const schemaVersions = [...new Set(rows.map(row => row.snapshotSchemaVersion))];
 const featureSchemaVersions = [...new Set(rows.map(row => row.featureSchemaVersion))];
-if (schemaVersions.some(version => version !== RISK_SNAPSHOT_SCHEMA_VERSION) || featureSchemaVersions.some(version => version !== 1)) throw new Error(`incompatible schema versions: snapshots=${schemaVersions.join(",")}, features=${featureSchemaVersions.join(",")}`);
+if (schemaVersions.some(version => version !== RISK_SNAPSHOT_SCHEMA_VERSION) || featureSchemaVersions.some(version => version !== RISK_FEATURE_SCHEMA_VERSION)) throw new Error(`incompatible schema versions: snapshots=${schemaVersions.join(",")}, features=${featureSchemaVersions.join(",")}`);
 const engine = new RiskEngine(policy); let featureDrift = 0;
 const replayed = rows.map(row => { const freshFeatures = extractRiskFeatures(row.snapshot); if (normalized(freshFeatures) !== normalized(row.features)) featureDrift++; return { ...row, assessment: engine.assessFeatures(row.snapshot, freshFeatures) }; });
 const thresholdReports = { caution: metrics(replayed, policy.recommendationThresholds.caution), manualReview: metrics(replayed, policy.recommendationThresholds.manualReview), doNotProceed: metrics(replayed, policy.recommendationThresholds.doNotProceed) };
