@@ -69,6 +69,6 @@ Health endpoints are `GET /health` and `GET /ready`. `openapi.yaml` is served at
 
 ## Maturity
 
-This repository is a **production-shaped MVP**, not a proven production deployment. The API/payment architecture is real, but production readiness still requires licensed threat-feed contracts, distributed observability, durable paid-request recovery/idempotency, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The 100k concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+This repository is a **production-shaped MVP**, not a proven production deployment. The API/payment architecture is real, but production readiness still requires licensed threat-feed contracts, distributed observability, durable paid-request recovery/idempotency, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
 
 See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.
