@@ -4,6 +4,7 @@ import { DEFAULT_RISK_POLICY, RISK_POLICY_VERSION, type RiskPolicy } from "../sr
 import { RiskEngine } from "../src/domain/risk-engine.ts";
 import { NoopAssessmentJournal, type AssessmentJournal } from "../src/data/assessment-journal.ts";
 import type { RiskSnapshot } from "../src/domain/risk.ts";
+import { evaluateThreshold, featuresEqual, type EvaluationRow } from "../src/domain/risk-evaluation.ts";
 
 const snapshot: RiskSnapshot = {
   subject: { type: "package", id: "npm:demo@1.0.0" },
@@ -35,6 +36,11 @@ describe("learning-ready deterministic boundaries", () => {
     expect(first.schemaVersion).toBe(RISK_FEATURE_SCHEMA_VERSION);
     expect(first).not.toHaveProperty("riskScore");
     expect(first.package.deprecated).toBe(true);
+  });
+
+  test("feature drift equality ignores object-key ordering but preserves array ordering", () => {
+    expect(featuresEqual({ a: 1, b: { c: 2, d: 3 } }, { b: { d: 3, c: 2 }, a: 1 })).toBe(true);
+    expect(featuresEqual({ values: [1, 2] }, { values: [2, 1] })).toBe(false);
   });
 
   test("feature extraction covers package, repository, and x402 subjects", () => {
@@ -70,16 +76,16 @@ describe("learning-ready deterministic boundaries", () => {
   });
 
   test("evaluation metrics fixture covers TP, FP, TN, FN and rates", () => {
-    const rows = [
-      { riskScore: 80, label: "incident" }, { riskScore: 80, label: "benign" },
-      { riskScore: 10, label: "benign" }, { riskScore: 10, label: "incident" }
+    const rows: EvaluationRow[] = [
+      { assessment: { riskScore: 80 }, label: "incident" }, { assessment: { riskScore: 80 }, label: "benign" },
+      { assessment: { riskScore: 10 }, label: "benign" }, { assessment: { riskScore: 10 }, label: "incident" }
     ];
-    const threshold = 50;
-    const tp = rows.filter(row => row.riskScore >= threshold && row.label === "incident").length;
-    const fp = rows.filter(row => row.riskScore >= threshold && row.label === "benign").length;
-    const tn = rows.filter(row => row.riskScore < threshold && row.label === "benign").length;
-    const fn = rows.filter(row => row.riskScore < threshold && row.label === "incident").length;
-    expect({ TP: tp, FP: fp, TN: tn, FN: fn, precision: tp / (tp + fp), recall: tp / (tp + fn), falsePositiveRate: fp / (fp + tn), falseNegativeRate: fn / (fn + tp) }).toEqual({ TP: 1, FP: 1, TN: 1, FN: 1, precision: 0.5, recall: 0.5, falsePositiveRate: 0.5, falseNegativeRate: 0.5 });
+    expect(evaluateThreshold(rows, 50)).toEqual({ TP: 1, FP: 1, TN: 1, FN: 1, precision: 0.5, recall: 0.5, falsePositiveRate: 0.5, falseNegativeRate: 0.5, falseNegativeCount: 1 });
+  });
+
+  test("evaluation metrics preserve nulls for zero denominators", () => {
+    expect(evaluateThreshold([{ assessment: { riskScore: 10 }, label: "benign" }, { assessment: { riskScore: 10 }, label: "incident" }], 50)).toEqual({ TP: 0, FP: 0, TN: 1, FN: 1, precision: null, recall: 0, falsePositiveRate: 0, falseNegativeRate: 1, falseNegativeCount: 1 });
+    expect(evaluateThreshold([{ assessment: { riskScore: 80 }, label: "benign" }], 50)).toEqual({ TP: 0, FP: 1, TN: 0, FN: 0, precision: 0, recall: null, falsePositiveRate: 1, falseNegativeRate: null, falseNegativeCount: 0 });
   });
 
   test("no-op journal does not affect assessment availability without a database", async () => {

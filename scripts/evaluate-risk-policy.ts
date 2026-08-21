@@ -4,6 +4,7 @@ import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/
 import { DEFAULT_RISK_POLICY, type RiskPolicy } from "../src/domain/risk-policy.ts";
 import { RISK_SNAPSHOT_SCHEMA_VERSION } from "../src/domain/risk.ts";
 import { RiskEngine } from "../src/domain/risk-engine.ts";
+import { evaluateThreshold, featuresEqual } from "../src/domain/risk-evaluation.ts";
 
 function exactKeys(value: Record<string, unknown>, keys: string[], path: string) {
   const actual = Object.keys(value).sort(); const expected = [...keys].sort();
@@ -38,12 +39,6 @@ function validatePolicy(input: unknown): RiskPolicy {
   if (!(numberAt(level.medium, "scoreLevelThresholds.medium") < numberAt(level.high, "scoreLevelThresholds.high") && numberAt(level.high, "scoreLevelThresholds.high") < numberAt(level.critical, "scoreLevelThresholds.critical"))) throw new Error("dimension thresholds must be increasing");
   return structuredClone(input) as RiskPolicy;
 }
-function normalized(value: unknown): string { return JSON.stringify(value, (_key, item) => item === undefined ? undefined : item); }
-function metrics(rows: Awaited<ReturnType<ReturnType<typeof createAssessmentJournal>["loadLabelled"]>>, threshold: number) {
-  let tp = 0, fp = 0, tn = 0, fn = 0;
-  for (const row of rows) { const predicted = row.assessment.riskScore >= threshold; const incident = row.label === "incident"; if (predicted && incident) tp++; else if (predicted) fp++; else if (incident) fn++; else tn++; }
-  return { TP: tp, FP: fp, TN: tn, FN: fn, precision: tp + fp === 0 ? null : tp / (tp + fp), recall: tp + fn === 0 ? null : tp / (tp + fn), falsePositiveRate: fp + tn === 0 ? null : fp / (fp + tn), falseNegativeRate: fn + tp === 0 ? null : fn / (fn + tp), falseNegativeCount: fn };
-}
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
 const candidatePath = process.argv[2];
@@ -53,6 +48,6 @@ const schemaVersions = [...new Set(rows.map(row => row.snapshotSchemaVersion))];
 const featureSchemaVersions = [...new Set(rows.map(row => row.featureSchemaVersion))];
 if (schemaVersions.some(version => version !== RISK_SNAPSHOT_SCHEMA_VERSION) || featureSchemaVersions.some(version => version !== RISK_FEATURE_SCHEMA_VERSION)) throw new Error(`incompatible schema versions: snapshots=${schemaVersions.join(",")}, features=${featureSchemaVersions.join(",")}`);
 const engine = new RiskEngine(policy); let featureDrift = 0;
-const replayed = rows.map(row => { const freshFeatures = extractRiskFeatures(row.snapshot); if (normalized(freshFeatures) !== normalized(row.features)) featureDrift++; return { ...row, assessment: engine.assessFeatures(row.snapshot, freshFeatures) }; });
-const thresholdReports = { caution: metrics(replayed, policy.recommendationThresholds.caution), manualReview: metrics(replayed, policy.recommendationThresholds.manualReview), doNotProceed: metrics(replayed, policy.recommendationThresholds.doNotProceed) };
+const replayed = rows.map(row => { const freshFeatures = extractRiskFeatures(row.snapshot); if (!featuresEqual(freshFeatures, row.features)) featureDrift++; return { ...row, assessment: engine.assessFeatures(row.snapshot, freshFeatures) }; });
+const thresholdReports = { caution: evaluateThreshold(replayed, policy.recommendationThresholds.caution), manualReview: evaluateThreshold(replayed, policy.recommendationThresholds.manualReview), doNotProceed: evaluateThreshold(replayed, policy.recommendationThresholds.doNotProceed) };
 console.log(JSON.stringify({ policyVersion: policy.version, dataset: { totalLabelledAssessments: rows.length, benign: rows.filter(row => row.label === "benign").length, incident: rows.filter(row => row.label === "incident").length }, thresholds: thresholdReports, schemaVersions: { snapshot: schemaVersions, feature: featureSchemaVersions }, featureDrift }));

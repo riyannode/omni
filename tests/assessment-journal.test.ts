@@ -7,7 +7,7 @@ import { RISK_SNAPSHOT_SCHEMA_VERSION, type RiskSnapshot } from "../src/domain/r
 import { RISK_POLICY_VERSION } from "../src/domain/risk-policy.ts";
 import { RiskEngine } from "../src/domain/risk-engine.ts";
 
-const databaseUrl = process.env.DATABASE_URL;
+const databaseUrl = process.env.TEST_DATABASE_URL;
 const postgresTest = test.if(Boolean(databaseUrl));
 const snapshot: RiskSnapshot = {
   subject: { type: "package", id: "npm:journal-fixture@1.0.0" },
@@ -27,7 +27,7 @@ afterAll(async () => {
   await setupDb?.close();
 });
 
-describe("Postgres assessment journal", () => {
+describe("Postgres assessment journal (requires TEST_DATABASE_URL)", () => {
   postgresTest("round-trips the persisted snapshot, features, schema versions, policy, and assessment", async () => {
     const journal = createAssessmentJournal(databaseUrl);
     const features = extractRiskFeatures(snapshot);
