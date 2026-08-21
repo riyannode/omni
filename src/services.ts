@@ -3,6 +3,9 @@ import { RiskEngine } from "./domain/risk-engine.ts";
 import { CachedLoader } from "./data/cache.ts";
 import type { HistoryStore } from "./data/history.ts";
 import type { ThreatIntelStore } from "./data/threat-intel.ts";
+import { extractRiskFeatures } from "./domain/risk-features.ts";
+import type { AssessmentJournal } from "./data/assessment-journal.ts";
+import { NoopAssessmentJournal } from "./data/assessment-journal.ts";
 import { OsvProvider } from "./providers/osv.ts";
 import { CisaKevProvider } from "./providers/cisa-kev.ts";
 import { ScorecardProvider } from "./providers/scorecard.ts";
@@ -21,8 +24,20 @@ export class OmniIntelligence {
     private readonly circle: CircleDiscoveryProvider,
     private readonly probe: X402Probe,
     private readonly history: HistoryStore,
-    private readonly threatIntel: ThreatIntelStore
+    private readonly threatIntel: ThreatIntelStore,
+    private readonly journal: AssessmentJournal = new NoopAssessmentJournal()
   ) {}
+
+  private async assessAndJournal(snapshot: RiskSnapshot): Promise<RiskAssessment> {
+    const features = extractRiskFeatures(snapshot);
+    const assessment = this.engine.assessFeatures(snapshot, features);
+    try {
+      await this.journal.record(snapshot, features, assessment);
+    } catch (error) {
+      console.error(JSON.stringify({ level: "error", event: "assessment_journal_write_failed", message: error instanceof Error ? error.message : "unknown error" }));
+    }
+    return assessment;
+  }
 
   async packageRisk(ecosystem: string, name: string, version: string): Promise<RiskAssessment> {
     const key = `assessment:package:${ecosystem}:${name}:${version}`;
@@ -67,7 +82,7 @@ export class OmniIntelligence {
         else evidence.push({ source: "OMNI threat intelligence", kind: "package_ioc_lookup", observedAt: new Date().toISOString(), detail: { matches: threat.findings.length } });
       } catch (error) { errors.push(`Threat intelligence: ${error instanceof Error ? error.message : "unknown error"}`); }
 
-      return this.engine.assess({
+      return this.assessAndJournal({
         subject: { type: "package", id: `${ecosystem}:${name}@${version}` },
         ...(vulnerabilities === undefined ? {} : { vulnerabilities }), exploitationChecked,
         ...(packageSupplyChain ? { packageSupplyChain } : {}), threatIntelChecked, threatFindings,
@@ -87,7 +102,7 @@ export class OmniIntelligence {
         scorecard = result.score;
         evidence.push(result.evidence);
       } catch (error) { errors.push(`OpenSSF Scorecard: ${error instanceof Error ? error.message : "unknown error"}`); }
-      return this.engine.assess({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), evidence, sourceErrors: errors });
+      return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), evidence, sourceErrors: errors });
     });
   }
 
@@ -152,7 +167,7 @@ export class OmniIntelligence {
         else evidence.push({ source: "OMNI threat intelligence", kind: "endpoint_ioc_lookup", observedAt: new Date().toISOString(), detail: { matches: threat.findings.length, checkedWallet: Boolean(payTo) } });
       } catch (error) { errors.push(`Threat intelligence: ${error instanceof Error ? error.message : "unknown error"}`); }
 
-      return this.engine.assess({
+      return this.assessAndJournal({
         subject: { type: "x402_endpoint", id: resource },
         endpoint: { ...(listedOnCircle === undefined ? {} : { listedOnCircle }), ...(supportsGateway === undefined ? {} : { supportsGateway }), ...(supportsVanilla === undefined ? {} : { supportsVanilla }), ...(responseStatus === undefined ? {} : { responseStatus }), ...(paymentOptions === undefined ? {} : { paymentOptions }), ...(payTo ? { payTo } : {}), ...(network ? { network } : {}), ...(priceAtomic ? { priceAtomic } : {}) },
         activeProbeChecked, historyChecked, ...(endpointHistory ? { endpointHistory } : {}), threatIntelChecked, threatFindings,

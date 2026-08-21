@@ -38,3 +38,29 @@ CREATE TABLE IF NOT EXISTS threat_indicators (
 );
 CREATE INDEX IF NOT EXISTS threat_indicators_lookup ON threat_indicators (indicator_type, indicator);
 CREATE INDEX IF NOT EXISTS threat_indicators_expiry ON threat_indicators (expires_at);
+
+CREATE TABLE IF NOT EXISTS assessment_records (
+  assessment_id uuid PRIMARY KEY,
+  subject_type text NOT NULL CHECK (subject_type IN ('package', 'repository', 'dependency_set', 'x402_endpoint')),
+  subject_id text NOT NULL,
+  snapshot_schema_version integer NOT NULL CHECK (snapshot_schema_version > 0),
+  feature_schema_version integer NOT NULL CHECK (feature_schema_version > 0),
+  policy_version text NOT NULL,
+  snapshot jsonb NOT NULL,
+  features jsonb NOT NULL,
+  assessment jsonb NOT NULL,
+  assessed_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS assessment_records_subject_time ON assessment_records (subject_type, subject_id, assessed_at DESC);
+CREATE INDEX IF NOT EXISTS assessment_records_policy ON assessment_records (policy_version);
+CREATE INDEX IF NOT EXISTS assessment_records_assessed_at ON assessment_records (assessed_at DESC);
+
+CREATE TABLE IF NOT EXISTS assessment_labels (
+  assessment_id uuid PRIMARY KEY REFERENCES assessment_records(assessment_id) ON DELETE CASCADE,
+  label text NOT NULL CHECK (label IN ('benign', 'incident')),
+  source text NOT NULL CHECK (length(trim(source)) > 0),
+  source_reference text,
+  notes text,
+  labeled_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

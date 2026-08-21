@@ -195,9 +195,12 @@ components:
         detail: { type: object, additionalProperties: true }
     RiskAssessment:
       type: object
-      required: [subject, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt]
+      required: [subject, policyVersion, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt]
       properties:
         subject: { $ref: '#/components/schemas/Subject' }
+        policyVersion:
+          type: string
+          description: Stable deterministic scoring-policy identity used for this assessment.
         recommendation:
           type: string
           enum: [proceed, proceed_with_caution, manual_review, do_not_proceed]
