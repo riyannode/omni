@@ -37,17 +37,17 @@ function requirements(overrides: RequirementOverrides = {}): PaymentRequirements
   };
 }
 
-function paymentRequired(selected: PaymentRequirements, resource = RESOURCE): PaymentRequired {
+function paymentRequired(selected: PaymentRequirements, resource = RESOURCE, accepts: PaymentRequirements[] = [selected]): PaymentRequired {
   return {
     x402Version: 2,
     resource: { url: resource },
-    accepts: [selected]
+    accepts
   };
 }
 
-function challenge(overrides: RequirementOverrides = {}, resource = RESOURCE): PreflightChallenge {
+function challenge(overrides: RequirementOverrides = {}, resource = RESOURCE, accepts?: PaymentRequirements[]): PreflightChallenge {
   const selected = requirements(overrides);
-  return { paymentRequired: paymentRequired(selected, resource), requirements: selected };
+  return { paymentRequired: paymentRequired(selected, resource, accepts), requirements: selected };
 }
 
 function preflight(overrides: Partial<X402EndpointPreflight["preflightContext"] & { expiresAt: string | undefined }> = {}): Parameters<typeof checkX402ChallengeAgainstPreflight>[0] {
@@ -144,6 +144,57 @@ describe("x402 preflight challenge consistency", () => {
       actual
     );
     expect(result.status).toBe("match");
+  });
+
+  test("selected requirements that are not offered return a stable protocol reason", () => {
+    const selected = requirements({ amount: "10000" });
+    const offered = requirements({ amount: "20000" });
+    const result = checkX402ChallengeAgainstPreflight(
+      preflight({ paymentOptions: [option()] }),
+      { paymentRequired: paymentRequired(selected, RESOURCE, [offered]), requirements: selected }
+    );
+    expect(result).toEqual({
+      status: "repreflight_required",
+      reasons: [ConsistencyReason.SELECTED_REQUIREMENT_NOT_OFFERED]
+    });
+  });
+
+  test("selected requirements matching accepts entry #2 continue normal preflight comparison", () => {
+    const first = requirements({ amount: "20000" });
+    const second = requirements({ amount: "10000", payTo: "0x2222222222222222222222222222222222222222" });
+    const result = checkX402ChallengeAgainstPreflight(
+      preflight({ paymentOptions: [option({ amount: "10000", payTo: second.payTo })] }),
+      { paymentRequired: paymentRequired(second, RESOURCE, [first, second]), requirements: second }
+    );
+    expect(result).toEqual({ status: "match", reasons: [] });
+  });
+
+  test("selected requirements cannot cross-combine fields from different accepts entries", () => {
+    const first = requirements({ network: "eip155:8453", payTo: "0x1111111111111111111111111111111111111111" });
+    const second = requirements({ network: "eip155:1", payTo: "0x2222222222222222222222222222222222222222" });
+    const selected = requirements({ network: second.network, payTo: first.payTo });
+    const result = checkX402ChallengeAgainstPreflight(
+      preflight({ paymentOptions: [option({ network: selected.network, payTo: selected.payTo })] }),
+      { paymentRequired: paymentRequired(selected, RESOURCE, [first, second]), requirements: selected }
+    );
+    expect(result).toEqual({
+      status: "repreflight_required",
+      reasons: [ConsistencyReason.SELECTED_REQUIREMENT_NOT_OFFERED]
+    });
+  });
+
+  test("Circle selected verifyingContract must match one complete offered entry", () => {
+    const selected = requirements({ extra: { ...GATEWAY_EXTRA, verifyingContract: "0x3333333333333333333333333333333333333333" } });
+    const offeredA = requirements({ extra: { ...GATEWAY_EXTRA, verifyingContract: "0x1111111111111111111111111111111111111111" } });
+    const offeredB = requirements({ extra: { ...GATEWAY_EXTRA, verifyingContract: "0x2222222222222222222222222222222222222222" } });
+    const result = checkX402ChallengeAgainstPreflight(
+      preflight({ paymentOptions: [option({ extra: selected.extra })] }),
+      { paymentRequired: paymentRequired(selected, RESOURCE, [offeredA, offeredB]), requirements: selected }
+    );
+    expect(result).toEqual({
+      status: "repreflight_required",
+      reasons: [ConsistencyReason.SELECTED_REQUIREMENT_NOT_OFFERED]
+    });
   });
 
   test("G: an incomplete observed Gateway option is insufficient context", () => {

@@ -23,7 +23,8 @@ export const ConsistencyReason = {
   RESOURCE_MISMATCH: "RESOURCE_MISMATCH",
   PAYMENT_REQUIREMENTS_MISMATCH: "PAYMENT_REQUIREMENTS_MISMATCH",
   NO_OBSERVED_PAYMENT_OPTIONS: "NO_OBSERVED_PAYMENT_OPTIONS",
-  INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT: "INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT"
+  INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT: "INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT",
+  SELECTED_REQUIREMENT_NOT_OFFERED: "SELECTED_REQUIREMENT_NOT_OFFERED"
 } as const;
 
 export type PreflightChallenge = {
@@ -71,9 +72,34 @@ function observedGatewayValue(observed: ObservedPaymentRequirement, field: (type
 }
 
 function actualGatewayValue(requirements: PaymentRequirements, field: (typeof gatewayFields)[number]): string | undefined {
-  if (field === "verifyingContract") return getVerifyingContract(requirements);
+  if (field === "verifyingContract") {
+    const verifyingContract = getVerifyingContract(requirements);
+    if (verifyingContract !== undefined) return verifyingContract;
+  }
   const value = requirements.extra[field];
   return typeof value === "string" ? value : undefined;
+}
+
+function requirementsMatch(a: PaymentRequirements, b: PaymentRequirements): boolean {
+  for (const field of genericFields) {
+    const left = a[field];
+    const right = b[field];
+    if (field === "amount") {
+      if (left !== right && !amountsMatch(left, right)) return false;
+    } else if (field === "asset" || field === "payTo") {
+      if (!sameField(field, a.network, left, right)) return false;
+    } else if (left !== right) return false;
+  }
+  if (a.maxTimeoutSeconds !== b.maxTimeoutSeconds) return false;
+
+  for (const field of gatewayFields) {
+    const left = actualGatewayValue(a, field);
+    const right = actualGatewayValue(b, field);
+    if (left === undefined && right === undefined) continue;
+    if (left === undefined || right === undefined) return false;
+    if (field === "verifyingContract" ? !sameField(field, a.network, left, right) : left !== right) return false;
+  }
+  return true;
 }
 
 function hasGenericContext(observed: ObservedPaymentRequirement): boolean {
@@ -138,6 +164,10 @@ export function checkX402ChallengeAgainstPreflight(
   const assessedResource = preflight.preflightContext.resource;
   if (challenge.paymentRequired.resource.url !== assessedResource) {
     return { status: "repreflight_required", reasons: [ConsistencyReason.RESOURCE_MISMATCH] };
+  }
+
+  if (!challenge.paymentRequired.accepts.some(offered => requirementsMatch(challenge.requirements, offered))) {
+    return { status: "repreflight_required", reasons: [ConsistencyReason.SELECTED_REQUIREMENT_NOT_OFFERED] };
   }
 
   const options = preflight.preflightContext.paymentOptions;

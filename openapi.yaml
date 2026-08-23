@@ -246,6 +246,14 @@ components:
         amount: { type: string, description: Atomic-unit amount string. }
         asset: { type: string }
         payTo: { type: string }
+        maxTimeoutSeconds: { type: integer }
+        extra:
+          type: object
+          additionalProperties: false
+          properties:
+            name: { type: string }
+            version: { type: string }
+            verifyingContract: { type: string }
     X402PreflightContext:
       type: object
       additionalProperties: false
