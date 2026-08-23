@@ -25,8 +25,8 @@ function freshness(evidence: RiskSnapshot["evidence"]): RiskAssessment["freshnes
   const observedAt = evidence.map(item => item.observedAt).sort();
   const deadlines = evidence.flatMap(item => item.expiresAt ? [item.expiresAt] : []).sort();
   return {
-    oldestEvidenceAt: observedAt[0] ?? new Date(0).toISOString(),
-    newestEvidenceAt: observedAt.at(-1) ?? new Date(0).toISOString(),
+    oldestEvidenceAt: observedAt[0] ?? null,
+    newestEvidenceAt: observedAt.at(-1) ?? null,
     ...(deadlines[0] ? { expiresAt: deadlines[0] } : {})
   };
 }

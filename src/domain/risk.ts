@@ -103,8 +103,8 @@ export type RiskAssessment = {
   sourceErrors: string[];
   assessedAt: string;
   freshness: {
-    oldestEvidenceAt: string;
-    newestEvidenceAt: string;
+    oldestEvidenceAt: string | null;
+    newestEvidenceAt: string | null;
     expiresAt?: string;
   };
 };

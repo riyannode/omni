@@ -233,8 +233,8 @@ components:
           required: [oldestEvidenceAt, newestEvidenceAt]
           description: Advisory evidence freshness metadata. If expiresAt is present, callers should obtain a new preflight when the current time reaches that deadline; this is not a settlement or authorization binding.
           properties:
-            oldestEvidenceAt: { type: string, format: date-time }
-            newestEvidenceAt: { type: string, format: date-time }
+            oldestEvidenceAt: { type: [string, 'null'], format: date-time }
+            newestEvidenceAt: { type: [string, 'null'], format: date-time }
             expiresAt: { type: string, format: date-time }
     DependencyAssessment:
       type: object

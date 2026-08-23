@@ -139,6 +139,13 @@ export class OmniIntelligence {
           payTo = listing.observation?.payTo;
           network = listing.observation?.network;
           priceAtomic = listing.observation?.priceAtomic;
+          if (listing.observation) {
+            try {
+              await this.history.recordEndpoint(listing.observation);
+            } catch (error) {
+              errors.push(`OMNI history: current Circle observation could not be recorded: ${error instanceof Error ? error.message : "unknown error"}`);
+            }
+          }
         }
       } catch (error) { errors.push(`Circle Discovery: ${error instanceof Error ? error.message : "unknown error"}`); }
 
