@@ -10,6 +10,14 @@ function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => void fn(req, res).catch(next);
 }
 
+function resolvePublicBaseUrl(req: Request, configured: string | undefined): string | undefined {
+  if (configured !== undefined) return configured.replace(/\/$/, "");
+  const forwardedHost = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "");
+  if (!forwardedHost) return undefined;
+  const forwardedProto = String(req.headers["x-forwarded-proto"] ?? req.protocol ?? "http").split(",")[0]!.trim();
+  return `${forwardedProto}://${forwardedHost}`.replace(/\/$/, "");
+}
+
 const validatePackage: RequestHandler = (req, res, next) => {
   if (!packageQuery.safeParse(req.query).success) return void res.status(400).json({ error: "invalid_request" });
   next();
@@ -57,15 +65,15 @@ export function createApp(options: {
   }));
   app.get("/llms.txt", asyncRoute(async (_req, res) => {
     const body = await readFile(new URL("../../llms.txt", import.meta.url), "utf8");
-    res.type("text/plain; charset=utf-8").send(body);
+    const baseUrl = resolvePublicBaseUrl(_req, options.publicBaseUrl);
+    const rendered = baseUrl ? body.replaceAll("https://omni.example.com", baseUrl) : body;
+    res.type("text/plain; charset=utf-8").send(rendered);
   }));
   app.get("/openapi.yaml", asyncRoute(async (req, res) => {
     const body = await readFile(new URL("../../openapi.yaml", import.meta.url), "utf8");
-    const forwardedHost = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "");
-    const forwardedProto = String(req.headers["x-forwarded-proto"] ?? req.protocol ?? "http").split(",")[0]!.trim();
-    const baseUrl = options.publicBaseUrl ?? (forwardedHost ? `${forwardedProto}://${forwardedHost}` : undefined);
+    const baseUrl = resolvePublicBaseUrl(req, options.publicBaseUrl);
     const rendered = baseUrl
-      ? body.replaceAll("https://omni.example.com", baseUrl.replace(/\/$/, ""))
+      ? body.replaceAll("https://omni.example.com", baseUrl)
       : body;
     res.type("application/yaml").send(rendered);
   }));

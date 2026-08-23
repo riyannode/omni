@@ -1,3 +1,5 @@
+import { getVerifyingContract, supportsBatching } from "@circle-fin/x402-batching";
+import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import type { RiskAssessment } from "./risk.ts";
 import type { ObservedPaymentRequirement } from "../providers/circle-discovery.ts";
 
@@ -20,16 +22,13 @@ export const ConsistencyReason = {
   PREFLIGHT_EXPIRED: "PREFLIGHT_EXPIRED",
   RESOURCE_MISMATCH: "RESOURCE_MISMATCH",
   PAYMENT_REQUIREMENTS_MISMATCH: "PAYMENT_REQUIREMENTS_MISMATCH",
-  NO_OBSERVED_PAYMENT_OPTIONS: "NO_OBSERVED_PAYMENT_OPTIONS"
+  NO_OBSERVED_PAYMENT_OPTIONS: "NO_OBSERVED_PAYMENT_OPTIONS",
+  INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT: "INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT"
 } as const;
 
 export type PreflightChallenge = {
-  resource?: string;
-  scheme?: string;
-  network?: string;
-  amount?: string;
-  asset?: string;
-  payTo?: string;
+  paymentRequired: PaymentRequired;
+  requirements: PaymentRequirements;
 };
 
 export type ConsistencyCheck = {
@@ -45,35 +44,70 @@ function sameIdentifier(networkPrefix: string, a: string, b: string): boolean {
     : false;
 }
 
-function sameField(field: keyof ObservedPaymentRequirement, network: string | undefined, a: string, b: string): boolean {
-  return field === "payTo" || field === "asset" ? sameIdentifier(network ?? "", a, b) : a === b;
+function sameField(field: "asset" | "payTo" | "verifyingContract", network: string | undefined, a: string, b: string): boolean {
+  return field === "payTo" || field === "asset" || field === "verifyingContract" ? sameIdentifier(network ?? "", a, b) : a === b;
 }
 
 /**
- * Canonical numeric comparison for atomic-unit amount strings. Decimal strings
- * only — no floating point. Returns undefined when either input is not a plain
- * decimal integer/decimal string so callers fall back to exact string equality.
+ * Canonical comparison for x402 atomic-unit amount strings. Only plain,
+ * non-negative decimal integers are valid; leading zeros are normalized, but
+ * decimal fractions and exponent notation are never accepted.
  */
 export function canonicalAtomicAmount(value: string): string | undefined {
-  if (!/^\d+(\.\d+)?$/.test(value)) return undefined;
-  const [whole = "", fraction = ""] = value.split(".");
-  const trimmedWhole = whole.replace(/^0+(?=\d)/, "");
-  const trimmedFraction = fraction.replace(/0+$/, "");
-  return trimmedFraction === "" ? trimmedWhole : `${trimmedWhole}.${trimmedFraction}`;
+  return /^\d+$/.test(value) ? value.replace(/^0+(?=\d)/, "") : undefined;
 }
 
 function amountsMatch(a: string, b: string): boolean {
-  return a === b || (canonicalAtomicAmount(a) !== undefined && canonicalAtomicAmount(a) === canonicalAtomicAmount(b));
+  const canonicalA = canonicalAtomicAmount(a);
+  const canonicalB = canonicalAtomicAmount(b);
+  return canonicalA !== undefined && canonicalA === canonicalB;
+}
+
+const genericFields = ["scheme", "network", "amount", "asset", "payTo"] as const;
+const gatewayFields = ["name", "version", "verifyingContract"] as const;
+
+function observedGatewayValue(observed: ObservedPaymentRequirement, field: (typeof gatewayFields)[number]): string | undefined {
+  return observed.extra?.[field];
+}
+
+function actualGatewayValue(requirements: PaymentRequirements, field: (typeof gatewayFields)[number]): string | undefined {
+  if (field === "verifyingContract") return getVerifyingContract(requirements);
+  const value = requirements.extra[field];
+  return typeof value === "string" ? value : undefined;
+}
+
+function hasGenericContext(observed: ObservedPaymentRequirement): boolean {
+  return genericFields.every(field => observed[field] !== undefined) && observed.maxTimeoutSeconds !== undefined;
+}
+
+function hasCircleGatewayContext(observed: ObservedPaymentRequirement): boolean {
+  return gatewayFields.every(field => observedGatewayValue(observed, field) !== undefined);
+}
+
+function hasEnoughContext(observed: ObservedPaymentRequirement, actual: PaymentRequirements): boolean {
+  return hasGenericContext(observed) && (!supportsBatching(actual) || hasCircleGatewayContext(observed));
 }
 
 function optionMatches(observed: ObservedPaymentRequirement, challenge: PreflightChallenge): boolean {
-  for (const field of ["scheme", "network", "amount", "asset", "payTo"] as const) {
+  const requirements = challenge.requirements;
+  for (const field of genericFields) {
     const seen = observed[field];
-    const actual = challenge[field];
-    if (seen === undefined && actual === undefined) continue;
-    // A field OMNI never observed cannot be confirmed; treat it as unmatched.
-    if (seen === undefined || actual === undefined) return false;
-    if (field === "amount" ? !amountsMatch(seen, actual) : !sameField(field, observed.network, seen, actual)) return false;
+    const actual = requirements[field];
+    if (seen === undefined) return false;
+    if (field === "amount") {
+      if (!amountsMatch(seen, actual)) return false;
+    } else if (field === "asset" || field === "payTo") {
+      if (!sameField(field, observed.network, seen, actual)) return false;
+    } else if (seen !== actual) return false;
+  }
+  if (observed.maxTimeoutSeconds !== requirements.maxTimeoutSeconds) return false;
+
+  for (const field of gatewayFields) {
+    const seen = observedGatewayValue(observed, field);
+    if (seen === undefined) continue;
+    const actual = actualGatewayValue(requirements, field);
+    if (actual === undefined) return false;
+    if (field === "verifyingContract" ? !sameField(field, requirements.network, seen, actual) : seen !== actual) return false;
   }
   return true;
 }
@@ -102,7 +136,7 @@ export function checkX402ChallengeAgainstPreflight(
   }
 
   const assessedResource = preflight.preflightContext.resource;
-  if (challenge.resource !== undefined && challenge.resource !== assessedResource) {
+  if (challenge.paymentRequired.resource.url !== assessedResource) {
     return { status: "repreflight_required", reasons: [ConsistencyReason.RESOURCE_MISMATCH] };
   }
 
@@ -111,7 +145,12 @@ export function checkX402ChallengeAgainstPreflight(
     return { status: "insufficient_context", reasons: [ConsistencyReason.NO_OBSERVED_PAYMENT_OPTIONS] };
   }
 
-  if (options.some(option => optionMatches(option, challenge))) return { status: "match", reasons: [] };
+  const comparableOptions = options.filter(option => hasEnoughContext(option, challenge.requirements));
+  if (comparableOptions.length === 0) {
+    return { status: "insufficient_context", reasons: [ConsistencyReason.INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT] };
+  }
+
+  if (comparableOptions.some(option => optionMatches(option, challenge))) return { status: "match", reasons: [] };
 
   return { status: "repreflight_required", reasons: [ConsistencyReason.PAYMENT_REQUIREMENTS_MISMATCH] };
 }

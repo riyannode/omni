@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
+import type { PaymentRequirements } from "@x402/core/types";
 import type { Evidence } from "../domain/risk.ts";
 import type { EndpointObservation, HistoryStore } from "../data/history.ts";
 import { CachedLoader } from "../data/cache.ts";
 import { UpstreamHttp } from "./http.ts";
 
 type ObservedAccept = {
-  scheme?: string;
-  network?: string;
-  amount?: string;
-  asset?: string;
-  payTo?: string;
+  scheme?: PaymentRequirements["scheme"];
+  network?: PaymentRequirements["network"];
+  amount?: PaymentRequirements["amount"];
+  asset?: PaymentRequirements["asset"];
+  payTo?: PaymentRequirements["payTo"];
+  maxTimeoutSeconds?: PaymentRequirements["maxTimeoutSeconds"];
+  extra?: Record<string, unknown>;
 };
 
 type CircleItem = {
@@ -46,21 +49,45 @@ function observation(item: CircleItem): EndpointObservation {
 }
 
 export type ObservedPaymentRequirement = {
-  scheme?: string;
-  network?: string;
-  amount?: string;
-  asset?: string;
-  payTo?: string;
+  scheme?: PaymentRequirements["scheme"];
+  network?: PaymentRequirements["network"];
+  amount?: PaymentRequirements["amount"];
+  asset?: PaymentRequirements["asset"];
+  payTo?: PaymentRequirements["payTo"];
+  maxTimeoutSeconds?: PaymentRequirements["maxTimeoutSeconds"];
+  extra?: {
+    name?: string;
+    version?: string;
+    verifyingContract?: string;
+  };
 };
 
+function observedGatewayExtra(extra: Record<string, unknown> | undefined): ObservedPaymentRequirement["extra"] {
+  if (extra === undefined) return undefined;
+  const name = typeof extra.name === "string" ? extra.name : undefined;
+  const version = typeof extra.version === "string" ? extra.version : undefined;
+  const verifyingContract = typeof extra.verifyingContract === "string" ? extra.verifyingContract : undefined;
+  if (name === undefined && version === undefined && verifyingContract === undefined) return undefined;
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(version === undefined ? {} : { version }),
+    ...(verifyingContract === undefined ? {} : { verifyingContract })
+  };
+}
+
 export function observedPaymentOptions(item: CircleItem): ObservedPaymentRequirement[] {
-  return (item.accepts ?? []).map(accept => ({
-    ...(accept.scheme === undefined ? {} : { scheme: accept.scheme }),
-    ...(accept.network === undefined ? {} : { network: accept.network }),
-    ...(accept.amount === undefined ? {} : { amount: accept.amount }),
-    ...(accept.asset === undefined ? {} : { asset: accept.asset }),
-    ...(accept.payTo === undefined ? {} : { payTo: accept.payTo })
-  }));
+  return (item.accepts ?? []).map(accept => {
+    const extra = observedGatewayExtra(accept.extra);
+    return {
+      ...(accept.scheme === undefined ? {} : { scheme: accept.scheme }),
+      ...(accept.network === undefined ? {} : { network: accept.network }),
+      ...(accept.amount === undefined ? {} : { amount: accept.amount }),
+      ...(accept.asset === undefined ? {} : { asset: accept.asset }),
+      ...(accept.payTo === undefined ? {} : { payTo: accept.payTo }),
+      ...(accept.maxTimeoutSeconds === undefined ? {} : { maxTimeoutSeconds: accept.maxTimeoutSeconds }),
+      ...(extra === undefined ? {} : { extra })
+    };
+  });
 }
 
 export class CircleDiscoveryProvider {
