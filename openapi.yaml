@@ -119,10 +119,10 @@ paths:
         - { in: query, name: url, required: true, schema: { type: string, format: uri, maxLength: 2048 } }
       responses:
         '200':
-          description: Endpoint risk assessment with source-attributed evidence and explicit source failures.
+          description: "Endpoint risk assessment with source-attributed evidence and explicit source failures. preflightContext is observational/advisory: it reports the payment configuration observed during preflight and is not an authorization object."
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RiskAssessment' }
+              schema: { $ref: '#/components/schemas/X402EndpointPreflight' }
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/OverCapacity' }
@@ -236,6 +236,44 @@ components:
             oldestEvidenceAt: { type: [string, 'null'], format: date-time }
             newestEvidenceAt: { type: [string, 'null'], format: date-time }
             expiresAt: { type: string, format: date-time }
+    ObservedPaymentRequirement:
+      type: object
+      additionalProperties: false
+      description: A payment option as observed during preflight. Fields absent from the observation are omitted; OMNI never invents values.
+      properties:
+        scheme: { type: string }
+        network: { type: string }
+        amount: { type: string, description: Atomic-unit amount string. }
+        asset: { type: string }
+        payTo: { type: string }
+        maxTimeoutSeconds: { type: integer }
+        extra:
+          type: object
+          additionalProperties: false
+          properties:
+            name: { type: string }
+            version: { type: string }
+            verifyingContract: { type: string }
+    X402PreflightContext:
+      type: object
+      additionalProperties: false
+      required: [resource, paymentOptions]
+      description: Observational/advisory record of what OMNI saw during preflight. It is not an authorization object and does not bind any settlement.
+      properties:
+        resource: { type: string, format: uri }
+        paymentOptions:
+          type: array
+          items: { $ref: '#/components/schemas/ObservedPaymentRequirement' }
+    X402EndpointPreflight:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/RiskAssessment'
+        - type: object
+          required: [preflightContext]
+          properties:
+            preflightContext: { $ref: '#/components/schemas/X402PreflightContext' }
+      unevaluatedProperties: false
+      description: Endpoint-specific additive extension of RiskAssessment with the observed preflight context.
     DependencyAssessment:
       type: object
       required: [packages, summary, assessedAt]

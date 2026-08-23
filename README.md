@@ -65,7 +65,9 @@ bun run db:init
 bun run dev
 ```
 
-Health endpoints are `GET /health` and `GET /ready`. `openapi.yaml` is served at `/openapi.yaml`.
+Health endpoints are `GET /health` and `GET /ready`. `openapi.yaml` is served at `/openapi.yaml`, and a machine-readable integration guide for agents is served at `/llms.txt`.
+
+Buyer clients can compare the selected official x402 `PaymentRequirements` from a `PaymentRequired` response with the configuration observed during preflight (`preflightContext.paymentOptions`) and request a fresh assessment when they differ. Circle Gateway observations retain `maxTimeoutSeconds` and observed `extra.name`, `extra.version`, and `extra.verifyingContract`; atomic amounts are integer strings with no floating-point or exponent normalization. This comparison is advisory and local; see `/llms.txt`.
 
 ## Maturity
 
