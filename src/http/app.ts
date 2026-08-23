@@ -55,6 +55,10 @@ export function createApp(options: {
       }
     });
   }));
+  app.get("/llms.txt", asyncRoute(async (_req, res) => {
+    const body = await readFile(new URL("../../llms.txt", import.meta.url), "utf8");
+    res.type("text/plain; charset=utf-8").send(body);
+  }));
   app.get("/openapi.yaml", asyncRoute(async (req, res) => {
     const body = await readFile(new URL("../../openapi.yaml", import.meta.url), "utf8");
     const forwardedHost = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "");

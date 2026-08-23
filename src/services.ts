@@ -1,5 +1,6 @@
 import type { RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
+import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
 import { CachedLoader } from "./data/cache.ts";
 import type { HistoryStore } from "./data/history.ts";
 import type { ThreatIntelStore } from "./data/threat-intel.ts";
@@ -117,7 +118,7 @@ export class OmniIntelligence {
     return { packages: assessments, summary: { count: assessments.length, worstRiskScore: worst, recommendations: counts }, assessedAt: new Date().toISOString() };
   }
 
-  async endpointPreflight(resource: string): Promise<RiskAssessment> {
+  async endpointPreflight(resource: string): Promise<X402EndpointPreflight> {
     return (async () => {
       const errors: string[] = [];
       const evidence: RiskSnapshot["evidence"] = [];
@@ -127,6 +128,7 @@ export class OmniIntelligence {
       let activeProbeChecked = false, historyChecked = false, threatIntelChecked = false;
       let endpointHistory: RiskSnapshot["endpointHistory"];
       let threatFindings: ThreatFinding[] = [];
+      let observedPaymentRequirements: ObservedPaymentRequirement[] = [];
 
       try {
         const listing = await this.circle.findExact(resource);
@@ -139,6 +141,7 @@ export class OmniIntelligence {
           payTo = listing.observation?.payTo;
           network = listing.observation?.network;
           priceAtomic = listing.observation?.priceAtomic;
+          observedPaymentRequirements = listing.paymentOptions;
           if (listing.observation) {
             try {
               await this.history.recordEndpoint(listing.observation);
@@ -173,12 +176,18 @@ export class OmniIntelligence {
         else evidence.push({ source: "OMNI threat intelligence", kind: "endpoint_ioc_lookup", observedAt: new Date().toISOString(), detail: { matches: threat.findings.length, checkedWallet: Boolean(payTo) } });
       } catch (error) { errors.push(`Threat intelligence: ${error instanceof Error ? error.message : "unknown error"}`); }
 
-      return this.assessAndJournal({
-        subject: { type: "x402_endpoint", id: resource },
-        endpoint: { ...(listedOnCircle === undefined ? {} : { listedOnCircle }), ...(supportsGateway === undefined ? {} : { supportsGateway }), ...(supportsVanilla === undefined ? {} : { supportsVanilla }), ...(responseStatus === undefined ? {} : { responseStatus }), ...(paymentOptions === undefined ? {} : { paymentOptions }), ...(payTo ? { payTo } : {}), ...(network ? { network } : {}), ...(priceAtomic ? { priceAtomic } : {}) },
-        activeProbeChecked, historyChecked, ...(endpointHistory ? { endpointHistory } : {}), threatIntelChecked, threatFindings,
-        evidence, sourceErrors: errors
-      });
+      return {
+        ...await this.assessAndJournal({
+          subject: { type: "x402_endpoint", id: resource },
+          endpoint: { ...(listedOnCircle === undefined ? {} : { listedOnCircle }), ...(supportsGateway === undefined ? {} : { supportsGateway }), ...(supportsVanilla === undefined ? {} : { supportsVanilla }), ...(responseStatus === undefined ? {} : { responseStatus }), ...(paymentOptions === undefined ? {} : { paymentOptions }), ...(payTo ? { payTo } : {}), ...(network ? { network } : {}), ...(priceAtomic ? { priceAtomic } : {}) },
+          activeProbeChecked, historyChecked, ...(endpointHistory ? { endpointHistory } : {}), threatIntelChecked, threatFindings,
+          evidence, sourceErrors: errors
+        }),
+        preflightContext: {
+          resource,
+          paymentOptions: observedPaymentRequirements
+        }
+      };
     })();
   }
 }

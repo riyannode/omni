@@ -1,0 +1,40 @@
+# OMNI
+
+> OMNI is a deterministic pre-execution trust and risk API for software packages, dependency sets, repositories, and x402 endpoints. It returns advisory assessments with source-attributed evidence; it is not a settlement authority and does not authorize, sign, block, or settle payments.
+
+## Paid API
+
+All four endpoints require x402 payment per request.
+
+- [GET /v1/package/risk](https://omni.example.com/v1/package/risk): package risk assessment ($0.005 USDC). Query: `ecosystem`, `name`, `version`.
+- [GET /v1/repo/risk](https://omni.example.com/v1/repo/risk): repository risk assessment ($0.01 USDC). Query: `owner`, `repo`.
+- [POST /v1/dependencies/risk](https://omni.example.com/v1/dependencies/risk): per-package assessment for up to 100 packages plus an aggregate summary ($0.05 USDC). Body: `packages[]`.
+- [GET /v1/x402/endpoint/preflight](https://omni.example.com/v1/x402/endpoint/preflight): x402 endpoint preflight assessment ($0.01 USDC). Query: `url`.
+
+## Assessment semantics
+
+- `recommendation` is one of `proceed`, `proceed_with_caution`, `manual_review`, `do_not_proceed`. It is advisory output derived from the risk score; it is not an authorization decision, and `do_not_proceed` does not prohibit a payment.
+- `riskScore` is an integer 0..100 where higher means more observed decision-relevant risk signals or evidence-source failures.
+- `evidenceCoverage` is the 0..1 fraction of evidence paths expected for that subject type that completed successfully. It is not statistical confidence.
+- `sourceErrors` lists named upstream sources that failed during the assessment. Treat results with source errors as less complete, not as safe.
+- `freshness.expiresAt` is an advisory deadline derived from evidence expiry. Callers should re-run preflight after `expiresAt`; do not silently continue acting on expired evidence.
+
+## x402 endpoint preflight workflow
+
+1. Run preflight on the target resource URL before your agent calls or pays it.
+2. The response includes `preflightContext.resource` and `preflightContext.paymentOptions`: every payment option observed from Circle Discovery (`scheme`, `network`, `amount`, `asset`, `payTo` as observed; absent fields are omitted).
+3. After receiving an actual HTTP 402 response from the target, compare its PaymentRequirements against `preflightContext.paymentOptions` locally.
+4. Consistency outcomes: `match` means the actual requirements match one complete previously observed option; `repreflight_required` means the challenge differs from or postdates the observation; `insufficient_context` means too little was observed to compare meaningfully.
+5. A mismatching or stale challenge should trigger a fresh preflight — never automatically mutate or settle a payment.
+6. A `match` means only that the payment requirements match the previously observed configuration. It does NOT mean risk-free, sanctioned-clean, authorized, or guaranteed safe.
+
+## Machine-readable references
+
+- [OpenAPI specification](https://omni.example.com/openapi.yaml)
+- [Health check](https://omni.example.com/health) (process liveness only)
+- [Readiness](https://omni.example.com/ready) (replica can accept paid requests)
+
+## Architecture and security
+
+- [Architecture](https://github.com/riyannode/omni/blob/main/docs/ARCHITECTURE.md)
+- [Security model](https://github.com/riyannode/omni/blob/main/docs/SECURITY.md)
