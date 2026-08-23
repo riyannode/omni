@@ -21,6 +21,16 @@ function push(signals: RiskSignal[], code: string, severity: Exclude<RiskLevel, 
   signals.push({ code, severity, source, detail });
 }
 
+function freshness(evidence: RiskSnapshot["evidence"]): RiskAssessment["freshness"] {
+  const observedAt = evidence.map(item => item.observedAt).sort();
+  const deadlines = evidence.flatMap(item => item.expiresAt ? [item.expiresAt] : []).sort();
+  return {
+    oldestEvidenceAt: observedAt[0] ?? new Date(0).toISOString(),
+    newestEvidenceAt: observedAt.at(-1) ?? new Date(0).toISOString(),
+    ...(deadlines[0] ? { expiresAt: deadlines[0] } : {})
+  };
+}
+
 export class RiskEngine {
   constructor(private readonly policy: ReadonlyRiskPolicy = DEFAULT_RISK_POLICY) {}
 
@@ -102,7 +112,7 @@ export class RiskEngine {
         paymentConfigurationRisk: paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
         endpointOperationalRisk: endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
       },
-      signals, evidence: snapshot.evidence, sourceErrors: snapshot.sourceErrors ?? [], assessedAt: new Date().toISOString()
+      signals, evidence: snapshot.evidence, sourceErrors: snapshot.sourceErrors ?? [], assessedAt: new Date().toISOString(), freshness: freshness(snapshot.evidence)
     };
   }
 }

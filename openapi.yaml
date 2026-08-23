@@ -169,6 +169,7 @@ components:
         source: { type: string }
         kind: { type: string }
         observedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
         detail: { type: object, additionalProperties: true }
     RiskDimensions:
       type: object
@@ -195,7 +196,7 @@ components:
         detail: { type: object, additionalProperties: true }
     RiskAssessment:
       type: object
-      required: [subject, policyVersion, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt]
+      required: [subject, policyVersion, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt, freshness]
       properties:
         subject: { $ref: '#/components/schemas/Subject' }
         policyVersion:
@@ -226,6 +227,15 @@ components:
           type: array
           items: { type: string }
         assessedAt: { type: string, format: date-time }
+        freshness:
+          type: object
+          additionalProperties: false
+          required: [oldestEvidenceAt, newestEvidenceAt]
+          description: Advisory evidence freshness metadata. If expiresAt is present, callers should obtain a new preflight when the current time reaches that deadline; this is not a settlement or authorization binding.
+          properties:
+            oldestEvidenceAt: { type: string, format: date-time }
+            newestEvidenceAt: { type: string, format: date-time }
+            expiresAt: { type: string, format: date-time }
     DependencyAssessment:
       type: object
       required: [packages, summary, assessedAt]

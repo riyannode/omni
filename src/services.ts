@@ -118,8 +118,7 @@ export class OmniIntelligence {
   }
 
   async endpointPreflight(resource: string): Promise<RiskAssessment> {
-    const key = `assessment:endpoint:${resource}`;
-    return this.cache.getOrLoad(key, 60, async () => {
+    return (async () => {
       const errors: string[] = [];
       const evidence: RiskSnapshot["evidence"] = [];
       let listedOnCircle: boolean | undefined, supportsGateway: boolean | undefined, supportsVanilla: boolean | undefined;
@@ -173,6 +172,6 @@ export class OmniIntelligence {
         activeProbeChecked, historyChecked, ...(endpointHistory ? { endpointHistory } : {}), threatIntelChecked, threatFindings,
         evidence, sourceErrors: errors
       });
-    });
+    })();
   }
 }
