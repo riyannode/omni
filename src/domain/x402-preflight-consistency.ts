@@ -1,9 +1,20 @@
 import { getVerifyingContract, supportsBatching } from "@circle-fin/x402-batching";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import type { RiskAssessment } from "./risk.ts";
-import type { ObservedPaymentRequirement } from "../providers/circle-discovery.ts";
 
-export type { ObservedPaymentRequirement };
+export type ObservedPaymentRequirement = {
+  scheme?: PaymentRequirements["scheme"];
+  network?: PaymentRequirements["network"];
+  amount?: PaymentRequirements["amount"];
+  asset?: PaymentRequirements["asset"];
+  payTo?: PaymentRequirements["payTo"];
+  maxTimeoutSeconds?: PaymentRequirements["maxTimeoutSeconds"];
+  extra?: {
+    name?: string;
+    version?: string;
+    verifyingContract?: string;
+  };
+};
 
 export type X402EndpointPreflight = RiskAssessment & {
   preflightContext: {

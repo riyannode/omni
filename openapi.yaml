@@ -266,35 +266,14 @@ components:
           items: { $ref: '#/components/schemas/ObservedPaymentRequirement' }
     X402EndpointPreflight:
       type: object
-      additionalProperties: false
-      required: [subject, policyVersion, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt, freshness, preflightContext]
-      description: Endpoint-specific additive extension of RiskAssessment with the observed preflight context.
-      properties:
-        subject: { $ref: '#/components/schemas/Subject' }
-        policyVersion: { type: string }
-        recommendation: { type: string, enum: [proceed, proceed_with_caution, manual_review, do_not_proceed] }
-        riskScore: { type: integer, minimum: 0, maximum: 100 }
-        evidenceCoverage: { type: number, minimum: 0, maximum: 1 }
-        dimensions: { $ref: '#/components/schemas/RiskDimensions' }
-        signals:
-          type: array
-          items: { $ref: '#/components/schemas/RiskSignal' }
-        evidence:
-          type: array
-          items: { $ref: '#/components/schemas/Evidence' }
-        sourceErrors:
-          type: array
-          items: { type: string }
-        assessedAt: { type: string, format: date-time }
-        freshness:
-          type: object
-          additionalProperties: false
-          required: [oldestEvidenceAt, newestEvidenceAt]
+      allOf:
+        - $ref: '#/components/schemas/RiskAssessment'
+        - type: object
+          required: [preflightContext]
           properties:
-            oldestEvidenceAt: { type: [string, 'null'], format: date-time }
-            newestEvidenceAt: { type: [string, 'null'], format: date-time }
-            expiresAt: { type: string, format: date-time }
-        preflightContext: { $ref: '#/components/schemas/X402PreflightContext' }
+            preflightContext: { $ref: '#/components/schemas/X402PreflightContext' }
+      unevaluatedProperties: false
+      description: Endpoint-specific additive extension of RiskAssessment with the observed preflight context.
     DependencyAssessment:
       type: object
       required: [packages, summary, assessedAt]

@@ -1,19 +1,12 @@
 import { createHash } from "node:crypto";
 import type { PaymentRequirements } from "@x402/core/types";
 import type { Evidence } from "../domain/risk.ts";
+import type { ObservedPaymentRequirement } from "../domain/x402-preflight-consistency.ts";
 import type { EndpointObservation, HistoryStore } from "../data/history.ts";
 import { CachedLoader } from "../data/cache.ts";
 import { UpstreamHttp } from "./http.ts";
 
-type ObservedAccept = {
-  scheme?: PaymentRequirements["scheme"];
-  network?: PaymentRequirements["network"];
-  amount?: PaymentRequirements["amount"];
-  asset?: PaymentRequirements["asset"];
-  payTo?: PaymentRequirements["payTo"];
-  maxTimeoutSeconds?: PaymentRequirements["maxTimeoutSeconds"];
-  extra?: Record<string, unknown>;
-};
+type ObservedAccept = Partial<PaymentRequirements>;
 
 type CircleItem = {
   resource: string;
@@ -47,20 +40,6 @@ function observation(item: CircleItem): EndpointObservation {
     ...(item.metadata?.supportsVanillax402 === undefined ? {} : { supportsVanilla: item.metadata.supportsVanillax402 })
   };
 }
-
-export type ObservedPaymentRequirement = {
-  scheme?: PaymentRequirements["scheme"];
-  network?: PaymentRequirements["network"];
-  amount?: PaymentRequirements["amount"];
-  asset?: PaymentRequirements["asset"];
-  payTo?: PaymentRequirements["payTo"];
-  maxTimeoutSeconds?: PaymentRequirements["maxTimeoutSeconds"];
-  extra?: {
-    name?: string;
-    version?: string;
-    verifyingContract?: string;
-  };
-};
 
 function observedGatewayExtra(extra: Record<string, unknown> | undefined): ObservedPaymentRequirement["extra"] {
   if (extra === undefined) return undefined;
