@@ -8,6 +8,7 @@ export type Evidence = {
   kind: string;
   observedAt: string;
   detail: Record<string, unknown>;
+  expiresAt?: string;
 };
 
 export type VulnerabilityFinding = {
@@ -101,4 +102,9 @@ export type RiskAssessment = {
   evidence: Evidence[];
   sourceErrors: string[];
   assessedAt: string;
+  freshness: {
+    oldestEvidenceAt: string | null;
+    newestEvidenceAt: string | null;
+    expiresAt?: string;
+  };
 };

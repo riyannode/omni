@@ -48,7 +48,8 @@ export class CircleDiscoveryProvider {
     const q = new URL("https://api.circle.com/v2/x402/discovery/resources");
     q.searchParams.set("query", resource);
     q.searchParams.set("limit", "50");
-    const data = await this.cache.getOrLoad<CircleResponse>(`circle:resource:${resource}`, 60, () => this.http.json<CircleResponse>(q.toString()));
+    const cached = await this.cache.getOrLoadWithMetadata<CircleResponse>(`circle:v2:resource:${resource}`, 60, () => this.http.json<CircleResponse>(q.toString()));
+    const data = cached.value;
     const item = (data.items ?? []).find(x => x.resource === resource);
     const state = item ? observation(item) : undefined;
     return {
@@ -57,8 +58,9 @@ export class CircleDiscoveryProvider {
       evidence: {
         source: "Circle Discovery",
         kind: "marketplace_listing",
-        observedAt: new Date().toISOString(),
-        detail: state ?? { resource, listed: false }
+        observedAt: cached.cachedAt,
+        detail: state ?? { resource, listed: false },
+        expiresAt: cached.expiresAt
       }
     };
   }

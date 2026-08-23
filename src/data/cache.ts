@@ -80,20 +80,30 @@ export class CachedLoader {
   constructor(private readonly cache: Cache) {}
 
   async getOrLoad<T>(key: string, ttlSeconds: number, loader: () => Promise<T>): Promise<T> {
+    return (await this.getOrLoadWithMetadata(key, ttlSeconds, loader)).value;
+  }
+
+  async getOrLoadWithMetadata<T>(key: string, ttlSeconds: number, loader: () => Promise<T>): Promise<{ value: T; cachedAt: string; expiresAt: string }> {
     const cached = await this.cache.get(key);
     if (cached !== null) {
       try {
-        return JSON.parse(cached) as T;
+        const parsed = JSON.parse(cached) as { value?: T; cachedAt?: string; expiresAt?: string };
+        if (typeof parsed.cachedAt === "string" && typeof parsed.expiresAt === "string" && "value" in parsed) {
+          return { value: parsed.value as T, cachedAt: parsed.cachedAt, expiresAt: parsed.expiresAt };
+        }
+        return { value: parsed as T, cachedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString() };
       } catch {}
     }
 
-    const existing = this.inFlight.get(key) as Promise<T> | undefined;
+    const existing = this.inFlight.get(key) as Promise<{ value: T; cachedAt: string; expiresAt: string }> | undefined;
     if (existing) return existing;
 
     const pending = loader()
       .then(async value => {
-        await this.cache.set(key, JSON.stringify(value), ttlSeconds);
-        return value;
+        const cachedAt = new Date().toISOString();
+        const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+        await this.cache.set(key, JSON.stringify({ value, cachedAt, expiresAt }), ttlSeconds);
+        return { value, cachedAt, expiresAt };
       })
       .finally(() => this.inFlight.delete(key));
 

@@ -118,8 +118,7 @@ export class OmniIntelligence {
   }
 
   async endpointPreflight(resource: string): Promise<RiskAssessment> {
-    const key = `assessment:endpoint:${resource}`;
-    return this.cache.getOrLoad(key, 60, async () => {
+    return (async () => {
       const errors: string[] = [];
       const evidence: RiskSnapshot["evidence"] = [];
       let listedOnCircle: boolean | undefined, supportsGateway: boolean | undefined, supportsVanilla: boolean | undefined;
@@ -140,6 +139,13 @@ export class OmniIntelligence {
           payTo = listing.observation?.payTo;
           network = listing.observation?.network;
           priceAtomic = listing.observation?.priceAtomic;
+          if (listing.observation) {
+            try {
+              await this.history.recordEndpoint(listing.observation);
+            } catch (error) {
+              errors.push(`OMNI history: current Circle observation could not be recorded: ${error instanceof Error ? error.message : "unknown error"}`);
+            }
+          }
         }
       } catch (error) { errors.push(`Circle Discovery: ${error instanceof Error ? error.message : "unknown error"}`); }
 
@@ -173,6 +179,6 @@ export class OmniIntelligence {
         activeProbeChecked, historyChecked, ...(endpointHistory ? { endpointHistory } : {}), threatIntelChecked, threatFindings,
         evidence, sourceErrors: errors
       });
-    });
+    })();
   }
 }
