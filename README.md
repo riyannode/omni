@@ -81,6 +81,6 @@ Buyer clients can compare the selected official x402 `PaymentRequirements` from 
 
 ## Maturity
 
-This repository is a **production-shaped MVP**, not a proven production deployment. The API/payment architecture is real, but production readiness still requires licensed threat-feed contracts, distributed observability, durable paid-request recovery/idempotency, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Production readiness still requires real Circle testnet E2E across the paid routes, licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
 
 See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.
