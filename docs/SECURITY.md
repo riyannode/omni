@@ -22,4 +22,4 @@
 
 ## Paid failure semantics
 
-Expected provider failures become `sourceErrors` and reduce coverage. Unexpected runtime failure after settlement is not yet durably recoverable in v0.2; post-payment idempotency/result persistence is required before a production-readiness claim.
+Expected provider failures become `sourceErrors` and reduce coverage. Unexpected runtime failure after settlement is not yet durably recoverable; post-payment idempotency/result persistence is required before a production-readiness claim.
