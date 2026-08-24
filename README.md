@@ -1,6 +1,6 @@
 # OMNI
 
-OMNI is a **pre-execution trust and risk layer for autonomous agents**. Before an agent installs software, consumes an API, or pays an x402 service, it can ask OMNI for deterministic, source-attributed risk evidence.
+OMNI is a **pre-execution trust and risk layer for autonomous agents**. OMNI independently verifies what an autonomous agent is about to trust before execution or payment, returning deterministic, source-attributed risk evidence.
 
 OMNI is runtime-agnostic: Hermes, Codex, Claude, OpenClaw, MCP clients, CI, or plain HTTP clients can consume the same API. Circle CLI/Agent Wallet is the recommended buyer-wallet path; the seller uses Circle's official `@circle-fin/x402-batching` middleware.
 
@@ -13,6 +13,16 @@ Three intelligence planes feed one deterministic `RiskEngine`:
 3. **Payment intelligence** — x402 payout address/network/price history, payout-destination changes, and licensed wallet IOC matches.
 
 OMNI does **not** equate “not found in a threat feed” with “safe”. Results expose `evidenceCoverage`, `signals`, `sourceErrors`, and an advisory `recommendation`.
+
+## Trust before execution
+
+```text
+Agent proposes → OMNI verifies → caller policy decides → wallet enforces → Circle settles
+```
+
+The agent and the x402 endpoint are not trusted blindly. OMNI verifies available evidence; the caller, user, or runtime decides what conditions are acceptable; the wallet or runtime enforces that policy; and Circle remains the payment/settlement rail. OMNI does not authorize payment. It does not guarantee endpoint behaviour or determine user-specific economic utility.
+
+For x402, a marketplace listing or earlier preflight is evidence, not authority. The caller can compare the selected execution-time `PaymentRequirements` from the actual HTTP 402 challenge with `preflightContext.paymentOptions` observed by OMNI before payment. The comparison can produce `match`, `repreflight_required`, or `insufficient_context`; it is advisory and local.
 
 ## Paid endpoints
 
@@ -67,7 +77,7 @@ bun run dev
 
 Health endpoints are `GET /health` and `GET /ready`. `openapi.yaml` is served at `/openapi.yaml`, and a machine-readable integration guide for agents is served at `/llms.txt`.
 
-Buyer clients can compare the selected official x402 `PaymentRequirements` from a `PaymentRequired` response with the configuration observed during preflight (`preflightContext.paymentOptions`) and request a fresh assessment when they differ. Circle Gateway observations retain `maxTimeoutSeconds` and observed `extra.name`, `extra.version`, and `extra.verifyingContract`; atomic amounts are integer strings with no floating-point or exponent normalization. This comparison is advisory and local; see `/llms.txt`.
+Buyer clients can compare the selected official x402 `PaymentRequirements` from a `PaymentRequired` response with the configuration observed during preflight (`preflightContext.paymentOptions`) and request a fresh assessment when they differ. Circle Gateway observations retain `maxTimeoutSeconds` and observed `extra.name`, `extra.version`, and `extra.verifyingContract`; atomic amounts are integer strings with no floating-point or exponent normalization. A match is consistency evidence, not payment authorization; see `/llms.txt`.
 
 ## Maturity
 

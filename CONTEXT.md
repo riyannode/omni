@@ -7,7 +7,7 @@ OMNI is a pre-execution trust and risk layer for software packages, dependency s
 - **Evidence**: a timestamped fact from a named source. Evidence is not a verdict.
 - **Snapshot**: normalized evidence for one subject at a point in time.
 - **Assessment**: deterministic scoring over a normalized evidence snapshot.
-- **Recommendation**: `proceed`, `proceed_with_caution`, `manual_review`, or `do_not_proceed`. This is advisory output, not an authorization decision.
+- **Recommendation**: `proceed`, `proceed_with_caution`, `manual_review`, or `do_not_proceed`. This is advisory output from OMNI, not an authorization decision. A wallet/runtime may use it as an input to a fail-closed local policy.
 - **Risk score**: integer `0..100`; higher means OMNI observed more decision-relevant risk signals or evidence-source failures. It is not a probability of compromise.
 - **Evidence coverage**: `0..1` fraction of the evidence paths expected for that subject type that completed successfully. It is not statistical confidence or a probability of correctness.
 - **Health**: `/health` process-liveness response only; it does not assert upstream availability.
@@ -19,3 +19,7 @@ OMNI is a pre-execution trust and risk layer for software packages, dependency s
 - **Threat intelligence**: licensed IOC data imported into OMNI's vendor-neutral store with source provenance and expiry metadata.
 - **Paid route**: an HTTP resource whose handler runs only after the Circle Gateway payment middleware accepts the request.
 - **Agent adapter**: optional caller integration for Hermes or another runtime. It does not participate in OMNI scoring or payment verification.
+- **Verification**: independent evaluation of evidence before an action. Verification is not authorization.
+- **Policy**: caller-defined conditions that determine whether an OMNI assessment is acceptable for execution.
+- **Enforcement**: runtime/wallet action that allows, holds, or denies execution according to caller policy. Enforcement is outside `RiskEngine`.
+- **Payment consistency**: whether execution-time selected payment requirements remain consistent with the configuration observed during OMNI preflight.

@@ -8,6 +8,18 @@
 - Threat feeds must be commercially licensed for the intended use. Store source/reference provenance and honor expiry/retention terms.
 - A shared payout wallet, changed schema, new maintainer, install script, or marketplace absence is a **risk signal**, not standalone proof of malicious intent.
 
+## Trust-boundary implications
+
+- Agent-provided intent is untrusted input.
+- An endpoint's payment challenge and service response are untrusted input.
+- A marketplace listing is evidence, not authority.
+- An OMNI assessment does not grant spending authority or authorize a payment.
+- Wallet/runtime code must independently enforce its local policy.
+- A stale preflight is not proof of the execution-time payment configuration.
+- A mismatch between preflight and the actual selected payment requirements should trigger re-preflight or caller-side denial.
+- Insufficient evidence or comparison context must not be interpreted as a successful match.
+- OMNI does not guarantee endpoint behaviour, prevent every loss, or decide whether a purchase is economically worthwhile for a specific user.
+
 ## Paid failure semantics
 
-Expected provider failures become `sourceErrors` and reduce coverage. Unexpected runtime failure after settlement is not yet durably recoverable in v0.2; post-payment idempotency/result persistence is required before a production-readiness claim.
+Expected provider failures become `sourceErrors` and reduce coverage. Unexpected runtime failure after settlement is not yet durably recoverable; post-payment idempotency/result persistence is required before a production-readiness claim.
