@@ -92,30 +92,73 @@ async function startTarget(accepts: PaymentRequirements[], resource: () => strin
   return { url, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 
+async function expectMalformedPaymentRequired(paymentRequired: unknown): Promise<void> {
+  const target = await startTarget([], () => target.url, paymentRequired);
+  let selectorCalls = 0;
+  let paymentCalls = 0;
+
+  const result = await runX402Buyer(target.url, {
+    getPreflight: async resource => preflight(resource, requirements()),
+    selectPaymentRequirements: accepts => {
+      selectorCalls += 1;
+      return accepts[0];
+    },
+    policy: buyerPolicy(),
+    payTarget: async () => {
+      paymentCalls += 1;
+      return new Response("unexpected", { status: 200 });
+    }
+  });
+
+  expect(result.decision.status).toBe("DENY");
+  expect(result.decision.reasons).toContain("INVALID_PAYMENT_REQUIRED");
+  expect(selectorCalls).toBe(0);
+  expect(paymentCalls).toBe(0);
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve()))));
 });
 
 describe("reference x402 buyer flow", () => {
-  test("malformed actual 402 is denied without reaching consistency or payment", async () => {
-    const target = await startTarget([], () => target.url, {
+  test("malformed 402 with accepts [{}] is denied before selection", async () => {
+    await expectMalformedPaymentRequired({
       x402Version: 2,
-      accepts: [{ scheme: "exact" }]
+      resource: { url: "https://target.example/paid" },
+      accepts: [{}]
     });
-    let paymentCalls = 0;
+  });
 
-    const result = await runX402Buyer(target.url, {
-      getPreflight: async resource => preflight(resource, requirements()),
-      selectPaymentRequirements: accepts => accepts[0],
-      policy: buyerPolicy(),
-      payTarget: async () => {
-        paymentCalls += 1;
-        return new Response("unexpected", { status: 200 });
-      }
+  test("malformed 402 with missing resource.url is denied before selection", async () => {
+    await expectMalformedPaymentRequired({
+      x402Version: 2,
+      resource: {},
+      accepts: [requirements()]
     });
+  });
 
-    expect(result.decision).toEqual({ status: "DENY", reasons: ["INVALID_PAYMENT_REQUIRED"] });
-    expect(paymentCalls).toBe(0);
+  test("malformed 402 requirement field is denied before selection", async () => {
+    await expectMalformedPaymentRequired({
+      x402Version: 2,
+      resource: { url: "https://target.example/paid" },
+      accepts: [{ ...requirements(), amount: 10000 }]
+    });
+  });
+
+  test("malformed 402 null extra is denied before selection", async () => {
+    await expectMalformedPaymentRequired({
+      x402Version: 2,
+      resource: { url: "https://target.example/paid" },
+      accepts: [{ ...requirements(), extra: null }]
+    });
+  });
+
+  test("malformed 402 array extra is denied before selection", async () => {
+    await expectMalformedPaymentRequired({
+      x402Version: 2,
+      resource: { url: "https://target.example/paid" },
+      accepts: [{ ...requirements(), extra: [] }]
+    });
   });
 
   test("Flow A: matching actual 402 reaches ALLOW and calls payment once", async () => {

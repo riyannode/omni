@@ -154,14 +154,14 @@ describe("caller-side x402 purchase policy", () => {
   });
 
   test("invalid evidence coverage is denied", () => {
-    for (const evidenceCoverage of [Number.NaN, -0.01, 1.01]) {
+    for (const evidenceCoverage of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.01, 1.01]) {
       const result = decision({ assessment: { evidenceCoverage } });
       expectStatus(result, "DENY", BuyerPolicyReason.EVIDENCE_COVERAGE_INVALID);
     }
   });
 
   test("invalid minimum evidence threshold is denied", () => {
-    for (const minimumEvidenceCoverage of [Number.NaN, -0.01, 1.01]) {
+    for (const minimumEvidenceCoverage of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -0.01, 1.01]) {
       const result = decision({ policy: { minimumEvidenceCoverage } });
       expectStatus(result, "DENY", BuyerPolicyReason.POLICY_INVALID);
     }
