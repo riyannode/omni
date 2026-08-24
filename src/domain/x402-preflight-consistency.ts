@@ -49,7 +49,7 @@ export type ConsistencyCheck = {
 };
 
 /** EVM hex addresses compare case-insensitively; other identifiers stay case-sensitive. */
-function sameIdentifier(networkPrefix: string, a: string, b: string): boolean {
+export function samePaymentIdentifier(networkPrefix: string, a: string, b: string): boolean {
   if (a === b) return true;
   return networkPrefix.startsWith("eip155:") && /^0x[0-9a-fA-F]{40}$/.test(a) && /^0x[0-9a-fA-F]{40}$/.test(b)
     ? a.toLowerCase() === b.toLowerCase()
@@ -57,7 +57,7 @@ function sameIdentifier(networkPrefix: string, a: string, b: string): boolean {
 }
 
 function sameField(field: "asset" | "payTo" | "verifyingContract", network: string | undefined, a: string, b: string): boolean {
-  return field === "payTo" || field === "asset" || field === "verifyingContract" ? sameIdentifier(network ?? "", a, b) : a === b;
+  return field === "payTo" || field === "asset" || field === "verifyingContract" ? samePaymentIdentifier(network ?? "", a, b) : a === b;
 }
 
 /**
