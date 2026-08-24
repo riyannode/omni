@@ -33,7 +33,7 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 | `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
 | `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
 
-Request path: **validate → admission control → Circle payment gate → cached evidence → RiskEngine → JSON**. Validation/capacity failures occur before payment.
+Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
 ## Data sources
 

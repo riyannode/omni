@@ -17,6 +17,10 @@ const snapshot: RiskSnapshot = {
 };
 let setupDb: SQL | undefined;
 
+function persisted<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 beforeAll(async () => {
   if (!databaseUrl) return;
   setupDb = new SQL(databaseUrl);
@@ -35,7 +39,7 @@ describe("Postgres assessment journal (requires TEST_DATABASE_URL)", () => {
     const assessmentId = await journal.record(snapshot, features, assessment);
     await journal.labelAssessment(assessmentId, "incident", "incident-report", "https://example.test/report", "verified fixture");
     const [row] = await journal.loadLabelled();
-    expect(row).toMatchObject({ assessmentId, subjectType: "package", subjectId: snapshot.subject.id, snapshotSchemaVersion: RISK_SNAPSHOT_SCHEMA_VERSION, featureSchemaVersion: RISK_FEATURE_SCHEMA_VERSION, policyVersion: RISK_POLICY_VERSION, snapshot, features, assessment, label: "incident", source: "incident-report", sourceReference: "https://example.test/report", notes: "verified fixture" });
+    expect(row).toMatchObject({ assessmentId, subjectType: "package", subjectId: snapshot.subject.id, snapshotSchemaVersion: RISK_SNAPSHOT_SCHEMA_VERSION, featureSchemaVersion: RISK_FEATURE_SCHEMA_VERSION, policyVersion: RISK_POLICY_VERSION, snapshot: persisted(snapshot), features: persisted(features), assessment: persisted(assessment), label: "incident", source: "incident-report", sourceReference: "https://example.test/report", notes: "verified fixture" });
     expect(row?.assessedAt).toBe(assessment.assessedAt);
   });
 

@@ -5,6 +5,9 @@ import { createApp } from "../src/http/app.ts";
 import type { HistoryStore } from "../src/data/history.ts";
 import type { ThreatIntelStore } from "../src/data/threat-intel.ts";
 import type { OmniIntelligence } from "../src/services.ts";
+import type { PaidRequestStore } from "../src/data/paid-requests.ts";
+import { createPaidRequestStore } from "../src/data/paid-requests.ts";
+import { CircleTransferLookup } from "../src/payments/circle-transfers.ts";
 
 const servers: Array<ReturnType<ReturnType<typeof createApp>["listen"]>> = [];
 
@@ -36,6 +39,8 @@ describe("HTTP machine-readable documents", () => {
       history: testHistory(),
       threatIntel: testThreatIntel(),
       gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
       maxInFlight: 32,
       publicBaseUrl: "https://omni.example-real.com"
     });
@@ -55,5 +60,33 @@ describe("HTTP machine-readable documents", () => {
     expect(response.headers.get("content-type")).toContain("text/plain");
     expect(body).toContain("https://omni.example-real.com/");
     expect(body).not.toContain("https://omni.example.com");
+    const ready = await fetch(`http://127.0.0.1:${(address as AddressInfo).port}/ready`);
+    expect(ready.status).toBe(503);
+    expect(await ready.json()).toMatchObject({ status: "degraded", dependencies: { paidRequests: "unavailable" } });
+  });
+
+  test("returns HTTP 200 when the paid request store is available", async () => {
+    const availableStore = { isAvailable: async () => true } as PaidRequestStore;
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: availableStore,
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", () => resolve());
+      server.once("error", reject);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("test server has no TCP address");
+    const response = await fetch(`http://127.0.0.1:${(address as AddressInfo).port}/ready`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "ready", dependencies: { paidRequests: "available" } });
   });
 });

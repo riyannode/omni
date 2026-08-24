@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 import type { HistoryStore } from "../data/history.ts";
 import type { ThreatIntelStore } from "../data/threat-intel.ts";
 import type { OmniIntelligence } from "../services.ts";
+import type { PaidRequestStore } from "../data/paid-requests.ts";
+import { CircleTransferLookup } from "../payments/circle-transfers.ts";
 import { concurrencyGate } from "./concurrency-gate.ts";
+import { PaidRouteIntegration, type GatewayWithHooks } from "./paid-route.ts";
 import { dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./validation.ts";
 
 function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
@@ -42,8 +45,11 @@ export function createApp(options: {
   omni: OmniIntelligence;
   history: HistoryStore;
   threatIntel: ThreatIntelStore;
-  gateway: { require(price: string): RequestHandler };
+  gateway: GatewayWithHooks;
+  paidRequests: PaidRequestStore;
+  circleTransfers: CircleTransferLookup;
   maxInFlight: number;
+  executionLeaseMs?: number;
   publicBaseUrl?: string | undefined;
 }) {
   const app = express();
@@ -53,13 +59,18 @@ export function createApp(options: {
 
   app.get("/health", (_req, res) => res.json({ service: "OMNI", status: "healthy" }));
   app.get("/ready", asyncRoute(async (_req, res) => {
-    const [historyAvailable, threatStatus] = await Promise.all([options.history.isAvailable(), options.threatIntel.status()]);
-    res.json({
+    const [historyAvailable, threatStatus, paidRequestsAvailable] = await Promise.all([
+      options.history.isAvailable(),
+      options.threatIntel.status(),
+      options.paidRequests.isAvailable()
+    ]);
+    res.status(paidRequestsAvailable ? 200 : 503).json({
       service: "OMNI",
-      status: "ready",
+      status: paidRequestsAvailable ? "ready" : "degraded",
       dependencies: {
         historyStore: historyAvailable ? "available" : "degraded",
-        threatIntelligence: !threatStatus.available ? "degraded" : threatStatus.configured ? "configured" : "unconfigured"
+        threatIntelligence: !threatStatus.available ? "degraded" : threatStatus.configured ? "configured" : "unconfigured",
+        paidRequests: paidRequestsAvailable ? "available" : "unavailable"
       }
     });
   }));
@@ -79,25 +90,35 @@ export function createApp(options: {
   }));
 
   const gate = concurrencyGate(options.maxInFlight);
+  const paid = new PaidRouteIntegration(options.gateway, options.paidRequests, options.circleTransfers, options.executionLeaseMs);
+  paid.installGatewayHooks();
 
-  app.get("/v1/package/risk", validatePackage, gate, options.gateway.require("$0.005"), asyncRoute(async (req, res) => {
-    const input = packageQuery.parse(req.query);
-    res.json(await options.omni.packageRisk(input.ecosystem, input.name, input.version));
+  app.get("/v1/package/risk", validatePackage, gate, paid.route({
+    route: "package",
+    price: "$0.005",
+    parse: req => packageQuery.parse(req.query),
+    execute: input => options.omni.packageRisk(input.ecosystem, input.name, input.version)
   }));
 
-  app.get("/v1/repo/risk", validateRepo, gate, options.gateway.require("$0.01"), asyncRoute(async (req, res) => {
-    const input = repoQuery.parse(req.query);
-    res.json(await options.omni.repositoryRisk(input.owner, input.repo));
+  app.get("/v1/repo/risk", validateRepo, gate, paid.route({
+    route: "repository",
+    price: "$0.01",
+    parse: req => repoQuery.parse(req.query),
+    execute: input => options.omni.repositoryRisk(input.owner, input.repo)
   }));
 
-  app.post("/v1/dependencies/risk", validateDependencies, gate, options.gateway.require("$0.05"), asyncRoute(async (req, res) => {
-    const input = dependenciesBody.parse(req.body);
-    res.json(await options.omni.dependenciesRisk(input.packages));
+  app.post("/v1/dependencies/risk", validateDependencies, gate, paid.route({
+    route: "dependencies",
+    price: "$0.05",
+    parse: req => dependenciesBody.parse(req.body),
+    execute: input => options.omni.dependenciesRisk(input.packages)
   }));
 
-  app.get("/v1/x402/endpoint/preflight", validateEndpoint, gate, options.gateway.require("$0.01"), asyncRoute(async (req, res) => {
-    const input = endpointQuery.parse(req.query);
-    res.json(await options.omni.endpointPreflight(input.url));
+  app.get("/v1/x402/endpoint/preflight", validateEndpoint, gate, paid.route({
+    route: "endpoint_preflight",
+    price: "$0.01",
+    parse: req => endpointQuery.parse(req.query),
+    execute: input => options.omni.endpointPreflight(input.url)
   }));
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

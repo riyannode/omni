@@ -27,10 +27,10 @@ paths:
     get:
       operationId: getReadiness
       summary: Report whether this replica can accept paid API requests.
-      description: History storage is non-blocking for core assessments, so a degraded history store is reported under dependencies without changing the top-level ready status.
+      description: History storage is non-blocking for core assessments, but the durable paid-request store is required before this replica can accept paid API requests.
       responses:
         '200':
-          description: This replica can accept paid API requests.
+          description: This replica can accept paid API requests when status is ready.
           content:
             application/json:
               schema:
@@ -43,16 +43,37 @@ paths:
                   dependencies:
                     type: object
                     additionalProperties: false
-                    required: [historyStore, threatIntelligence]
+                    required: [historyStore, threatIntelligence, paidRequests]
                     properties:
                       historyStore: { type: string, enum: [available, degraded] }
                       threatIntelligence: { type: string, enum: [configured, unconfigured, degraded] }
+                      paidRequests: { type: string, const: available }
+        '503':
+          description: This replica cannot safely accept paid API requests because the durable paid-request store is unavailable.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [service, status, dependencies]
+                properties:
+                  service: { type: string, const: OMNI }
+                  status: { type: string, const: degraded }
+                  dependencies:
+                    type: object
+                    additionalProperties: false
+                    required: [historyStore, threatIntelligence, paidRequests]
+                    properties:
+                      historyStore: { type: string, enum: [available, degraded] }
+                      threatIntelligence: { type: string, enum: [configured, unconfigured, degraded] }
+                      paidRequests: { type: string, const: unavailable }
   /v1/package/risk:
     get:
       operationId: getPackageRisk
       summary: Assess an exact package version before an agent installs it.
       description: "Price: $0.005 USDC per request. npm assessments combine vulnerability/exploitation evidence with registry supply-chain metadata and optional licensed threat-intelligence matches."
       parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
         - { in: query, name: ecosystem, required: true, schema: { type: string, minLength: 1, maxLength: 32 }, example: npm }
         - { in: query, name: name, required: true, schema: { type: string, minLength: 1, maxLength: 256 }, example: express }
         - { in: query, name: version, required: true, schema: { type: string, minLength: 1, maxLength: 128 }, example: 5.2.1 }
@@ -63,14 +84,16 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RiskAssessment' }
         '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
-        '503': { $ref: '#/components/responses/OverCapacity' }
+        '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
   /v1/repo/risk:
     get:
       operationId: getRepositoryRisk
       summary: Assess GitHub repository security practices.
       description: "Price: $0.01 USDC per request."
       parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
         - { in: query, name: owner, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_.-]{1,100}$' }, example: expressjs }
         - { in: query, name: repo, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_.-]{1,100}$' }, example: express }
       responses:
@@ -80,13 +103,16 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RiskAssessment' }
         '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
-        '503': { $ref: '#/components/responses/OverCapacity' }
+        '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
   /v1/dependencies/risk:
     post:
       operationId: assessDependencies
       summary: Assess up to 100 exact dependency versions.
       description: "Price: $0.05 USDC per request. Packages are evaluated in bounded waves to protect upstream capacity."
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
       requestBody:
         required: true
         content:
@@ -108,14 +134,16 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DependencyAssessment' }
         '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
-        '503': { $ref: '#/components/responses/OverCapacity' }
+        '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
   /v1/x402/endpoint/preflight:
     get:
       operationId: preflightX402Endpoint
       summary: Assess an x402 endpoint before an agent decides to call or pay it.
       description: "Price: $0.01 USDC per request. Combines Circle Discovery identity, constrained unpaid handshake evidence, OMNI change history, payout configuration drift, and licensed IOC matches when configured. Listed non-GET endpoints are not invoked."
       parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
         - { in: query, name: url, required: true, schema: { type: string, format: uri, maxLength: 2048 } }
       responses:
         '200':
@@ -124,9 +152,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/X402EndpointPreflight' }
         '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
-        '503': { $ref: '#/components/responses/OverCapacity' }
+        '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
 components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Identifies one logical paid OMNI request. It must be a UUID v4 and must be reused unchanged for retries. Reusing it for different validated input returns a conflict.
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89a-fA-F][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
   responses:
     InvalidRequest:
       description: Request failed validation before payment was accepted.
@@ -139,8 +178,13 @@ components:
         PAYMENT-REQUIRED:
           required: true
           schema: { type: string }
-    OverCapacity:
-      description: Replica admission limit reached before payment was accepted.
+    IdempotencyConflict:
+      description: The Idempotency-Key is already bound to different validated route input.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PaidRequestUnavailable:
+      description: Replica admission capacity is exhausted, or durable paid-request state/recovery is unavailable. The server fails closed and does not create another payment.
       headers:
         Retry-After:
           schema: { type: string, example: '1' }

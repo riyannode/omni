@@ -6,6 +6,8 @@
 
 All four endpoints require x402 payment per request.
 
+Paid calls also require an `Idempotency-Key` header containing a UUID v4. Reuse the same value when retrying one logical request; using it with different validated input returns a conflict. Completed results replay without another payment, and already-paid incomplete requests recover without another payment.
+
 - [GET /v1/package/risk](https://omni.example.com/v1/package/risk): package risk assessment ($0.005 USDC). Query: `ecosystem`, `name`, `version`.
 - [GET /v1/repo/risk](https://omni.example.com/v1/repo/risk): repository risk assessment ($0.01 USDC). Query: `owner`, `repo`.
 - [POST /v1/dependencies/risk](https://omni.example.com/v1/dependencies/risk): per-package assessment for up to 100 packages plus an aggregate summary ($0.05 USDC). Body: `packages[]`.
