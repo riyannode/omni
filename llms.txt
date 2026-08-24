@@ -21,13 +21,19 @@ All four endpoints require x402 payment per request.
 
 ## x402 endpoint preflight workflow
 
-1. Run preflight on the target resource URL before your agent calls or pays it.
-2. The response includes `preflightContext.resource` and `preflightContext.paymentOptions`: every payment option observed from Circle Discovery (`scheme`, `network`, `amount`, `asset`, `payTo`, and `maxTimeoutSeconds` as observed; absent fields are omitted). Observed Circle Gateway metadata is retained under `extra.name`, `extra.version`, and `extra.verifyingContract` when present.
-3. After receiving an actual HTTP 402 response from the target, pass its official `PaymentRequired` resource object and the one selected `PaymentRequirements` entry from `accepts[]` to the local consistency helper. It compares `paymentRequired.resource.url` with `preflightContext.resource` and never compares unrelated `ResourceInfo` fields.
-4. x402 `PaymentRequirements.amount` is an atomic-unit string. Numeric canonicalization accepts only `^\d+$`; leading zeros may normalize, while decimal fractions and exponent notation never match an integer amount.
-5. Consistency outcomes: `match` means the actual requirements match one complete previously observed option; `repreflight_required` means the challenge differs from or postdates the observation; `insufficient_context` means too little was observed to compare meaningfully.
-6. A mismatching or stale challenge should trigger a fresh preflight — never automatically mutate or settle a payment.
-7. A `match` means only that the payment requirements match the previously observed configuration. It does NOT mean risk-free, sanctioned-clean, authorized, or guaranteed safe.
+1. Discover the intended target.
+2. Request an OMNI preflight for the target resource URL before your agent calls or pays it.
+3. Inspect `recommendation`, `evidenceCoverage`, `signals`, `evidence`, `sourceErrors`, and `freshness`.
+4. Obtain the actual HTTP 402 `PaymentRequired` challenge from the target.
+5. Compare the selected `PaymentRequirements` from `accepts[]` with OMNI's `preflightContext.paymentOptions` using the local consistency helper.
+6. Apply caller/user/runtime wallet policy to the assessment and consistency result.
+7. Pay only if local policy allows; the wallet/runtime enforces that decision and Circle performs settlement.
+
+The response includes `preflightContext.resource` and `preflightContext.paymentOptions`: every payment option observed from Circle Discovery (`scheme`, `network`, `amount`, `asset`, `payTo`, and `maxTimeoutSeconds` as observed; absent fields are omitted). Observed Circle Gateway metadata is retained under `extra.name`, `extra.version`, and `extra.verifyingContract` when present.
+
+The consistency model is `preflight observation → actual selected PaymentRequirements / 402 challenge → consistency comparison → match | repreflight_required | insufficient_context → caller policy → wallet enforcement`. A mismatching or stale challenge requires a fresh assessment or caller-side denial before automatic payment.
+
+x402 `PaymentRequirements.amount` is an atomic-unit string. Numeric canonicalization accepts only `^\d+$`; leading zeros may normalize, while decimal fractions and exponent notation never match an integer amount. A `match` means only that the payment requirements match one complete previously observed option. It does NOT mean risk-free, sanctioned-clean, authorized, or guaranteed safe. OMNI does not authorize payment.
 
 ## Machine-readable references
 
