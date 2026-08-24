@@ -20,7 +20,9 @@ export const BuyerPolicyReason = {
   ASSET_NOT_ALLOWED: "ASSET_NOT_ALLOWED",
   AMOUNT_INVALID: "AMOUNT_INVALID",
   MAXIMUM_AMOUNT_INVALID: "MAXIMUM_AMOUNT_INVALID",
-  AMOUNT_EXCEEDS_LIMIT: "AMOUNT_EXCEEDS_LIMIT"
+  AMOUNT_EXCEEDS_LIMIT: "AMOUNT_EXCEEDS_LIMIT",
+  POLICY_INVALID: "POLICY_INVALID",
+  EVIDENCE_COVERAGE_INVALID: "EVIDENCE_COVERAGE_INVALID"
 } as const;
 
 export type BuyerPolicy = {
@@ -61,6 +63,10 @@ export function evaluatePurchase(input: PurchaseEvaluation): PurchaseDecision {
     return decision("RE_PREFLIGHT", BuyerPolicyReason.CONSISTENCY_INSUFFICIENT_CONTEXT);
   }
 
+  if (!Number.isFinite(input.policy.minimumEvidenceCoverage) || input.policy.minimumEvidenceCoverage < 0 || input.policy.minimumEvidenceCoverage > 1) {
+    return decision("DENY", BuyerPolicyReason.POLICY_INVALID);
+  }
+
   const recommendation = input.preflight.recommendation;
   if (recommendation === "do_not_proceed") {
     return decision("DENY", BuyerPolicyReason.RECOMMENDATION_DO_NOT_PROCEED);
@@ -72,7 +78,11 @@ export function evaluatePurchase(input: PurchaseEvaluation): PurchaseDecision {
     return decision("DENY", BuyerPolicyReason.RECOMMENDATION_NOT_ALLOWED);
   }
 
-  if (!Number.isFinite(input.preflight.evidenceCoverage) || input.preflight.evidenceCoverage < input.policy.minimumEvidenceCoverage) {
+  const evidenceCoverage = input.preflight.evidenceCoverage;
+  if (!Number.isFinite(evidenceCoverage) || evidenceCoverage < 0 || evidenceCoverage > 1) {
+    return decision("DENY", BuyerPolicyReason.EVIDENCE_COVERAGE_INVALID);
+  }
+  if (evidenceCoverage < input.policy.minimumEvidenceCoverage) {
     return decision("MANUAL_REVIEW", BuyerPolicyReason.EVIDENCE_COVERAGE_TOO_LOW);
   }
   if (!input.policy.allowedNetworks.includes(input.requirements.network)) {

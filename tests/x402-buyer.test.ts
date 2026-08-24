@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
-import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
+import type { PaymentRequirements } from "@x402/core/types";
 import type { RiskAssessment } from "../src/domain/risk.ts";
 import type { X402EndpointPreflight } from "../src/domain/x402-preflight-consistency.ts";
 import { runX402Buyer, type X402BuyerOptions } from "../src/x402-buyer.ts";
@@ -67,9 +67,9 @@ function preflight(resource: string, option: PaymentRequirements, overrides: Par
   };
 }
 
-async function startTarget(accepts: PaymentRequirements[], resource: () => string): Promise<{ url: string; close: () => Promise<void> }> {
+async function startTarget(accepts: PaymentRequirements[], resource: () => string, paymentRequiredOverride?: unknown): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createServer((_request, response) => {
-    const paymentRequired: PaymentRequired = {
+    const paymentRequired = paymentRequiredOverride ?? {
       x402Version: 2,
       resource: { url: resource() },
       accepts
@@ -97,6 +97,27 @@ afterEach(async () => {
 });
 
 describe("reference x402 buyer flow", () => {
+  test("malformed actual 402 is denied without reaching consistency or payment", async () => {
+    const target = await startTarget([], () => target.url, {
+      x402Version: 2,
+      accepts: [{ scheme: "exact" }]
+    });
+    let paymentCalls = 0;
+
+    const result = await runX402Buyer(target.url, {
+      getPreflight: async resource => preflight(resource, requirements()),
+      selectPaymentRequirements: accepts => accepts[0],
+      policy: buyerPolicy(),
+      payTarget: async () => {
+        paymentCalls += 1;
+        return new Response("unexpected", { status: 200 });
+      }
+    });
+
+    expect(result.decision).toEqual({ status: "DENY", reasons: ["INVALID_PAYMENT_REQUIRED"] });
+    expect(paymentCalls).toBe(0);
+  });
+
   test("Flow A: matching actual 402 reaches ALLOW and calls payment once", async () => {
     const offered = requirements();
     const target = await startTarget([offered], () => target.url);

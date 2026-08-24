@@ -53,4 +53,8 @@ Network and asset checks are caller-owned. Atomic amounts are validated with the
 
 The selector must return the exact `PaymentRequirements` object from the parsed `PaymentRequired.accepts[]` array. The reference caller does not synthesize, rewrite, cross-combine, or automatically switch payment options.
 
+Malformed decoded `PaymentRequired` data and invalid policy/evidence-coverage ranges fail closed as `DENY`; they never reach `payTarget()`.
+
+The reference buyer runs in the caller/runtime and performs the target request directly; it is not an OMNI proxy. OMNI's existing `X402Probe` remains responsible for server-side preflight endpoint safety, including HTTPS and private/link-local address rejection. A production caller should apply its own target allowlist/network policy before passing a target to this reference flow; this module intentionally does not duplicate OMNI probe logic or silently rewrite the target.
+
 `checkX402ChallengeAgainstPreflight()` remains the authoritative implementation for preflight freshness, resource matching, offered-entry membership, atomic amount normalization, EVM address comparison, and Circle Gateway metadata consistency. OMNI scoring and seller middleware remain unchanged. Wallet authorization, signing, and settlement stay in the external caller/payment layer.

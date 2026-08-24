@@ -152,4 +152,18 @@ describe("caller-side x402 purchase policy", () => {
   test("leading-zero atomic amount compares canonically without floating point", () => {
     expect(decision({ requirements: { amount: "010000" } })).toEqual({ status: "ALLOW", reasons: [] });
   });
+
+  test("invalid evidence coverage is denied", () => {
+    for (const evidenceCoverage of [Number.NaN, -0.01, 1.01]) {
+      const result = decision({ assessment: { evidenceCoverage } });
+      expectStatus(result, "DENY", BuyerPolicyReason.EVIDENCE_COVERAGE_INVALID);
+    }
+  });
+
+  test("invalid minimum evidence threshold is denied", () => {
+    for (const minimumEvidenceCoverage of [Number.NaN, -0.01, 1.01]) {
+      const result = decision({ policy: { minimumEvidenceCoverage } });
+      expectStatus(result, "DENY", BuyerPolicyReason.POLICY_INVALID);
+    }
+  });
 });
