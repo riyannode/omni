@@ -33,7 +33,7 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 | `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
 | `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
 
-Request path: **validate → admission control → Circle payment gate → cached evidence → RiskEngine → JSON**. Validation/capacity failures occur before payment.
+Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
 ## Data sources
 
@@ -81,6 +81,6 @@ Buyer clients can compare the selected official x402 `PaymentRequirements` from 
 
 ## Maturity
 
-This repository is a **production-shaped MVP**, not a proven production deployment. The API/payment architecture is real, but production readiness still requires licensed threat-feed contracts, distributed observability, durable paid-request recovery/idempotency, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Production readiness still requires real Circle testnet E2E across the paid routes, licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
 
 See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.

@@ -67,3 +67,27 @@ Agent / Runtime ───────► OMNI HTTP interface
 For x402, the caller compares the OMNI preflight observation with the actual selected `PaymentRequirements` from the HTTP 402 challenge before applying local policy. A match is consistency evidence only. A stale or mismatched result should lead to re-preflight or caller-side denial; insufficient context must not be treated as a match.
 
 `RiskEngine` is authoritative only for the deterministic OMNI assessment. It is not authoritative for user spending authorization, wallet execution, settlement, or user-specific utility/economic-value decisions. No wallet logic belongs in `OmniIntelligence` or `RiskEngine`.
+
+## Paid request recovery
+
+Paid routes require a caller-supplied UUID v4 `Idempotency-Key`. The validated request is fingerprinted and, once a payment signature is present, reserved atomically in PostgreSQL. The payment-attempt identity and EIP-3009 nonce are persisted before the official Circle Gateway middleware can settle.
+
+```text
+validated request
+        ↓
+durable logical request reservation
+        ↓
+persist EIP-3009 nonce / payment-attempt identity
+        ↓
+official Circle settlement
+        ↓
+persist Circle transfer identity / paid state
+        ↓
+OmniIntelligence
+        ↓
+durable final JSON result
+        ↓
+completed → replay result
+```
+
+Recovery is explicit: `completed` replays; `paid` or stale `running` resumes without payment; `settling` or `recovery_pending` reconciles with Circle by nonce. An exact accepted transfer marks the request paid and resumes execution. Unknown, ambiguous, mismatching, unavailable, or failed recovery never initiates another settlement.

@@ -55,6 +55,28 @@ CREATE INDEX IF NOT EXISTS assessment_records_subject_time ON assessment_records
 CREATE INDEX IF NOT EXISTS assessment_records_policy ON assessment_records (policy_version);
 CREATE INDEX IF NOT EXISTS assessment_records_assessed_at ON assessment_records (assessed_at DESC);
 
+CREATE TABLE IF NOT EXISTS paid_requests (
+  idempotency_key uuid PRIMARY KEY,
+  request_fingerprint text NOT NULL,
+  route text NOT NULL,
+  state text NOT NULL DEFAULT 'waiting_payment' CHECK (state IN ('waiting_payment', 'settling', 'paid', 'running', 'completed', 'recovery_pending')),
+  payment_nonce text,
+  circle_transfer_id text,
+  payer text,
+  network text,
+  pay_to text,
+  asset text,
+  amount_atomic text,
+  final_result jsonb,
+  final_status integer NOT NULL DEFAULT 200 CHECK (final_status BETWEEN 200 AND 299),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  execution_lease_at timestamptz,
+  execution_lease_id uuid
+);
+CREATE INDEX IF NOT EXISTS paid_requests_state_updated ON paid_requests (state, updated_at);
+CREATE INDEX IF NOT EXISTS paid_requests_nonce ON paid_requests (payment_nonce) WHERE payment_nonce IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS assessment_labels (
   assessment_id uuid PRIMARY KEY REFERENCES assessment_records(assessment_id) ON DELETE CASCADE,
   label text NOT NULL CHECK (label IN ('benign', 'incident')),

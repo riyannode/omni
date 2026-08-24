@@ -12,6 +12,8 @@ import { CircleDiscoveryProvider } from "./providers/circle-discovery.ts";
 import { X402Probe } from "./providers/x402-probe.ts";
 import { UpstreamHttp } from "./providers/http.ts";
 import { createCircleGateway } from "./payments/circle.ts";
+import { CircleTransferLookup } from "./payments/circle-transfers.ts";
+import { createPaidRequestStore } from "./data/paid-requests.ts";
 import { OmniIntelligence } from "./services.ts";
 import { createApp } from "./http/app.ts";
 
@@ -27,7 +29,9 @@ const omni = new OmniIntelligence(
   circle, new X402Probe(http, config.allowedEndpointHosts), history, threatIntel, assessmentJournal
 );
 const gateway = createCircleGateway(config.SELLER_ADDRESS as `0x${string}`, config.CIRCLE_FACILITATOR_URL);
-const app = createApp({ omni, history, threatIntel, gateway, maxInFlight: config.MAX_IN_FLIGHT, publicBaseUrl: config.PUBLIC_BASE_URL });
+const paidRequests = createPaidRequestStore(config.DATABASE_URL);
+const circleTransfers = new CircleTransferLookup(config.CIRCLE_FACILITATOR_URL, config.UPSTREAM_TIMEOUT_MS);
+const app = createApp({ omni, history, threatIntel, gateway, paidRequests, circleTransfers, maxInFlight: config.MAX_IN_FLIGHT, publicBaseUrl: config.PUBLIC_BASE_URL });
 
 const server = app.listen(config.PORT, () => console.log(JSON.stringify({ level: "info", service: "OMNI", port: config.PORT })));
 server.keepAliveTimeout = 65_000;

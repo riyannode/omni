@@ -42,7 +42,7 @@ OMNI does not authorize or execute a payment. Its assessment and recommendation 
 - x402 buyers before authorizing an Agent Wallet payment
 - CI and agent platforms that need a deterministic policy input
 
-## v0.2 intelligence planes
+## Intelligence planes
 
 ### Supply chain
 OSV + CISA KEV + npm registry metadata + OpenSSF Scorecard + optional licensed package IOC feeds.
@@ -143,6 +143,6 @@ In this example, `manual_review` and `do_not_proceed` do not auto-pay. The walle
 2. At least one licensed commercial threat-intelligence source in production.
 3. Historical x402 drift tested against known provider changes.
 4. False-positive/false-negative evaluation set for risk reason codes.
-5. Durable post-payment result/idempotency design.
+5. Durable post-payment result/idempotency behavior is verified against the PostgreSQL-backed recovery path.
 6. p95/p99 and saturation metrics under measured load.
 7. A real wallet/runtime integration demonstrates: discover endpoint → OMNI preflight → actual HTTP 402 challenge → consistency check → local policy enforcement → Circle payment or deterministic deny/re-preflight. The integration exercises a successful match/pay path, a mismatch/re-preflight path, and a deny/manual-review path.
