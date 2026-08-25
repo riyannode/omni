@@ -45,7 +45,7 @@ function assessment(overrides: Partial<RiskAssessment> = {}): RiskAssessment {
     evidence: [],
     sourceErrors: [],
     assessedAt: "2026-08-24T00:00:00.000Z",
-    freshness: { oldestEvidenceAt: null, newestEvidenceAt: null, expiresAt: "2026-08-25T00:00:00.000Z" },
+    freshness: { oldestEvidenceAt: null, newestEvidenceAt: null, expiresAt: "2099-01-01T00:00:00.000Z" },
     ...overrides
   };
 }

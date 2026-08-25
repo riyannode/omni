@@ -90,6 +90,7 @@ paths:
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
   /v1/repo/risk:
     get:
       operationId: getRepositoryRisk
@@ -112,6 +113,7 @@ paths:
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
   /v1/dependencies/risk:
     post:
       operationId: assessDependencies
@@ -146,6 +148,7 @@ paths:
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
   /v1/x402/endpoint/preflight:
     get:
       operationId: preflightX402Endpoint
@@ -167,6 +170,7 @@ paths:
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
 components:
   parameters:
     Accept:
@@ -200,6 +204,11 @@ components:
           schema: { type: string }
     IdempotencyConflict:
       description: The Idempotency-Key is already bound to different validated route input.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotAcceptable:
+      description: The requested response representation is not supported or has zero acceptable quality.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

@@ -35,7 +35,7 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 
 Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
-Successful paid results are canonical structured JSON. The default response, `Accept: application/json`, and `Accept: */*` return JSON; callers that send `Accept: text/markdown` receive a deterministic human-readable rendering of the same result. The representation is selected at the HTTP response seam, `Vary: Accept` is returned, and replaying a completed request in another representation does not execute or settle again. Payment errors remain JSON.
+Successful paid results are canonical structured JSON. The default response, `Accept: application/json`, and `Accept: */*` return JSON; callers that send `Accept: text/markdown` receive a deterministic human-readable rendering of the same result. Unsupported or zero-quality `Accept` values return HTTP 406 before payment. The representation is selected at the HTTP response seam, `Vary: Accept` is returned, and replaying a completed request in another representation does not execute or settle again. Payment errors remain JSON.
 
 ## Data sources
 

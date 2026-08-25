@@ -9,7 +9,7 @@ import type {
   PaymentMetadata
 } from "../data/paid-requests.ts";
 import { CircleTransferLookup, type ExpectedTransfer } from "../payments/circle-transfers.ts";
-import { sendResult } from "./result-representation.ts";
+import { negotiateResultRepresentation, sendResult } from "./result-representation.ts";
 
 const IDEMPOTENCY_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_EXECUTION_LEASE_MS = 30_000;
@@ -223,6 +223,11 @@ export class PaidRouteIntegration {
       sendError(res, 400, "idempotency_key_invalid");
       return;
     }
+    const accept = req.headers.accept;
+    if (negotiateResultRepresentation(accept) === undefined) {
+      sendError(res, 406, "not_acceptable");
+      return;
+    }
     const idempotencyKey = readIdempotencyKey(req)!;
     const requestFingerprint = fingerprint(spec.route, req.method, input);
     const paymentPresent = isPaymentSignaturePresent(req);
@@ -243,11 +248,11 @@ export class PaidRouteIntegration {
       return;
     }
     if (existing?.state === "completed") {
-      this.replay(existing, res, req.headers.accept);
+      this.replay(existing, res, accept);
       return;
     }
     if (existing?.state === "paid" || existing?.state === "running") {
-      await this.resume(existing, input, spec, res, req.headers.accept);
+      await this.resume(existing, input, spec, res, accept);
       return;
     }
     if (existing?.state === "settling" || existing?.state === "recovery_pending") {
@@ -268,11 +273,11 @@ export class PaidRouteIntegration {
             return;
           }
           if (current?.state === "completed") {
-            this.replay(current, res, req.headers.accept);
+            this.replay(current, res, accept);
             return;
           }
           if (current?.state === "paid" || current?.state === "running") {
-            await this.resume(current, input, spec, res, req.headers.accept);
+            await this.resume(current, input, spec, res, accept);
             return;
           }
           sendError(res, 409, "request_in_progress", true);
@@ -296,7 +301,7 @@ export class PaidRouteIntegration {
         await this.invokeGatewayForClaimedRequest(spec, input, existing.idempotencyKey, existing.requestFingerprint, req, res, next);
         return;
       }
-      await this.reconcile(existing, input, spec, res, req.headers.accept);
+      await this.reconcile(existing, input, spec, res, accept);
       return;
     }
     if (!paymentPresent) {
@@ -316,7 +321,7 @@ export class PaidRouteIntegration {
       return;
     }
     if (reservation.request.state === "completed") {
-      this.replay(reservation.request, res, req.headers.accept);
+      this.replay(reservation.request, res, accept);
       return;
     }
     let claimed: boolean;

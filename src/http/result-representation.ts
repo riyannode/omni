@@ -34,17 +34,44 @@ function acceptedQuality(accept: string, mediaType: string): { quality: number; 
   return best;
 }
 
-export function negotiateResultRepresentation(accept: string | undefined): ResultRepresentation {
+export function negotiateResultRepresentation(accept: string | undefined): ResultRepresentation | undefined {
   if (!accept) return "json";
   const json = acceptedQuality(accept, JSON_MEDIA_TYPE);
   const markdown = acceptedQuality(accept, MARKDOWN_MEDIA_TYPE);
+  if (json.quality === 0 && markdown.quality === 0) return undefined;
   if (markdown.quality > json.quality) return "markdown";
   return "json";
 }
 
+function longestBacktickRun(value: string): number {
+  let longest = 0;
+  let current = 0;
+  for (const character of value) {
+    if (character === "`") {
+      current += 1;
+      longest = Math.max(longest, current);
+    } else {
+      current = 0;
+    }
+  }
+  return longest;
+}
+
+function codeSpan(value: string): string {
+  const fence = "`".repeat(longestBacktickRun(value) + 1);
+  return `${fence}${value}${fence}`;
+}
+
+function codeBlock(value: string, language: string): string {
+  const fence = "`".repeat(Math.max(3, longestBacktickRun(value) + 1));
+  return `${fence}${language}\n${value}\n${fence}`;
+}
+
 function inline(value: unknown): string {
-  if (typeof value === "string") return `\`${value.replaceAll("`", "\\`").replaceAll("\n", " ")}\``;
-  return `\`${JSON.stringify(value)}\``;
+  const text = typeof value === "string"
+    ? value.replaceAll(/[\r\n]+/g, " ")
+    : JSON.stringify(value) ?? String(value);
+  return codeSpan(text);
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -106,11 +133,13 @@ function renderDependencySummary(result: Record<string, unknown>, lines: string[
   }
   const packages = Array.isArray(result.packages) ? result.packages : [];
   if (packages.length > 0) {
-    lines.push("", "## Package assessments", "", "| Subject | Risk score | Recommendation |", "| --- | ---: | --- |");
+    lines.push("", "## Package assessments", "");
     for (const packageResult of packages) {
       const item = object(packageResult);
       const subject = item ? object(item.subject) : undefined;
-      if (item && subject) lines.push(`| ${inline(subject.id)} | ${inline(item.riskScore)} | ${inline(item.recommendation)} |`);
+      if (item && subject) {
+        lines.push(`- Subject: ${inline(subject.id)}`, `  - Risk score: ${inline(item.riskScore)}`, `  - Recommendation: ${inline(item.recommendation)}`);
+      }
     }
   }
 }
@@ -122,13 +151,19 @@ export function renderResultAsMarkdown(result: unknown): string {
   else if (record?.packages !== undefined && record?.summary !== undefined) renderDependencySummary(record, lines);
   else lines.push("# OMNI Result", "");
 
-  lines.push("", "## Canonical JSON", "", "```json", JSON.stringify(result, null, 2).replaceAll("```", "``\\`"), "```", "");
+  const canonicalJson = JSON.stringify(result, null, 2) ?? "null";
+  lines.push("", "## Canonical JSON", "", codeBlock(canonicalJson, "json"), "");
   return lines.join("\n");
 }
 
 export function sendResult(res: Response, status: number, result: unknown, accept: string | undefined): void {
   res.vary("Accept");
-  if (negotiateResultRepresentation(accept) === "markdown") {
+  const representation = negotiateResultRepresentation(accept);
+  if (representation === undefined) {
+    res.status(406).json({ error: "not_acceptable", retryable: false });
+    return;
+  }
+  if (representation === "markdown") {
     res.status(status).type(MARKDOWN_MEDIA_TYPE).send(renderResultAsMarkdown(result));
     return;
   }

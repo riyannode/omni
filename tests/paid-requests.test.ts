@@ -13,7 +13,7 @@ import type { ThreatIntelStore } from "../src/data/threat-intel.ts";
 import type { OmniIntelligence } from "../src/services.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
-import { renderResultAsMarkdown } from "../src/http/result-representation.ts";
+import { renderResultAsMarkdown, negotiateResultRepresentation } from "../src/http/result-representation.ts";
 
 const SELLER = "0x1111111111111111111111111111111111111111";
 const PAYER = "0x2222222222222222222222222222222222222222";
@@ -471,6 +471,42 @@ describe("paid request idempotency", () => {
     expect(noAccept.headers.get("vary")).toContain("Accept");
     expect(await explicitJson.json()).toMatchObject({ subject: { type: "package" } });
     expect(await wildcard.json()).toMatchObject({ subject: { type: "package" } });
+  });
+
+  test("rejects unsupported or unacceptable Accept values before payment", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+
+    const unsupported = await packageRequest(url, "11111111-1111-4111-8111-111111111122", { payment: false, accept: "text/html" });
+    const zeroQuality = await packageRequest(url, "11111111-1111-4111-8111-111111111123", { payment: false, accept: "application/json;q=0" });
+
+    expect(unsupported.status).toBe(406);
+    expect(zeroQuality.status).toBe(406);
+    expect(await unsupported.json()).toEqual({ error: "not_acceptable", retryable: false });
+    expect(await zeroQuality.json()).toEqual({ error: "not_acceptable", retryable: false });
+    expect(gateway.settlementCount).toBe(0);
+    expect(store.rows.size).toBe(0);
+  });
+
+  test("uses explicit Accept quality and delimiter-safe Markdown fences", async () => {
+    expect(negotiateResultRepresentation("text/markdown;q=0.9, application/json;q=0.5")).toBe("markdown");
+    expect(negotiateResultRepresentation("text/markdown;q=0.5, application/json;q=0.9")).toBe("json");
+    expect(negotiateResultRepresentation("text/html")).toBeUndefined();
+    expect(negotiateResultRepresentation("text/markdown;q=0")).toBeUndefined();
+
+    const maliciousValue = "pkg`<script>alert(1)</script>```";
+    const markdown = renderResultAsMarkdown({
+      subject: { type: "package", id: maliciousValue },
+      recommendation: "proceed",
+      riskScore: 1,
+      signals: [],
+      sourceErrors: []
+    });
+    const fence = "`".repeat(4);
+    expect(markdown).toContain(`${fence}${maliciousValue}${fence}`);
+    expect(markdown).toContain(`${fence}json`);
   });
 
   test("renders deterministic Markdown from the canonical result without a second payment", async () => {
