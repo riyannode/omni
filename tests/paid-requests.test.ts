@@ -495,7 +495,7 @@ describe("paid request idempotency", () => {
     expect(store.rows.size).toBe(0);
   });
 
-  test("uses explicit Accept quality and delimiter-safe Markdown fences", async () => {
+  test("uses representation mapping and delimiter-safe Markdown code spans", async () => {
     expect(representationFromAccept("markdown")).toBe("markdown");
     expect(representationFromAccept("json")).toBe("json");
     expect(representationFromAccept(false)).toBeUndefined();
@@ -510,7 +510,7 @@ describe("paid request idempotency", () => {
     });
     const fence = "`".repeat(4);
     expect(markdown).toContain(`${fence}${maliciousValue}${fence}`);
-    expect(markdown).toContain(`${fence}json`);
+    expect(markdown).not.toContain("## Canonical JSON");
   });
 
   test("renders deterministic Markdown from the canonical result without a second payment", async () => {

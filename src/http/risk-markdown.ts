@@ -17,11 +17,6 @@ function codeSpan(value: string): string {
   return `${fence}${value}${fence}`;
 }
 
-function codeBlock(value: string, language: string): string {
-  const fence = "`".repeat(Math.max(3, longestBacktickRun(value) + 1));
-  return `${fence}${language}\n${value}\n${fence}`;
-}
-
 function inline(value: unknown): string {
   const text = typeof value === "string"
     ? value.replaceAll(/[\r\n]+/g, " ")
@@ -122,7 +117,5 @@ export function renderRiskMarkdown(result: unknown): string {
   else if (record?.packages !== undefined && record?.summary !== undefined) renderDependencySummary(record, lines);
   else lines.push("# OMNI Result", "");
 
-  const canonicalJson = JSON.stringify(result, null, 2) ?? "null";
-  lines.push("", "## Canonical JSON", "", codeBlock(canonicalJson, "json"), "");
   return lines.join("\n");
 }
