@@ -13,7 +13,8 @@ import type { ThreatIntelStore } from "../src/data/threat-intel.ts";
 import type { OmniIntelligence } from "../src/services.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
-import { renderResultAsMarkdown, negotiateResultRepresentation } from "../src/http/result-representation.ts";
+import { representationFromAccept } from "../src/http/result-representation.ts";
+import { renderRiskMarkdown } from "../src/http/risk-markdown.ts";
 
 const SELLER = "0x1111111111111111111111111111111111111111";
 const PAYER = "0x2222222222222222222222222222222222222222";
@@ -464,10 +465,14 @@ describe("paid request idempotency", () => {
     const noAccept = await packageRequest(url, "11111111-1111-4111-8111-111111111117");
     const explicitJson = await packageRequest(url, "11111111-1111-4111-8111-111111111118", { accept: "application/json" });
     const wildcard = await packageRequest(url, "11111111-1111-4111-8111-111111111119", { accept: "*/*" });
+    const markdownQuality = await packageRequest(url, "11111111-1111-4111-8111-111111111120", { accept: "text/markdown;q=0.9, application/json;q=0.5" });
+    const jsonQuality = await packageRequest(url, "11111111-1111-4111-8111-111111111121", { accept: "text/markdown;q=0.5, application/json;q=0.9" });
 
     expect(noAccept.headers.get("content-type")).toContain("application/json");
     expect(explicitJson.headers.get("content-type")).toContain("application/json");
     expect(wildcard.headers.get("content-type")).toContain("application/json");
+    expect(markdownQuality.headers.get("content-type")).toContain("text/markdown");
+    expect(jsonQuality.headers.get("content-type")).toContain("application/json");
     expect(noAccept.headers.get("vary")).toContain("Accept");
     expect(await explicitJson.json()).toMatchObject({ subject: { type: "package" } });
     expect(await wildcard.json()).toMatchObject({ subject: { type: "package" } });
@@ -491,13 +496,12 @@ describe("paid request idempotency", () => {
   });
 
   test("uses explicit Accept quality and delimiter-safe Markdown fences", async () => {
-    expect(negotiateResultRepresentation("text/markdown;q=0.9, application/json;q=0.5")).toBe("markdown");
-    expect(negotiateResultRepresentation("text/markdown;q=0.5, application/json;q=0.9")).toBe("json");
-    expect(negotiateResultRepresentation("text/html")).toBeUndefined();
-    expect(negotiateResultRepresentation("text/markdown;q=0")).toBeUndefined();
+    expect(representationFromAccept("markdown")).toBe("markdown");
+    expect(representationFromAccept("json")).toBe("json");
+    expect(representationFromAccept(false)).toBeUndefined();
 
     const maliciousValue = "pkg`<script>alert(1)</script>```";
-    const markdown = renderResultAsMarkdown({
+    const markdown = renderRiskMarkdown({
       subject: { type: "package", id: maliciousValue },
       recommendation: "proceed",
       riskScore: 1,
@@ -523,7 +527,7 @@ describe("paid request idempotency", () => {
     expect(markdown.status).toBe(200);
     expect(markdown.headers.get("content-type")).toContain("text/markdown");
     expect(markdown.headers.get("vary")).toContain("Accept");
-    expect(await markdown.text()).toBe(renderResultAsMarkdown(canonical));
+    expect(await markdown.text()).toBe(renderRiskMarkdown(canonical));
     expect(omni.calls).toBe(1);
     expect(gateway.settlementCount).toBe(1);
   });
@@ -546,6 +550,73 @@ describe("paid request idempotency", () => {
     expect(await json.json()).toMatchObject({ subject: { type: "package" }, riskScore: 3, recommendation: "proceed" });
     expect(omni.calls).toBe(1);
     expect(gateway.settlementCount).toBe(1);
+  });
+
+  test("renders dependency and x402 preflight Markdown from their canonical results", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const packageAssessment = {
+      subject: { type: "package", id: "npm:fixture@1.0.0" },
+      recommendation: "proceed",
+      riskScore: 3,
+      evidenceCoverage: 1,
+      dimensions: { packageSupplyChain: "low" },
+      signals: [],
+      evidence: [{ source: "fixture", kind: "registry", observedAt: "2026-08-25T00:00:00.000Z", detail: { verified: true } }],
+      sourceErrors: [],
+      freshness: { oldestEvidenceAt: null, newestEvidenceAt: null }
+    };
+    const omni = {
+      async packageRisk() { return packageAssessment; },
+      async dependenciesRisk() {
+        return {
+          packages: [packageAssessment],
+          summary: { count: 1, worstRiskScore: 3, recommendations: { proceed: 1 } },
+          assessedAt: "2026-08-25T00:00:00.000Z"
+        };
+      },
+      async endpointPreflight() {
+        return {
+          ...packageAssessment,
+          subject: { type: "x402_endpoint", id: "https://example.com/paid" },
+          preflightContext: {
+            resource: "https://example.com/paid",
+            paymentOptions: [{ scheme: "exact", network: NETWORK, amount: "5000", asset: ASSET, payTo: SELLER, maxTimeoutSeconds: 300 }]
+          }
+        };
+      }
+    };
+    const app = createApp({
+      omni: omni as unknown as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: gateway.asGateway(),
+      paidRequests: store,
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32
+    });
+    const { url } = await listen(app);
+    const dependencyResponse = await fetch(`${url}/v1/dependencies/risk`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "Idempotency-Key": "11111111-1111-4111-8111-111111111124", Accept: "text/markdown", "PAYMENT-SIGNATURE": paymentHeader() },
+      body: JSON.stringify({ packages: [PACKAGE_INPUT] })
+    });
+    const endpointResponse = await fetch(`${url}/v1/x402/endpoint/preflight?url=https%3A%2F%2Fexample.com%2Fpaid`, {
+      headers: { "Idempotency-Key": "11111111-1111-4111-8111-111111111125", Accept: "text/markdown", "PAYMENT-SIGNATURE": paymentHeader() }
+    });
+    const dependencyMarkdown = await dependencyResponse.text();
+    const endpointMarkdown = await endpointResponse.text();
+
+    expect(dependencyResponse.status).toBe(200);
+    expect(dependencyMarkdown).toContain("# OMNI Dependency Assessment");
+    expect(dependencyMarkdown).toContain("Package Assessments");
+    expect(dependencyMarkdown).toContain("npm:fixture@1.0.0");
+    expect(endpointResponse.status).toBe(200);
+    expect(endpointMarkdown).toContain("# OMNI Risk Assessment");
+    expect(endpointMarkdown).toContain("Observed Preflight Context");
+    expect(endpointMarkdown).toContain("https://example.com/paid");
+    expect(endpointMarkdown).toContain("not payment authorization");
+    expect(gateway.settlementCount).toBe(2);
   });
 
   test("keeps payment failures in the existing JSON error format", async () => {
