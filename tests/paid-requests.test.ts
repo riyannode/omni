@@ -13,6 +13,8 @@ import type { ThreatIntelStore } from "../src/data/threat-intel.ts";
 import type { OmniIntelligence } from "../src/services.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
+import { representationFromAccept } from "../src/http/result-representation.ts";
+import { renderRiskMarkdown } from "../src/http/risk-markdown.ts";
 
 const SELLER = "0x1111111111111111111111111111111111111111";
 const PAYER = "0x2222222222222222222222222222222222222222";
@@ -336,9 +338,10 @@ function createOmni() {
   return omni;
 }
 
-async function packageRequest(url: string, key: string, options: { payment?: boolean; nonce?: string; version?: string } = {}): Promise<Response> {
+async function packageRequest(url: string, key: string, options: { payment?: boolean; nonce?: string; version?: string; accept?: string } = {}): Promise<Response> {
   const headers: Record<string, string> = { "Idempotency-Key": key };
   if (options.payment !== false) headers["PAYMENT-SIGNATURE"] = paymentHeader(options.nonce);
+  if (options.accept !== undefined) headers.Accept = options.accept;
   return fetch(`${url}/v1/package/risk?ecosystem=npm&name=fixture&version=${encodeURIComponent(options.version ?? "1.0.0")}`, { headers });
 }
 
@@ -451,6 +454,183 @@ describe("paid request idempotency", () => {
     expect(omni.calls).toBe(1);
     expect(gateway.settlementCount).toBe(1);
     expect(replay.headers.get("PAYMENT-RESPONSE")).toBeNull();
+  });
+
+  test("negotiates JSON representations while preserving the default response", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+
+    const noAccept = await packageRequest(url, "11111111-1111-4111-8111-111111111117");
+    const explicitJson = await packageRequest(url, "11111111-1111-4111-8111-111111111118", { accept: "application/json" });
+    const wildcard = await packageRequest(url, "11111111-1111-4111-8111-111111111119", { accept: "*/*" });
+    const markdownQuality = await packageRequest(url, "11111111-1111-4111-8111-111111111120", { accept: "text/markdown;q=0.9, application/json;q=0.5" });
+    const jsonQuality = await packageRequest(url, "11111111-1111-4111-8111-111111111121", { accept: "text/markdown;q=0.5, application/json;q=0.9" });
+
+    expect(noAccept.headers.get("content-type")).toContain("application/json");
+    expect(explicitJson.headers.get("content-type")).toContain("application/json");
+    expect(wildcard.headers.get("content-type")).toContain("application/json");
+    expect(markdownQuality.headers.get("content-type")).toContain("text/markdown");
+    expect(jsonQuality.headers.get("content-type")).toContain("application/json");
+    expect(noAccept.headers.get("vary")).toContain("Accept");
+    expect(await explicitJson.json()).toMatchObject({ subject: { type: "package" } });
+    expect(await wildcard.json()).toMatchObject({ subject: { type: "package" } });
+  });
+
+  test("rejects unsupported or unacceptable Accept values before payment", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+
+    const unsupported = await packageRequest(url, "11111111-1111-4111-8111-111111111122", { payment: false, accept: "text/html" });
+    const zeroQuality = await packageRequest(url, "11111111-1111-4111-8111-111111111123", { payment: false, accept: "application/json;q=0" });
+
+    expect(unsupported.status).toBe(406);
+    expect(zeroQuality.status).toBe(406);
+    expect(await unsupported.json()).toEqual({ error: "not_acceptable", retryable: false });
+    expect(await zeroQuality.json()).toEqual({ error: "not_acceptable", retryable: false });
+    expect(gateway.settlementCount).toBe(0);
+    expect(store.rows.size).toBe(0);
+  });
+
+  test("uses representation mapping and delimiter-safe Markdown code spans", async () => {
+    expect(representationFromAccept("markdown")).toBe("markdown");
+    expect(representationFromAccept("json")).toBe("json");
+    expect(representationFromAccept(false)).toBeUndefined();
+
+    const maliciousValue = "pkg`<script>alert(1)</script>```";
+    const markdown = renderRiskMarkdown({
+      subject: { type: "package", id: maliciousValue },
+      recommendation: "proceed",
+      riskScore: 1,
+      signals: [],
+      sourceErrors: []
+    });
+    const fence = "`".repeat(4);
+    expect(markdown).toContain(`${fence}${maliciousValue}${fence}`);
+    expect(markdown).not.toContain("## Canonical JSON");
+  });
+
+  test("renders deterministic Markdown from the canonical result without a second payment", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const omni = createOmni();
+    const app = createFixture(store, gateway, omni);
+    const { url } = await listen(app);
+
+    const json = await packageRequest(url, "11111111-1111-4111-8111-111111111120");
+    const canonical = await json.json();
+    const markdown = await packageRequest(url, "11111111-1111-4111-8111-111111111120", { payment: false, accept: "text/markdown" });
+
+    expect(markdown.status).toBe(200);
+    expect(markdown.headers.get("content-type")).toContain("text/markdown");
+    expect(markdown.headers.get("vary")).toContain("Accept");
+    expect(await markdown.text()).toBe(renderRiskMarkdown(canonical));
+    expect(omni.calls).toBe(1);
+    expect(gateway.settlementCount).toBe(1);
+  });
+
+  test("replays Markdown first and JSON second from one canonical completed result", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const omni = createOmni();
+    const app = createFixture(store, gateway, omni);
+    const { url } = await listen(app);
+    const key = "11111111-1111-4111-8111-111111111121";
+
+    const markdown = await packageRequest(url, key, { accept: "text/markdown" });
+    const json = await packageRequest(url, key, { payment: false, accept: "application/json" });
+
+    expect(markdown.status).toBe(200);
+    expect(markdown.headers.get("content-type")).toContain("text/markdown");
+    expect(json.status).toBe(200);
+    expect(json.headers.get("content-type")).toContain("application/json");
+    expect(await json.json()).toMatchObject({ subject: { type: "package" }, riskScore: 3, recommendation: "proceed" });
+    expect(omni.calls).toBe(1);
+    expect(gateway.settlementCount).toBe(1);
+  });
+
+  test("renders dependency and x402 preflight Markdown from their canonical results", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const packageAssessment = {
+      subject: { type: "package", id: "npm:fixture@1.0.0" },
+      recommendation: "proceed",
+      riskScore: 3,
+      evidenceCoverage: 1,
+      dimensions: { packageSupplyChain: "low" },
+      signals: [],
+      evidence: [{ source: "fixture", kind: "registry", observedAt: "2026-08-25T00:00:00.000Z", detail: { verified: true } }],
+      sourceErrors: [],
+      freshness: { oldestEvidenceAt: null, newestEvidenceAt: null }
+    };
+    const omni = {
+      async packageRisk() { return packageAssessment; },
+      async dependenciesRisk() {
+        return {
+          packages: [packageAssessment],
+          summary: { count: 1, worstRiskScore: 3, recommendations: { proceed: 1 } },
+          assessedAt: "2026-08-25T00:00:00.000Z"
+        };
+      },
+      async endpointPreflight() {
+        return {
+          ...packageAssessment,
+          subject: { type: "x402_endpoint", id: "https://example.com/paid" },
+          preflightContext: {
+            resource: "https://example.com/paid",
+            paymentOptions: [{ scheme: "exact", network: NETWORK, amount: "5000", asset: ASSET, payTo: SELLER, maxTimeoutSeconds: 300 }]
+          }
+        };
+      }
+    };
+    const app = createApp({
+      omni: omni as unknown as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: gateway.asGateway(),
+      paidRequests: store,
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32
+    });
+    const { url } = await listen(app);
+    const dependencyResponse = await fetch(`${url}/v1/dependencies/risk`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "Idempotency-Key": "11111111-1111-4111-8111-111111111124", Accept: "text/markdown", "PAYMENT-SIGNATURE": paymentHeader() },
+      body: JSON.stringify({ packages: [PACKAGE_INPUT] })
+    });
+    const endpointResponse = await fetch(`${url}/v1/x402/endpoint/preflight?url=https%3A%2F%2Fexample.com%2Fpaid`, {
+      headers: { "Idempotency-Key": "11111111-1111-4111-8111-111111111125", Accept: "text/markdown", "PAYMENT-SIGNATURE": paymentHeader() }
+    });
+    const dependencyMarkdown = await dependencyResponse.text();
+    const endpointMarkdown = await endpointResponse.text();
+
+    expect(dependencyResponse.status).toBe(200);
+    expect(dependencyMarkdown).toContain("# OMNI Dependency Assessment");
+    expect(dependencyMarkdown).toContain("Package Assessments");
+    expect(dependencyMarkdown).toContain("npm:fixture@1.0.0");
+    expect(endpointResponse.status).toBe(200);
+    expect(endpointMarkdown).toContain("# OMNI Risk Assessment");
+    expect(endpointMarkdown).toContain("Observed Preflight Context");
+    expect(endpointMarkdown).toContain("https://example.com/paid");
+    expect(endpointMarkdown).toContain("not payment authorization");
+    expect(gateway.settlementCount).toBe(2);
+  });
+
+  test("keeps payment failures in the existing JSON error format", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    gateway.verificationFailure = true;
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+
+    const response = await packageRequest(url, PACKAGE_KEY, { accept: "text/markdown" });
+
+    expect(response.status).toBe(402);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({ error: "Payment verification failed" });
   });
 
   test("resumes an already-paid request without a new settlement", async () => {

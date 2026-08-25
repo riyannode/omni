@@ -94,6 +94,8 @@ Every assessment returns:
 - raw source-attributed evidence
 - `sourceErrors`
 
+The structured assessment object is the canonical machine-readable result. Paid HTTP callers may request a deterministic Markdown presentation with `Accept: text/markdown`; Markdown is a view of the same assessment and never a second source of truth.
+
 No LLM decides the verdict. Thresholds are policy defaults and must be calibrated against labelled incidents before they are described as predictive probabilities.
 
 ## Purchase-policy boundary
@@ -139,7 +141,7 @@ In this example, `manual_review` and `do_not_proceed` do not auto-pay. The walle
 
 ## Success criteria before v1.0
 
-1. Real Circle testnet paid E2E across every paid route.
+1. Real Arc Testnet x402 paid lifecycle verified across every paid route. Current progress: the tested OMNI paid path has been verified with Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Remaining: real paid acceptance for the remaining paid routes.
 2. At least one licensed commercial threat-intelligence source in production.
 3. Historical x402 drift tested against known provider changes.
 4. False-positive/false-negative evaluation set for risk reason codes.

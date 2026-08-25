@@ -68,6 +68,8 @@ For x402, the caller compares the OMNI preflight observation with the actual sel
 
 `RiskEngine` is authoritative only for the deterministic OMNI assessment. It is not authoritative for user spending authorization, wallet execution, settlement, or user-specific utility/economic-value decisions. No wallet logic belongs in `OmniIntelligence` or `RiskEngine`.
 
+The structured assessment is the canonical result. The HTTP representation seam returns that result as JSON by default or as deterministic Markdown when the caller requests `Accept: text/markdown`; durable storage and replay always retain the structured result, so representation changes never trigger another payment or execution.
+
 ## Paid request recovery
 
 Paid routes require a caller-supplied UUID v4 `Idempotency-Key`. The validated request is fingerprinted and, once a payment signature is present, reserved atomically in PostgreSQL. The payment-attempt identity and EIP-3009 nonce are persisted before the official Circle Gateway middleware can settle.
@@ -91,3 +93,5 @@ completed → replay result
 ```
 
 Recovery is explicit: `completed` replays; `paid` or stale `running` resumes without payment; `settling` or `recovery_pending` reconciles with Circle by nonce. An exact accepted transfer marks the request paid and resumes execution. Unknown, ambiguous, mismatching, unavailable, or failed recovery never initiates another settlement.
+
+Real Arc Testnet x402 paid lifecycle has been verified on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable PostgreSQL persistence, execution, recovery/replay, and Circle transfer reconciliation. Broader route-by-route acceptance, mainnet readiness, multi-chain support, and fleet validation remain separate gates.
