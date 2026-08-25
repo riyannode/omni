@@ -9,6 +9,7 @@ import type {
   PaymentMetadata
 } from "../data/paid-requests.ts";
 import { CircleTransferLookup, type ExpectedTransfer } from "../payments/circle-transfers.ts";
+import { sendResult } from "./result-representation.ts";
 
 const IDEMPOTENCY_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_EXECUTION_LEASE_MS = 30_000;
@@ -242,11 +243,11 @@ export class PaidRouteIntegration {
       return;
     }
     if (existing?.state === "completed") {
-      this.replay(existing, res);
+      this.replay(existing, res, req.headers.accept);
       return;
     }
     if (existing?.state === "paid" || existing?.state === "running") {
-      await this.resume(existing, input, spec, res);
+      await this.resume(existing, input, spec, res, req.headers.accept);
       return;
     }
     if (existing?.state === "settling" || existing?.state === "recovery_pending") {
@@ -267,11 +268,11 @@ export class PaidRouteIntegration {
             return;
           }
           if (current?.state === "completed") {
-            this.replay(current, res);
+            this.replay(current, res, req.headers.accept);
             return;
           }
           if (current?.state === "paid" || current?.state === "running") {
-            await this.resume(current, input, spec, res);
+            await this.resume(current, input, spec, res, req.headers.accept);
             return;
           }
           sendError(res, 409, "request_in_progress", true);
@@ -295,7 +296,7 @@ export class PaidRouteIntegration {
         await this.invokeGatewayForClaimedRequest(spec, input, existing.idempotencyKey, existing.requestFingerprint, req, res, next);
         return;
       }
-      await this.reconcile(existing, input, spec, res);
+      await this.reconcile(existing, input, spec, res, req.headers.accept);
       return;
     }
     if (!paymentPresent) {
@@ -315,7 +316,7 @@ export class PaidRouteIntegration {
       return;
     }
     if (reservation.request.state === "completed") {
-      this.replay(reservation.request, res);
+      this.replay(reservation.request, res, req.headers.accept);
       return;
     }
     let claimed: boolean;
@@ -358,7 +359,7 @@ export class PaidRouteIntegration {
           sendError(res, 503, "recovery_pending", true);
           return;
         }
-        await this.execute(input, spec, idempotencyKey, requestFingerprint, res);
+        await this.execute(input, spec, idempotencyKey, requestFingerprint, res, req.headers.accept);
       });
       if (!context.beforeSettleEntered && !context.paymentNonce) await this.releaseUnsettledAttempt(context);
     });
@@ -378,11 +379,11 @@ export class PaidRouteIntegration {
     }
   }
 
-  private async resume<T extends RouteInput>(request: PaidRequest, input: T, spec: PaidRouteSpec<T>, res: Response): Promise<void> {
-    await this.execute(input, spec, request.idempotencyKey, request.requestFingerprint, res);
+  private async resume<T extends RouteInput>(request: PaidRequest, input: T, spec: PaidRouteSpec<T>, res: Response, accept: string | undefined): Promise<void> {
+    await this.execute(input, spec, request.idempotencyKey, request.requestFingerprint, res, accept);
   }
 
-  private async reconcile<T extends RouteInput>(request: PaidRequest, input: T, spec: PaidRouteSpec<T>, res: Response): Promise<void> {
+  private async reconcile<T extends RouteInput>(request: PaidRequest, input: T, spec: PaidRouteSpec<T>, res: Response, accept: string | undefined): Promise<void> {
     const expected = expectedTransfer(request);
     if (!expected) {
       await this.markRecoveryPending(request, res);
@@ -416,7 +417,7 @@ export class PaidRouteIntegration {
         sendError(res, 503, "recovery_pending", true);
         return;
       }
-      await this.execute(input, spec, paid.idempotencyKey, paid.requestFingerprint, res);
+      await this.execute(input, spec, paid.idempotencyKey, paid.requestFingerprint, res, accept);
       return;
     }
     await this.markRecoveryPending(request, res);
@@ -442,7 +443,7 @@ export class PaidRouteIntegration {
     }
   }
 
-  private async execute<T extends RouteInput>(input: T, spec: PaidRouteSpec<T>, idempotencyKey: string, requestFingerprint: string, res: Response): Promise<void> {
+  private async execute<T extends RouteInput>(input: T, spec: PaidRouteSpec<T>, idempotencyKey: string, requestFingerprint: string, res: Response, accept: string | undefined): Promise<void> {
     let claim: Awaited<ReturnType<PaidRequestStore["claimExecution"]>>;
     try {
       claim = await this.store.claimExecution(idempotencyKey, requestFingerprint, this.executionLeaseMs);
@@ -458,7 +459,7 @@ export class PaidRouteIntegration {
         this.storeUnavailable(res, error, spec.route, idempotencyKey);
         return;
       }
-      if (completed) this.replay(completed, res);
+      if (completed) this.replay(completed, res, accept);
       else sendError(res, 503, "recovery_pending", true);
       return;
     }
@@ -501,7 +502,7 @@ export class PaidRouteIntegration {
     await heartbeat.stop();
     try {
       await this.store.complete(idempotencyKey, requestFingerprint, leaseId, result, 200);
-      res.status(200).json(result);
+      sendResult(res, 200, result, accept);
     } catch (error) {
       try {
         await this.store.releaseExecution(idempotencyKey, requestFingerprint, leaseId);
@@ -562,8 +563,8 @@ export class PaidRouteIntegration {
     };
   }
 
-  private replay(request: PaidRequest, res: Response): void {
-    res.status(request.finalStatus).json(request.finalResult);
+  private replay(request: PaidRequest, res: Response, accept: string | undefined): void {
+    sendResult(res, request.finalStatus, request.finalResult, accept);
   }
 
   private storeUnavailable(res: Response, error: unknown, route: string, idempotencyKey: string): void {

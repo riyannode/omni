@@ -74,6 +74,7 @@ paths:
       description: "Price: $0.005 USDC per request. npm assessments combine vulnerability/exploitation evidence with registry supply-chain metadata and optional licensed threat-intelligence matches."
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/Accept' }
         - { in: query, name: ecosystem, required: true, schema: { type: string, minLength: 1, maxLength: 32 }, example: npm }
         - { in: query, name: name, required: true, schema: { type: string, minLength: 1, maxLength: 256 }, example: express }
         - { in: query, name: version, required: true, schema: { type: string, minLength: 1, maxLength: 128 }, example: 5.2.1 }
@@ -83,6 +84,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RiskAssessment' }
+            text/markdown:
+              schema: { type: string }
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
@@ -94,6 +97,7 @@ paths:
       description: "Price: $0.01 USDC per request."
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/Accept' }
         - { in: query, name: owner, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_.-]{1,100}$' }, example: expressjs }
         - { in: query, name: repo, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_.-]{1,100}$' }, example: express }
       responses:
@@ -102,6 +106,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RiskAssessment' }
+            text/markdown:
+              schema: { type: string }
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
@@ -113,6 +119,7 @@ paths:
       description: "Price: $0.05 USDC per request. Packages are evaluated in bounded waves to protect upstream capacity."
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/Accept' }
       requestBody:
         required: true
         content:
@@ -133,6 +140,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DependencyAssessment' }
+            text/markdown:
+              schema: { type: string }
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
@@ -144,6 +153,7 @@ paths:
       description: "Price: $0.01 USDC per request. Combines Circle Discovery identity, constrained unpaid handshake evidence, OMNI change history, payout configuration drift, and licensed IOC matches when configured. Listed non-GET endpoints are not invoked."
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/Accept' }
         - { in: query, name: url, required: true, schema: { type: string, format: uri, maxLength: 2048 } }
       responses:
         '200':
@@ -151,12 +161,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/X402EndpointPreflight' }
+            text/markdown:
+              schema: { type: string }
         '400': { $ref: '#/components/responses/InvalidRequest' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
 components:
   parameters:
+    Accept:
+      name: Accept
+      in: header
+      required: false
+      description: Response representation. JSON is the canonical default; use text/markdown for a deterministic human-readable view of the same result. Errors remain JSON.
+      schema:
+        type: string
+        default: application/json
     IdempotencyKey:
       name: Idempotency-Key
       in: header

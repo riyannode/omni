@@ -8,6 +8,8 @@ All four endpoints require x402 payment per request.
 
 Paid calls also require an `Idempotency-Key` header containing a UUID v4. Reuse the same value when retrying one logical request; using it with different validated input returns a conflict. Completed results replay without another payment, and already-paid incomplete requests recover without another payment.
 
+The canonical successful result is structured JSON. No `Accept` header, `Accept: application/json`, and `Accept: */*` return JSON. `Accept: text/markdown` returns a deterministic human-readable Markdown rendering of that same canonical result, with `Vary: Accept`; switching representation during replay does not execute or settle again. Payment and other error responses remain JSON.
+
 - [GET /v1/package/risk](https://omni.example.com/v1/package/risk): package risk assessment ($0.005 USDC). Query: `ecosystem`, `name`, `version`.
 - [GET /v1/repo/risk](https://omni.example.com/v1/repo/risk): repository risk assessment ($0.01 USDC). Query: `owner`, `repo`.
 - [POST /v1/dependencies/risk](https://omni.example.com/v1/dependencies/risk): per-package assessment for up to 100 packages plus an aggregate summary ($0.05 USDC). Body: `packages[]`.
@@ -42,6 +44,10 @@ x402 `PaymentRequirements.amount` is an atomic-unit string. Numeric canonicaliza
 - [OpenAPI specification](https://omni.example.com/openapi.yaml)
 - [Health check](https://omni.example.com/health) (process liveness only)
 - [Readiness](https://omni.example.com/ready) (replica can accept paid requests)
+
+## Current paid acceptance
+
+Real Arc Testnet x402 paid lifecycle has been verified on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable PostgreSQL persistence, OMNI execution, recovery/replay, and Circle transfer reconciliation. This is not an exhaustive route-by-route, mainnet, multi-chain, or fleet-capacity claim.
 
 ## Architecture and security
 

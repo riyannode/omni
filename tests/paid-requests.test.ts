@@ -13,6 +13,7 @@ import type { ThreatIntelStore } from "../src/data/threat-intel.ts";
 import type { OmniIntelligence } from "../src/services.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
+import { renderResultAsMarkdown } from "../src/http/result-representation.ts";
 
 const SELLER = "0x1111111111111111111111111111111111111111";
 const PAYER = "0x2222222222222222222222222222222222222222";
@@ -336,9 +337,10 @@ function createOmni() {
   return omni;
 }
 
-async function packageRequest(url: string, key: string, options: { payment?: boolean; nonce?: string; version?: string } = {}): Promise<Response> {
+async function packageRequest(url: string, key: string, options: { payment?: boolean; nonce?: string; version?: string; accept?: string } = {}): Promise<Response> {
   const headers: Record<string, string> = { "Idempotency-Key": key };
   if (options.payment !== false) headers["PAYMENT-SIGNATURE"] = paymentHeader(options.nonce);
+  if (options.accept !== undefined) headers.Accept = options.accept;
   return fetch(`${url}/v1/package/risk?ecosystem=npm&name=fixture&version=${encodeURIComponent(options.version ?? "1.0.0")}`, { headers });
 }
 
@@ -451,6 +453,77 @@ describe("paid request idempotency", () => {
     expect(omni.calls).toBe(1);
     expect(gateway.settlementCount).toBe(1);
     expect(replay.headers.get("PAYMENT-RESPONSE")).toBeNull();
+  });
+
+  test("negotiates JSON representations while preserving the default response", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+
+    const noAccept = await packageRequest(url, "11111111-1111-4111-8111-111111111117");
+    const explicitJson = await packageRequest(url, "11111111-1111-4111-8111-111111111118", { accept: "application/json" });
+    const wildcard = await packageRequest(url, "11111111-1111-4111-8111-111111111119", { accept: "*/*" });
+
+    expect(noAccept.headers.get("content-type")).toContain("application/json");
+    expect(explicitJson.headers.get("content-type")).toContain("application/json");
+    expect(wildcard.headers.get("content-type")).toContain("application/json");
+    expect(noAccept.headers.get("vary")).toContain("Accept");
+    expect(await explicitJson.json()).toMatchObject({ subject: { type: "package" } });
+    expect(await wildcard.json()).toMatchObject({ subject: { type: "package" } });
+  });
+
+  test("renders deterministic Markdown from the canonical result without a second payment", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const omni = createOmni();
+    const app = createFixture(store, gateway, omni);
+    const { url } = await listen(app);
+
+    const json = await packageRequest(url, "11111111-1111-4111-8111-111111111120");
+    const canonical = await json.json();
+    const markdown = await packageRequest(url, "11111111-1111-4111-8111-111111111120", { payment: false, accept: "text/markdown" });
+
+    expect(markdown.status).toBe(200);
+    expect(markdown.headers.get("content-type")).toContain("text/markdown");
+    expect(markdown.headers.get("vary")).toContain("Accept");
+    expect(await markdown.text()).toBe(renderResultAsMarkdown(canonical));
+    expect(omni.calls).toBe(1);
+    expect(gateway.settlementCount).toBe(1);
+  });
+
+  test("replays Markdown first and JSON second from one canonical completed result", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const omni = createOmni();
+    const app = createFixture(store, gateway, omni);
+    const { url } = await listen(app);
+    const key = "11111111-1111-4111-8111-111111111121";
+
+    const markdown = await packageRequest(url, key, { accept: "text/markdown" });
+    const json = await packageRequest(url, key, { payment: false, accept: "application/json" });
+
+    expect(markdown.status).toBe(200);
+    expect(markdown.headers.get("content-type")).toContain("text/markdown");
+    expect(json.status).toBe(200);
+    expect(json.headers.get("content-type")).toContain("application/json");
+    expect(await json.json()).toMatchObject({ subject: { type: "package" }, riskScore: 3, recommendation: "proceed" });
+    expect(omni.calls).toBe(1);
+    expect(gateway.settlementCount).toBe(1);
+  });
+
+  test("keeps payment failures in the existing JSON error format", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    gateway.verificationFailure = true;
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+
+    const response = await packageRequest(url, PACKAGE_KEY, { accept: "text/markdown" });
+
+    expect(response.status).toBe(402);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({ error: "Payment verification failed" });
   });
 
   test("resumes an already-paid request without a new settlement", async () => {

@@ -35,6 +35,8 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 
 Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
+Successful paid results are canonical structured JSON. The default response, `Accept: application/json`, and `Accept: */*` return JSON; callers that send `Accept: text/markdown` receive a deterministic human-readable rendering of the same result. The representation is selected at the HTTP response seam, `Vary: Accept` is returned, and replaying a completed request in another representation does not execute or settle again. Payment errors remain JSON.
+
 ## Data sources
 
 Built-in network sources are OSV, CISA KEV, npm Registry, OpenSSF Scorecard, and Circle Discovery. The KEV loader tries `www.cisa.gov` first and falls back to the `cisagov/kev-data` mirror, because some egress ranges receive HTTP 403 from cisa.gov; override the ordered list with `OMNI_KEV_FEED_URLS`. The resolved `feedUrl` and `catalogVersion` are reported in the evidence detail. OMNI-owned PostgreSQL history accumulates endpoint/provider/schema/payment configuration changes over time.
@@ -81,6 +83,6 @@ Buyer clients can compare the selected official x402 `PaymentRequirements` from 
 
 ## Maturity
 
-This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Production readiness still requires real Circle testnet E2E across the paid routes, licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Real Arc Testnet x402 paid lifecycle has been verified on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. This does not claim exhaustive route-by-route paid acceptance, mainnet readiness, multi-chain support, or fleet capacity. Remaining work includes licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, broader route acceptance, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
 
 See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.
