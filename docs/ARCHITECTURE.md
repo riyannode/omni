@@ -68,7 +68,7 @@ For x402, the caller compares the OMNI preflight observation with the actual sel
 
 `RiskEngine` is authoritative only for the deterministic OMNI assessment. It is not authoritative for user spending authorization, wallet execution, settlement, or user-specific utility/economic-value decisions. No wallet logic belongs in `OmniIntelligence` or `RiskEngine`.
 
-The structured assessment is the canonical result. The HTTP representation seam returns that result as JSON by default or as deterministic Markdown when the caller requests `Accept: text/markdown`; durable storage and replay always retain the structured result, so representation changes never trigger another payment or execution.
+The structured assessment is the canonical result. The HTTP response seam returns that result as JSON by default with an additive deterministic Markdown artifact payload selected by fixed service identity, or as pure deterministic Markdown when the caller requests `Accept: text/markdown`; durable storage and replay always retain only the structured result, so representation/artifact delivery never triggers another payment or execution. Artifact-capable callers may materialize the supplied filename/content; OMNI does not write caller files.
 
 ## Paid request recovery
 
