@@ -94,7 +94,7 @@ Every assessment returns:
 - raw source-attributed evidence
 - `sourceErrors`
 
-The structured assessment object is the canonical machine-readable result. Paid HTTP callers may request a deterministic Markdown presentation with `Accept: text/markdown`; Markdown is a view of the same assessment and never a second source of truth.
+The structured assessment object is the canonical machine-readable result. Successful JSON responses include that assessment inline plus an additive deterministic Markdown artifact payload generated from the same result. The artifact supplies a fixed service filename, `text/markdown` media type, and Markdown content; artifact-capable clients may materialize it locally, while OMNI never writes caller files. Paid HTTP callers may request a pure deterministic Markdown presentation with `Accept: text/markdown`; Markdown is a view of the same assessment and never a second source of truth.
 
 No LLM decides the verdict. Thresholds are policy defaults and must be calibrated against labelled incidents before they are described as predictive probabilities.
 

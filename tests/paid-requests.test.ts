@@ -13,7 +13,7 @@ import type { ThreatIntelStore } from "../src/data/threat-intel.ts";
 import type { OmniIntelligence } from "../src/services.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
-import { representationFromAccept } from "../src/http/result-representation.ts";
+import { artifactFilenameForRoute, representationFromAccept } from "../src/http/result-representation.ts";
 import { renderRiskMarkdown } from "../src/http/risk-markdown.ts";
 
 const SELLER = "0x1111111111111111111111111111111111111111";
@@ -456,6 +456,119 @@ describe("paid request idempotency", () => {
     expect(replay.headers.get("PAYMENT-RESPONSE")).toBeNull();
   });
 
+  test("includes a Markdown artifact in the first successful package JSON and replay", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const omni = createOmni();
+    const app = createFixture(store, gateway, omni);
+    const { url } = await listen(app);
+    const key = "11111111-1111-4111-8111-111111111126";
+
+    const first = await packageRequest(url, key, { accept: "application/json" });
+    expect(first.status).toBe(200);
+    const body = await first.json() as Record<string, unknown>;
+    const artifact = body.artifact as Record<string, unknown>;
+    const { artifact: _artifact, ...canonical } = body;
+
+    expect(artifact).toEqual({
+      filename: "package.risk.md",
+      mediaType: "text/markdown",
+      content: renderRiskMarkdown(canonical)
+    });
+    expect(store.rows.get(key)?.finalResult).toEqual(canonical);
+
+    const replay = await packageRequest(url, key, { payment: false, accept: "application/json" });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(body);
+    expect(omni.calls).toBe(1);
+    expect(gateway.settlementCount).toBe(1);
+  });
+
+  test("uses fixed artifact filenames for every paid endpoint without changing canonical storage", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const assessment = {
+      subject: { type: "package", id: "fixture" },
+      policyVersion: "test-policy",
+      recommendation: "proceed",
+      riskScore: 3,
+      evidenceCoverage: 1,
+      dimensions: {},
+      signals: [],
+      evidence: [],
+      sourceErrors: [],
+      assessedAt: "2026-08-25T00:00:00.000Z",
+      freshness: { oldestEvidenceAt: null, newestEvidenceAt: null }
+    };
+    const calls = { package: 0, repository: 0, dependencies: 0, endpoint: 0 };
+    const omni = {
+      async packageRisk() { calls.package += 1; return assessment; },
+      async repositoryRisk() { calls.repository += 1; return { ...assessment, subject: { type: "repository", id: "fixture/repo" } }; },
+      async dependenciesRisk() {
+        calls.dependencies += 1;
+        return { packages: [assessment], summary: { count: 1, worstRiskScore: 3, recommendations: { proceed: 1 } }, assessedAt: assessment.assessedAt };
+      },
+      async endpointPreflight() {
+        calls.endpoint += 1;
+        return {
+          ...assessment,
+          subject: { type: "x402_endpoint", id: "https://example.com/paid" },
+          preflightContext: { resource: "https://example.com/paid", paymentOptions: [] }
+        };
+      }
+    };
+    const app = createApp({
+      omni: omni as unknown as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: gateway.asGateway(),
+      paidRequests: store,
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32
+    });
+    const { url } = await listen(app);
+    const requests = [
+      {
+        key: "11111111-1111-4111-8111-111111111127",
+        filename: "package.risk.md",
+        response: fetch(`${url}/v1/package/risk?ecosystem=npm&name=${encodeURIComponent("../../evil")}&version=1.0.0`, { headers: { "Idempotency-Key": "11111111-1111-4111-8111-111111111127", "PAYMENT-SIGNATURE": paymentHeader() } })
+      },
+      {
+        key: "11111111-1111-4111-8111-111111111128",
+        filename: "repo.risk.md",
+        response: fetch(`${url}/v1/repo/risk?owner=fixture&repo=repo`, { headers: { "Idempotency-Key": "11111111-1111-4111-8111-111111111128", Accept: "application/json", "PAYMENT-SIGNATURE": paymentHeader() } })
+      },
+      {
+        key: "11111111-1111-4111-8111-111111111129",
+        filename: "dependencies.risk.md",
+        response: fetch(`${url}/v1/dependencies/risk`, { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": "11111111-1111-4111-8111-111111111129", Accept: "application/json", "PAYMENT-SIGNATURE": paymentHeader() }, body: JSON.stringify({ packages: [PACKAGE_INPUT] }) })
+      },
+      {
+        key: "11111111-1111-4111-8111-111111111130",
+        filename: "x402.endpoint.preflight.md",
+        response: fetch(`${url}/v1/x402/endpoint/preflight?url=https%3A%2F%2Fexample.com%2Fpaid`, { headers: { "Idempotency-Key": "11111111-1111-4111-8111-111111111130", Accept: "application/json", "PAYMENT-SIGNATURE": paymentHeader() } })
+      }
+    ];
+
+    for (const request of requests) {
+      const response = await request.response;
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      const body = await response.json() as Record<string, unknown>;
+      const artifact = body.artifact as Record<string, unknown>;
+      const canonical = { ...body };
+      delete canonical.artifact;
+      expect(artifact.filename).toBe(request.filename);
+      expect(artifact.mediaType).toBe("text/markdown");
+      expect(artifact.content).toBe(renderRiskMarkdown(canonical));
+      expect(store.rows.get(request.key)?.finalResult).toEqual(canonical);
+    }
+
+    expect(calls).toEqual({ package: 1, repository: 1, dependencies: 1, endpoint: 1 });
+    expect(gateway.settlementCount).toBe(4);
+    expect(store.rows.size).toBe(4);
+  });
+
   test("negotiates JSON representations while preserving the default response", async () => {
     const store = new MemoryPaidRequestStore();
     const gateway = new TestGateway();
@@ -495,10 +608,12 @@ describe("paid request idempotency", () => {
     expect(store.rows.size).toBe(0);
   });
 
-  test("uses representation mapping and delimiter-safe Markdown code spans", async () => {
+  test("uses representation mapping, fixed filenames, and delimiter-safe Markdown code spans", async () => {
     expect(representationFromAccept("markdown")).toBe("markdown");
     expect(representationFromAccept("json")).toBe("json");
     expect(representationFromAccept(false)).toBeUndefined();
+    expect(artifactFilenameForRoute("package")).toBe("package.risk.md");
+    expect(artifactFilenameForRoute("toString")).toBeUndefined();
 
     const maliciousValue = "pkg`<script>alert(1)</script>```";
     const markdown = renderRiskMarkdown({

@@ -83,7 +83,7 @@ paths:
           description: Risk assessment with source-attributed evidence and explicit source failures.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RiskAssessment' }
+              schema: { $ref: '#/components/schemas/RiskAssessmentResponse' }
             text/markdown:
               schema: { type: string }
         '400': { $ref: '#/components/responses/InvalidRequest' }
@@ -106,7 +106,7 @@ paths:
           description: Risk assessment with source-attributed evidence and explicit source failures.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RiskAssessment' }
+              schema: { $ref: '#/components/schemas/RiskAssessmentResponse' }
             text/markdown:
               schema: { type: string }
         '400': { $ref: '#/components/responses/InvalidRequest' }
@@ -267,6 +267,22 @@ components:
         severity: { type: string, enum: [low, medium, high, critical] }
         source: { type: string }
         detail: { type: object, additionalProperties: true }
+    MarkdownArtifact:
+      type: object
+      additionalProperties: false
+      required: [filename, mediaType, content]
+      description: Deterministic Markdown payload supplied by OMNI. Artifact-capable clients may materialize it as the supplied filename and content; OMNI does not write a client filesystem.
+      properties:
+        filename:
+          type: string
+          description: Fixed service filename selected by the endpoint, never derived from a user-controlled target.
+          examples: [package.risk.md, repo.risk.md, dependencies.risk.md, x402.endpoint.preflight.md]
+        mediaType:
+          type: string
+          enum: [text/markdown]
+        content:
+          type: string
+          description: Deterministic Markdown rendering of the same canonical structured result.
     RiskAssessment:
       type: object
       required: [subject, policyVersion, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt, freshness]
@@ -309,6 +325,14 @@ components:
             oldestEvidenceAt: { type: [string, 'null'], format: date-time }
             newestEvidenceAt: { type: [string, 'null'], format: date-time }
             expiresAt: { type: string, format: date-time }
+    RiskAssessmentResponse:
+      allOf:
+        - $ref: '#/components/schemas/RiskAssessment'
+        - type: object
+          required: [artifact]
+          properties:
+            artifact: { $ref: '#/components/schemas/MarkdownArtifact' }
+      description: Top-level successful JSON risk response. The canonical assessment fields remain inline and artifact is an additive delivery payload.
     ObservedPaymentRequirement:
       type: object
       additionalProperties: false
@@ -340,16 +364,16 @@ components:
     X402EndpointPreflight:
       type: object
       allOf:
-        - $ref: '#/components/schemas/RiskAssessment'
+        - $ref: '#/components/schemas/RiskAssessmentResponse'
         - type: object
           required: [preflightContext]
           properties:
             preflightContext: { $ref: '#/components/schemas/X402PreflightContext' }
       unevaluatedProperties: false
-      description: Endpoint-specific additive extension of RiskAssessment with the observed preflight context.
+      description: Top-level successful JSON x402 preflight response with the observed preflight context and additive Markdown artifact payload.
     DependencyAssessment:
       type: object
-      required: [packages, summary, assessedAt]
+      required: [packages, summary, assessedAt, artifact]
       properties:
         packages:
           type: array
@@ -364,6 +388,7 @@ components:
               type: object
               additionalProperties: { type: integer, minimum: 0 }
         assessedAt: { type: string, format: date-time }
+        artifact: { $ref: '#/components/schemas/MarkdownArtifact' }
     Error:
       type: object
       required: [error]

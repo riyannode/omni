@@ -507,7 +507,7 @@ export class PaidRouteIntegration {
     await heartbeat.stop();
     try {
       await this.store.complete(idempotencyKey, requestFingerprint, leaseId, result, 200);
-      sendResult(res, 200, result, representation);
+      sendResult(res, 200, result, representation, spec.route);
     } catch (error) {
       try {
         await this.store.releaseExecution(idempotencyKey, requestFingerprint, leaseId);
@@ -569,7 +569,7 @@ export class PaidRouteIntegration {
   }
 
   private replay(request: PaidRequest, res: Response, representation: ResultRepresentation): void {
-    sendResult(res, request.finalStatus, request.finalResult, representation);
+    sendResult(res, request.finalStatus, request.finalResult, representation, request.route);
   }
 
   private storeUnavailable(res: Response, error: unknown, route: string, idempotencyKey: string): void {
