@@ -1,4 +1,4 @@
-import type { RepositoryEvidence, RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
+import type { DependencyObservation, ExactDependencyCoordinate, RepositoryEvidence, RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
 import { CachedLoader } from "./data/cache.ts";
@@ -15,6 +15,12 @@ import { DepsDevProvider } from "./providers/deps-dev.ts";
 import { NpmRegistryProvider } from "./providers/npm-registry.ts";
 import { CircleDiscoveryProvider } from "./providers/circle-discovery.ts";
 import { X402Probe } from "./providers/x402-probe.ts";
+
+const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
+const REPOSITORY_ENRICHMENT_CONCURRENCY = 4;
+
+function coordinateIdentity(coordinate: { ecosystem: string; name: string; version: string }): string { return `${coordinate.ecosystem}:${coordinate.name}@${coordinate.version}`; }
+
 
 export class OmniIntelligence {
   constructor(
@@ -116,26 +122,57 @@ export class OmniIntelligence {
     const sourceErrors: string[] = []; let scorecard: number | undefined;
     try { const result = await this.scorecard.repository(owner, repo); scorecard = result.score; evidence.push(result.evidence); }
     catch (error) { sourceErrors.push(`OpenSSF Scorecard: ${error instanceof Error ? error.message : "unknown error"}`); }
-    for (const coordinate of repositoryEvidence.dependencies.exact) {
-      try {
-        const observed = await this.depsDev.packageVersion(coordinate, { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { commit: repositoryEvidence.target.resolvedCommitSha } : {}) });
-        repositoryEvidence.dependencyObservations.push(observed.observation);
-        repositoryEvidence.dependencies.resolvedGraph.packagesChecked += 1;
-        repositoryEvidence.dependencies.resolvedGraph.nodesObserved += observed.observation.graph.nodeCount;
-        if (!observed.observation.graph.checked && observed.observation.graph.error) {
-          repositoryEvidence.dependencies.resolvedGraph.errors.push(`deps.dev graph ${coordinate.name}@${coordinate.version}: ${observed.observation.graph.error}`);
-          repositoryEvidence.coverage.status = "partial";
-          repositoryEvidence.coverage.limitations.push(`deps_dev_graph_unavailable:${coordinate.name}@${coordinate.version}`);
+    // Deterministic order and upstream deduplication bound the deps.dev fan-out:
+    // one enrichment per distinct package@version regardless of how many workspaces
+    // declare it. Overflow is never silently discarded — it stays visible as a
+    // partial-coverage limitation with the exact deferred count.
+    const allCoordinates = [...repositoryEvidence.dependencies.exact].sort((a, b) => a.ecosystem.localeCompare(b.ecosystem) || a.name.localeCompare(b.name) || a.version.localeCompare(b.version) || a.manifestPath.localeCompare(b.manifestPath) || a.workspacePath.localeCompare(b.workspacePath));
+    const deduped = new Map<string, ExactDependencyCoordinate>();
+    for (const coordinate of allCoordinates) if (!deduped.has(coordinateIdentity(coordinate))) deduped.set(coordinateIdentity(coordinate), coordinate);
+    const selected = [...deduped.values()];
+    const enriched = selected.slice(0, REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT);
+    const deferred = selected.length - enriched.length;
+    if (deferred > 0) {
+      repositoryEvidence.coverage.status = "partial";
+      repositoryEvidence.coverage.limitations.push(`dependency_enrichment_limit_reached:${deferred}_of_${selected.length}_deferred`);
+    }
+    const expected = { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { commit: repositoryEvidence.target.resolvedCommitSha } : {}) };
+    // Threat-intel scope (PR #10 decision): the exact repository dependencies are
+    // checked against the existing bounded ThreatIntelStore.lookupPackage seam using
+    // the same deduplicated, capped, concurrency-bounded enrichment set as deps.dev —
+    // no extra fan-out. Findings are observation-only under omni-risk-v1.
+    let threatIntelChecked = false;
+    let threatFindings: RiskSnapshot["threatFindings"] = [];
+    try {
+      const lookups = await Promise.all(enriched.map(coordinate => this.threatIntel.lookupPackage(coordinate.ecosystem, coordinate.name, coordinate.version)));
+      threatIntelChecked = enriched.length === 0 || lookups.every(result => result.checked);
+      threatFindings = lookups.flatMap(result => result.findings);
+      if (threatFindings.length > 0) evidence.push({ source: "OMNI threat intelligence", kind: "repository_dependency_ioc_lookup", observedAt: new Date().toISOString(), detail: { matches: threatFindings.length, packagesChecked: enriched.length } });
+    }
+    catch (error) { sourceErrors.push(`Threat intelligence: ${error instanceof Error ? error.message : "unknown error"}`); }
+    for (let offset = 0; offset < enriched.length; offset += REPOSITORY_ENRICHMENT_CONCURRENCY) {
+      const chunk = enriched.slice(offset, offset + REPOSITORY_ENRICHMENT_CONCURRENCY);
+      await Promise.all(chunk.map(async coordinate => {
+        try {
+          const observed = await this.depsDev.packageVersion(coordinate, expected);
+          repositoryEvidence.dependencyObservations.push(observed.observation);
+          repositoryEvidence.dependencies.resolvedGraph.packagesChecked += 1;
+          repositoryEvidence.dependencies.resolvedGraph.nodesObserved += observed.observation.graph.nodeCount;
+          if (!observed.observation.graph.checked && observed.observation.graph.error) {
+            repositoryEvidence.dependencies.resolvedGraph.errors.push(`deps.dev graph ${coordinate.name}@${coordinate.version}: ${observed.observation.graph.error}`);
+            repositoryEvidence.coverage.status = "partial";
+            repositoryEvidence.coverage.limitations.push(`deps_dev_graph_unavailable:${coordinate.name}@${coordinate.version}`);
+          }
+          evidence.push(observed.evidence);
         }
-        evidence.push(observed.evidence);
-      }
-      catch (error) { repositoryEvidence.sourceErrors.push(`deps.dev ${coordinate.name}@${coordinate.version}: ${error instanceof Error ? error.message : "unknown error"}`); repositoryEvidence.coverage.status = "partial"; repositoryEvidence.coverage.limitations.push(`deps_dev_unavailable:${coordinate.name}@${coordinate.version}`); }
+        catch (error) { repositoryEvidence.sourceErrors.push(`deps.dev ${coordinate.name}@${coordinate.version}: ${error instanceof Error ? error.message : "unknown error"}`); repositoryEvidence.coverage.status = "partial"; repositoryEvidence.coverage.limitations.push(`deps_dev_unavailable:${coordinate.name}@${coordinate.version}`); }
+      }));
     }
     // Collector failures are intentionally not merged into sourceErrors under omni-risk-v1.
     evidence[0]!.detail.collectorErrors = [...repositoryEvidence.sourceErrors];
     evidence[0]!.detail.coverage = repositoryEvidence.coverage.status;
     evidence[0]!.detail.limitations = [...new Set(repositoryEvidence.coverage.limitations)].sort();
-    return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, evidence, sourceErrors });
+    return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, threatIntelChecked, ...(threatFindings.length > 0 ? { threatFindings } : {}), evidence, sourceErrors });
   }
 
   async dependenciesRisk(packages: Array<{ ecosystem: string; name: string; version: string }>) {

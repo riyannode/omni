@@ -8,11 +8,22 @@ const MAX_GRAPH_NODES = 20_000;
 type Http = Pick<UpstreamHttp, "boundedJson">;
 type Expected = { repository?: string; commit?: string };
 type Attestation = { verified?: boolean; sourceRepository?: string; commit?: string; url?: string };
+type GraphNode = { errors?: unknown[] };
 type ResponseData = { licenses?: string[]; advisoryKeys?: Array<{ id?: string }>; relatedProjects?: Array<{ projectKey?: { id?: string }; relationType?: string; relationProvenance?: string }>; slsaProvenances?: Attestation[]; attestations?: Attestation[] };
+type GraphData = { error?: unknown; nodes?: GraphNode[] };
 
+const MAX_GRAPH_ERROR_DIAGNOSTICS = 5;
+const MAX_DIAGNOSTIC_CHARS = 120;
+
+// Canonical repository identity keeps the host/path separator: "github.com/acme/demo".
 function repository(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  try { const url = value.includes("://") ? new URL(value) : new URL(`https://${value}`); return `${url.hostname.toLowerCase()}${url.pathname.replace(/^\//, "").replace(/\.git$/, "").replace(/\/$/, "")}`; } catch { return undefined; }
+  try { const url = value.includes("://") ? new URL(value) : new URL(`https://${value}`); return `${url.hostname.toLowerCase()}/${url.pathname.replace(/^\//, "").replace(/\.git$/, "").replace(/\/$/, "")}`; } catch { return undefined; }
+}
+
+function diagnosticText(value: unknown): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+  return text.slice(0, MAX_DIAGNOSTIC_CHARS);
 }
 
 export function normalizeProvenance(attestation: Attestation | undefined, expected: Expected = {}): Omit<ProvenanceObservation, "package" | "source"> {
@@ -22,7 +33,11 @@ export function normalizeProvenance(attestation: Attestation | undefined, expect
   if (!sourceRepository) return { state: "ERROR", ...(sourceCommit ? { sourceCommit } : {}), ...(attestation.url ? { attestationUrl: attestation.url } : {}) };
   const expectedRepository = repository(expected.repository);
   if (expectedRepository && expectedRepository !== sourceRepository) return { state: "VERIFIED_SOURCE_MISMATCH", sourceRepository, ...(sourceCommit ? { sourceCommit } : {}), expectedSourceMatches: false, ...(attestation.url ? { attestationUrl: attestation.url } : {}) };
-  if (expected.commit && sourceCommit && expected.commit.toLowerCase() !== sourceCommit.toLowerCase()) return { state: "VERIFIED_COMMIT_MISMATCH", sourceRepository, sourceCommit, ...(expectedRepository ? { expectedSourceMatches: true } : {}), expectedCommitMatches: false, ...(attestation.url ? { attestationUrl: attestation.url } : {}) };
+  if (sourceCommit && expected.commit && expected.commit.toLowerCase() !== sourceCommit.toLowerCase()) return { state: "VERIFIED_COMMIT_MISMATCH", sourceRepository, sourceCommit, ...(expectedRepository ? { expectedSourceMatches: true } : {}), expectedCommitMatches: false, ...(attestation.url ? { attestationUrl: attestation.url } : {}) };
+  // Fail closed: a cryptographically verified attestation without a source commit is
+  // never claimed as VERIFIED against an expected commit. Attestation verification and
+  // expected-commit matching are separate facts; without the commit the match is unknown.
+  if (expected.commit && !sourceCommit) return { state: "VERIFIED_COMMIT_UNCONFIRMED", sourceRepository, ...(expectedRepository ? { expectedSourceMatches: true } : {}), expectedCommitMatches: false, ...(attestation.url ? { attestationUrl: attestation.url } : {}) };
   return { state: "VERIFIED", sourceRepository, ...(sourceCommit ? { sourceCommit } : {}), ...(expectedRepository ? { expectedSourceMatches: true } : {}), ...(expected.commit && sourceCommit ? { expectedCommitMatches: true } : {}), ...(attestation.url ? { attestationUrl: attestation.url } : {}) };
 }
 
@@ -40,9 +55,22 @@ export class DepsDevProvider {
     const data = await this.http.boundedJson<ResponseData>(base, MAX_VERSION_RESPONSE_BYTES);
     let graph: { checked: boolean; nodeCount: number; error?: string };
     try {
-      const graphData = await this.http.boundedJson<{ nodes?: unknown[] }>(`${base}:dependencies`, MAX_GRAPH_RESPONSE_BYTES);
+      const graphData = await this.http.boundedJson<GraphData>(`${base}:dependencies`, MAX_GRAPH_RESPONSE_BYTES);
       const nodeCount = Array.isArray(graphData.nodes) ? graphData.nodes.length : 0;
-      graph = nodeCount > MAX_GRAPH_NODES ? { checked: false, nodeCount: 0, error: "deps_graph_node_limit" } : { checked: true, nodeCount };
+      // Official deps.dev semantics: a non-empty top-level "error" or per-node
+      // errors[] mean the dependency graph is incomplete/incorrect, so it is never
+      // reported as checked. An empty-string error field means no error.
+      const diagnostics: string[] = [];
+      if (typeof graphData.error === "string" && graphData.error.trim()) diagnostics.push(diagnosticText(graphData.error));
+      else if (graphData.error !== undefined && graphData.error !== null && typeof graphData.error !== "string") diagnostics.push(diagnosticText(graphData.error));
+      if (Array.isArray(graphData.nodes)) {
+        for (const node of graphData.nodes) {
+          for (const nodeError of Array.isArray(node?.errors) ? node.errors : []) diagnostics.push(diagnosticText(nodeError));
+        }
+      }
+      if (nodeCount > MAX_GRAPH_NODES) { graph = { checked: false, nodeCount: 0, error: "deps_graph_node_limit" }; }
+      else if (diagnostics.length > 0) { graph = { checked: false, nodeCount, error: [...new Set(diagnostics)].slice(0, MAX_GRAPH_ERROR_DIAGNOSTICS).join("; ") }; }
+      else graph = { checked: true, nodeCount };
     } catch (error) { graph = { checked: false, nodeCount: 0, error: error instanceof Error ? error.message : "unknown error" }; }
     const normalized = normalizeProvenance(data.slsaProvenances?.[0] ?? data.attestations?.[0], expected.repository || expected.commit ? expected : expectation(data));
     const licenses = [...new Set((data.licenses ?? []).filter((item): item is string => typeof item === "string"))].sort();

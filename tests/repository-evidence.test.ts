@@ -4,11 +4,45 @@ import { DepsDevProvider, normalizeProvenance } from "../src/providers/deps-dev.
 import { RiskEngine } from "../src/domain/risk-engine.ts";
 import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/risk-features.ts";
 import { RISK_SNAPSHOT_SCHEMA_VERSION, type RiskSnapshot } from "../src/domain/risk.ts";
-import { partitionCompatibleRows } from "../src/domain/risk-evaluation.ts";
+import { partitionCompatibleRows, featuresEqual, featuresEqualForCohort } from "../src/domain/risk-evaluation.ts";
 import { UpstreamHttp } from "../src/providers/http.ts";
 import { CachedLoader, type Cache } from "../src/data/cache.ts";
 import { OmniIntelligence } from "../src/services.ts";
 import { NoopAssessmentJournal } from "../src/data/assessment-journal.ts";
+import type { ExactDependencyCoordinate, RiskAssessment, RepositoryEvidence } from "../src/domain/risk.ts";
+
+function memoryCache(): Cache {
+  const values = new Map<string, string>();
+  return { async get(key) { return values.get(key) ?? null; }, async set(key, value) { values.set(key, value); } };
+}
+
+function fakeDepsDev(record: (coordinate: ExactDependencyCoordinate) => void): { packageVersion(coordinate: ExactDependencyCoordinate): Promise<{ observation: { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number }; provenance: Array<{ package: ExactDependencyCoordinate; state: "UNAVAILABLE"; source: "deps.dev" }> }; evidence: { source: string; kind: string; observedAt: string; detail: Record<string, never> } }> } {
+  return { async packageVersion(coordinate) {
+    record(coordinate);
+    return {
+      observation: { coordinate, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: coordinate, state: "UNAVAILABLE", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    };
+  } };
+}
+
+const staticScorecard = { async repository() { return { score: 9.5, evidence: { source: "Scorecard", kind: "score", observedAt: "2026-01-01T00:00:00.000Z", detail: { score: 9.5 } } }; } };
+
+function evidenceOf(assessment: RiskAssessment): RepositoryEvidence {
+  const snapshotEvidence = assessment.evidence.find(item => item.kind === "repository_primary_evidence");
+  if (!snapshotEvidence) throw new Error("repository_primary_evidence missing");
+  // The service records coverage/limitations/collector errors on the primary
+  // evidence detail; read them from there instead of the assessment type.
+  const detail = snapshotEvidence.detail as { repository?: string; resolvedCommitSha?: string; coverage?: "complete" | "partial"; limitations?: string[]; collectorErrors?: string[] };
+  return {
+    target: { repository: detail.repository ?? "", ...(detail.resolvedCommitSha ? { resolvedCommitSha: detail.resolvedCommitSha } : {}) },
+    securityFiles: [],
+    dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } },
+    dependencyObservations: [],
+    coverage: { status: detail.coverage ?? "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: detail.limitations ?? [] },
+    sourceErrors: detail.collectorErrors ?? []
+  };
+}
 
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -170,10 +204,28 @@ describe("repository evidence foundation", () => {
     });
   });
 
-  test("v1 package and x402 feature extraction is byte-identical to the current extractor", () => {
+  test("legacy v1 feature replay is semantically compatible, not feature drift", () => {
     const packageSnapshot: RiskSnapshot = { subject: { type: "package", id: "npm:demo@1.0.0" }, vulnerabilities: [], exploitationChecked: true, threatIntelChecked: true, threatFindings: [], evidence: [] };
     const endpointSnapshot: RiskSnapshot = { subject: { type: "x402_endpoint", id: "https://example.com/pay" }, endpoint: { listedOnCircle: true, responseStatus: 402 }, activeProbeChecked: true, historyChecked: true, threatIntelChecked: true, threatFindings: [], evidence: [] };
-    for (const snapshot of [packageSnapshot, endpointSnapshot]) expect(extractRiskFeatures(snapshot).repository.present).toBe(false);
+    for (const snapshot of [packageSnapshot, endpointSnapshot]) {
+      expect(extractRiskFeatures(snapshot).repository.present).toBe(false);
+      const fresh = extractRiskFeatures(snapshot);
+      // A persisted v1 feature row lacks schemaVersion and the repository block.
+      const legacyRow: Record<string, unknown> = { ...fresh, schemaVersion: 1 } as unknown as Record<string, unknown>;
+      delete legacyRow.repository;
+      // Full-object comparison WOULD differ (that was the old false-drift behavior);
+      // cohort-aware comparison must prove semantic equality instead.
+      expect(featuresEqual(fresh, legacyRow)).toBe(false);
+      expect(featuresEqualForCohort(fresh, legacyRow, 1)).toEqual({ equal: true, comparison: "legacy-projected" });
+      // Real semantic change on the shared surface still counts as drift.
+      const driftedLegacy = { ...legacyRow, vulnerabilityCount: 7 };
+      expect(featuresEqualForCohort(fresh, driftedLegacy, 1)).toEqual({ equal: false, comparison: "legacy-projected" });
+      // Current-cohort rows keep the strict byte-exact comparison.
+      expect(featuresEqualForCohort(fresh, structuredClone(fresh), 2)).toEqual({ equal: true, comparison: "current-schema" });
+      const mutatedCurrent = structuredClone(fresh) as unknown as Record<string, unknown>;
+      mutatedCurrent.vulnerabilityCount = 3;
+      expect(featuresEqualForCohort(fresh, mutatedCurrent, 2).equal).toBe(false);
+    }
   });
 
   test("associates each workspace manifest with its own same-directory lock and preserves distinct coordinates", async () => {
@@ -310,6 +362,97 @@ describe("repository evidence foundation", () => {
     expect(unverified.observation.provenance[0]).toMatchObject({ state: "PRESENT_UNVERIFIED", attestationUrl: "https://prov.example/1" });
     const unavailable = await new DepsDevProvider({ async boundedJson() { return {}; } } as never).packageVersion({ ecosystem: "NPM", name: "demo", version: "1.0.0", sourcePath: "package-lock.json", manifestPath: "package.json", workspacePath: "." });
     expect(unavailable.observation.provenance[0]?.state).toBe("UNAVAILABLE");
+  });
+
+  test("preserves the host/path separator in canonical repository identity", async () => {
+    const expected = { repository: "github.com/acme/demo", commit: commitSha };
+    expect(normalizeProvenance({ verified: true, sourceRepository: "https://github.com/acme/demo", commit: commitSha }, expected).state).toBe("VERIFIED");
+    expect(normalizeProvenance({ verified: true, sourceRepository: "git+ssh://git@github.com/acme/demo.git", commit: commitSha }, expected)).toMatchObject({ state: "VERIFIED", sourceRepository: "github.com/acme/demo", expectedSourceMatches: true, expectedCommitMatches: true });
+    // Cryptographic attestation without a source commit must NOT become VERIFIED
+    // against an expected commit: verification and expected-commit matching are
+    // separate facts and the match is unknown, so it fails closed explicitly.
+    expect(normalizeProvenance({ verified: true, sourceRepository: "https://github.com/acme/demo" }, expected).state).toBe("VERIFIED_COMMIT_UNCONFIRMED");
+    expect(normalizeProvenance({ verified: true, sourceRepository: "https://github.com/acme/demo" }, expected).expectedCommitMatches).toBe(false);
+    expect(normalizeProvenance({ verified: true, sourceRepository: "https://github.com/acme/demo" }).state).toBe("VERIFIED");
+    expect(normalizeProvenance({ verified: true, sourceRepository: "https://github.com/other/repo", commit: commitSha }, expected).state).toBe("VERIFIED_SOURCE_MISMATCH");
+    expect(normalizeProvenance({ verified: true, sourceRepository: "https://github.com/acme/demo", commit: "1111111111111111111111111111111111111111" }, expected).state).toBe("VERIFIED_COMMIT_MISMATCH");
+  });
+
+  test("treats top-level and per-node deps.dev graph errors as unchecked graphs with bounded diagnostics", async () => {
+    const coordinate = { ecosystem: "NPM" as const, name: "demo", version: "1.0.0", sourcePath: "package-lock.json", manifestPath: "package.json", workspacePath: "." };
+    const maxGraphBytes = 2 * 1024 * 1024;
+    const topLevel = await new DepsDevProvider({ async boundedJson(_url: string, maximumBytes: number) {
+      if (maximumBytes === maxGraphBytes) return { error: "internal dependency graph error", nodes: [] };
+      return {};
+    } } as never).packageVersion(coordinate);
+    expect(topLevel.observation.graph).toMatchObject({ checked: false, error: "internal dependency graph error" });
+    const nodeLevel = await new DepsDevProvider({ async boundedJson(_url: string, maximumBytes: number) {
+      if (maximumBytes === maxGraphBytes) return { nodes: [{ errors: ["missing version resolution for left-pad@^1.0.0"] }, {}, { errors: ["second", "third", "fourth", "fifth", "sixth"] }] };
+      return {};
+    } } as never).packageVersion(coordinate);
+    expect(nodeLevel.observation.graph.checked).toBe(false);
+    expect(nodeLevel.observation.graph.error).toContain("missing version resolution for left-pad@^1.0.0");
+    expect(nodeLevel.observation.graph.error!.split("; ").length).toBeLessThanOrEqual(5);
+    const cleanGraph = await new DepsDevProvider({ async boundedJson(_url: string, maximumBytes: number) {
+      if (maximumBytes === maxGraphBytes) return { nodes: [{}] };
+      return {};
+    } } as never).packageVersion(coordinate);
+    expect(cleanGraph.observation.graph).toEqual({ checked: true, nodeCount: 1 });
+  });
+
+  test("bounds deps.dev enrichment deterministically instead of fanning out to every declared coordinate", async () => {
+    const base = "https://api.github.com/repos/acme/demo";
+    const lock = (entries: Record<string, string>) => JSON.stringify({ packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
+    // 40 distinct exact coordinates across two workspaces — above the enrichment limit.
+    const rootEntries = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`pkg-${i}`, `1.0.${i}`]));
+    const nestedEntries = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`nested-${i}`, `2.0.${i}`]));
+    const http = { async request(url: string | URL) {
+      const target = String(url);
+      const fixtures: Record<string, unknown> = {
+        [base]: { default_branch: "main" },
+        [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
+        [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [
+          { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+          { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 },
+          { path: "app/package.json", type: "blob", sha: packageBlob, size: 100 },
+          { path: "app/package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+        ] },
+        [`${base}/contents/package.json?ref=${commitSha}`]: content(JSON.stringify({ dependencies: Object.fromEntries(Object.keys(rootEntries).map(name => [name, "^1.0.0"])) })),
+        [`${base}/contents/package-lock.json?ref=${commitSha}`]: content(lock(rootEntries)),
+        [`${base}/contents/app%2Fpackage.json?ref=${commitSha}`]: content(JSON.stringify({ dependencies: Object.fromEntries(Object.keys(nestedEntries).map(name => [name, "^2.0.0"])) })),
+        [`${base}/contents/app%2Fpackage-lock.json?ref=${commitSha}`]: content(lock(nestedEntries))
+      };
+      return response(fixtures[target] ?? {}, fixtures[target] === undefined ? 404 : 200);
+    } };
+    let enrichmentCalls = 0;
+    const seenCoordinates: string[] = [];
+    const depsDev = fakeDepsDev(coordinate => {
+      enrichmentCalls += 1;
+      seenCoordinates.push(`${coordinate.name}@${coordinate.version}`);
+    });
+    const omni = new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, staticScorecard as never, {} as never, {} as never, {} as never, {} as never, {} as never, new NoopAssessmentJournal(), new GitHubRepositoryProvider(http as never) as never, depsDev as never);
+
+    const assessment = await omni.repositoryRisk("acme", "demo");
+    const evidence = evidenceOf(assessment);
+
+    expect(enrichmentCalls).toBeLessThanOrEqual(24);
+    expect(evidence.coverage.status).toBe("partial");
+    expect(evidence.coverage.limitations).toEqual(expect.arrayContaining([expect.stringMatching(/^dependency_enrichment_limit_reached:\d+_of_40_deferred$/)]));
+    // Deterministic selection: repeated runs select the same coordinates in the same order.
+    const secondSeen: string[] = [];
+    const again = fakeDepsDev(coordinate => { secondSeen.push(`${coordinate.name}@${coordinate.version}`); });
+    const other = new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, staticScorecard as never, {} as never, {} as never, {} as never, {} as never, {} as never, new NoopAssessmentJournal(), new GitHubRepositoryProvider(http as never) as never, again as never);
+    const second = await other.repositoryRisk("acme", "demo");
+    expect(secondSeen.sort()).toEqual([...seenCoordinates].sort());
+    // Observation-only evidence never changes the omni-risk-v1 verdict. The test
+    // harness passes no ThreatIntelStore (undefined lookups surface as a source
+    // error, which is the honest partial-coverage path), so compare against a
+    // baseline carrying the same source-error count rather than a bare snapshot.
+    const engine = new RiskEngine();
+    const baselineEvidence = [{ source: "OpenSSF Scorecard", kind: "repository_security_practices", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }];
+    const baseline = engine.assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: baselineEvidence, sourceErrors: ["Threat intelligence: threat.intel is not a function"] });
+    expect({ riskScore: assessment.riskScore, recommendation: assessment.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    expect({ riskScore: second.riskScore, recommendation: second.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
   });
 });
 

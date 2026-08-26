@@ -4,7 +4,7 @@ import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/
 import { DEFAULT_RISK_POLICY, type RiskPolicy } from "../src/domain/risk-policy.ts";
 import { RISK_SNAPSHOT_SCHEMA_VERSION } from "../src/domain/risk.ts";
 import { RiskEngine } from "../src/domain/risk-engine.ts";
-import { evaluateThreshold, featuresEqual, partitionCompatibleRows } from "../src/domain/risk-evaluation.ts";
+import { evaluateThreshold, featuresEqual, featuresEqualForCohort, partitionCompatibleRows, type EvaluationRow } from "../src/domain/risk-evaluation.ts";
 
 function exactKeys(value: Record<string, unknown>, keys: string[], path: string) {
   const actual = Object.keys(value).sort(); const expected = [...keys].sort();
@@ -51,7 +51,12 @@ const rows = await createAssessmentJournal(process.env.DATABASE_URL).loadLabelle
 // v2 extractor would reinterpret historical repository evidence with new optional
 // fields, so they are reported as skipped instead of silently re-scored.
 const cohorts = partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION);
-const engine = new RiskEngine(policy); let featureDrift = 0;
-const replayed = cohorts.compatible.map(row => { const freshFeatures = extractRiskFeatures(row.snapshot); if (!featuresEqual(freshFeatures, row.features)) featureDrift++; return { ...row, assessment: engine.assessFeatures(row.snapshot, freshFeatures) }; });
+const engine = new RiskEngine(policy); let currentSchemaDrift = 0; let legacySchemaDrift = 0;
+const replayed = cohorts.compatible.map(row => {
+  const freshFeatures = extractRiskFeatures(row.snapshot);
+  const drift = featuresEqualForCohort(freshFeatures, row.features, row.snapshotSchemaVersion);
+  if (!drift.equal) { if (drift.comparison === "current-schema") currentSchemaDrift++; else legacySchemaDrift++; }
+  return { ...row, assessment: engine.assessFeatures(row.snapshot, freshFeatures) };
+});
 const thresholdReports = { caution: evaluateThreshold(replayed, policy.recommendationThresholds.caution), manualReview: evaluateThreshold(replayed, policy.recommendationThresholds.manualReview), doNotProceed: evaluateThreshold(replayed, policy.recommendationThresholds.doNotProceed) };
-console.log(JSON.stringify({ policyVersion: policy.version, dataset: { totalLabelledAssessments: rows.length, compatibleRowsEvaluated: cohorts.compatible.length, incompatibleOrOlderRowsSkipped: cohorts.incompatible.length, benign: replayed.filter(row => row.label === "benign").length, incident: replayed.filter(row => row.label === "incident").length }, thresholds: thresholdReports, schemaVersionsPresent: cohorts.schemaVersionsPresent, compatibleSchema: { snapshot: RISK_SNAPSHOT_SCHEMA_VERSION, feature: RISK_FEATURE_SCHEMA_VERSION }, featureDrift }));
+console.log(JSON.stringify({ policyVersion: policy.version, dataset: { totalLabelledAssessments: rows.length, compatibleRowsEvaluated: cohorts.compatible.length, incompatibleOrOlderRowsSkipped: cohorts.incompatible.length, benign: replayed.filter(row => row.label === "benign").length, incident: replayed.filter(row => row.label === "incident").length }, thresholds: thresholdReports, schemaVersionsPresent: cohorts.schemaVersionsPresent, compatibleSchema: { snapshot: RISK_SNAPSHOT_SCHEMA_VERSION, feature: RISK_FEATURE_SCHEMA_VERSION }, featureDrift: { currentSchemaByteComparisonDrift: currentSchemaDrift, legacyProjectedSemanticDrift: legacySchemaDrift } }));

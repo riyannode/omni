@@ -57,6 +57,29 @@ export function featuresEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
 }
 
+// Cohort-aware drift accounting. Schema evolution must not count as feature
+// drift: v1 features legitimately lack the fields v2 added (schemaVersion and
+// the repository block), so a full-object comparison would report every safe
+// legacy replay as drifted. For v1 rows we project both sides down to the v1
+// feature surface (drop schemaVersion/repository) before comparing; current-
+// cohort rows are compared byte-exactly as before.
+export function featuresEqualForCohort(left: unknown, right: unknown, snapshotSchemaVersion: number): { equal: boolean; comparison: "current-schema" | "legacy-projected" } {
+  if (snapshotSchemaVersion === 1) {
+    return { equal: featuresEqual(projectLegacyFeatures(left), projectLegacyFeatures(right)), comparison: "legacy-projected" };
+  }
+  return { equal: featuresEqual(left, right), comparison: "current-schema" };
+}
+
+function projectLegacyFeatures(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "schemaVersion" || key === "repository") continue;
+    result[key] = canonicalize(item);
+  }
+  return result;
+}
+
 export function evaluateThreshold(rows: readonly EvaluationRow[], threshold: number): EvaluationMetrics {
   let TP = 0, FP = 0, TN = 0, FN = 0;
   for (const row of rows) {

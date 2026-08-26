@@ -36,7 +36,7 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
     case "dependency_set": expected = 1; completed = snapshot.evidence.length === 0 ? 0 : 1; break;
   }
   const repositoryEvidence = snapshot.repositoryEvidence; const history = snapshot.endpointHistory;
-  const provenanceStates = { NOT_CHECKED: 0, UNAVAILABLE: 0, PRESENT_UNVERIFIED: 0, VERIFIED: 0, VERIFIED_SOURCE_MISMATCH: 0, VERIFIED_COMMIT_MISMATCH: 0, ERROR: 0 } as Record<ProvenanceState, number>;
+  const provenanceStates = { NOT_CHECKED: 0, UNAVAILABLE: 0, PRESENT_UNVERIFIED: 0, VERIFIED: 0, VERIFIED_SOURCE_MISMATCH: 0, VERIFIED_COMMIT_MISMATCH: 0, VERIFIED_COMMIT_UNCONFIRMED: 0, ERROR: 0 } as Record<ProvenanceState, number>;
   for (const observation of repositoryEvidence?.dependencyObservations?.flatMap(item => item.provenance) ?? []) provenanceStates[observation.state] += 1;
   const count = (finding: string) => repositoryEvidence?.securityFiles.reduce((total, file) => total + file.findings.filter(item => item === finding).length, 0) ?? 0;
   return {
