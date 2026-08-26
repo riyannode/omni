@@ -30,6 +30,14 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
+export type VersionedSchemaRow = { snapshotSchemaVersion: number; featureSchemaVersion: number };
+
+export function partitionCompatibleRows<T extends VersionedSchemaRow>(rows: readonly T[], snapshotSchemaVersion: number, featureSchemaVersion: number): { compatible: T[]; incompatible: T[]; schemaVersionsPresent: { snapshot: number[]; feature: number[] } } {
+  const compatible: T[] = []; const incompatible: T[] = [];
+  for (const row of rows) (row.snapshotSchemaVersion === snapshotSchemaVersion && row.featureSchemaVersion === featureSchemaVersion ? compatible : incompatible).push(row);
+  return { compatible, incompatible, schemaVersionsPresent: { snapshot: [...new Set(rows.map(row => row.snapshotSchemaVersion))].sort((a, b) => a - b), feature: [...new Set(rows.map(row => row.featureSchemaVersion))].sort((a, b) => a - b) } };
+}
+
 export function featuresEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
 }

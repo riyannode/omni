@@ -24,7 +24,7 @@ HTTP validation -> admission gate -> Circle x402 seller middleware
                    best-effort AssessmentJournal
 ```
 
-`RiskEngine` is a deep deterministic module. Provider adapters only acquire/normalize evidence. `HistoryStore` owns x402 state-change history. `ThreatIntelStore` owns licensed IOC lookup and is vendor-neutral so commercial data suppliers can be replaced without changing the domain model.
+`RiskEngine` is a deep deterministic module. Provider adapters only acquire/normalize evidence. Repository assessment first resolves a GitHub ref to an immutable commit SHA, then performs bounded security-file collection using that SHA for every tree/content request. `RepositoryEvidence` is persisted inside the assessment snapshot and is the single reuse seam for a later bounded repository-audit agent; its collection coverage, limitations, and source errors are observation-only under `omni-risk-v1` and never alter the existing Scorecard-based score/recommendation. `HistoryStore` owns x402 state-change history. `ThreatIntelStore` owns licensed IOC lookup and is vendor-neutral so commercial data suppliers can be replaced without changing the domain model.
 
 The API process is stateless except for external Valkey/PostgreSQL. Marketplace snapshots run in the worker. Endpoint observations are stored only when their fingerprint changes, making payment/schema/provider drift queryable without writing every poll.
 

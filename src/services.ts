@@ -1,4 +1,4 @@
-import type { RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
+import type { RepositoryEvidence, RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
 import { CachedLoader } from "./data/cache.ts";
@@ -10,6 +10,8 @@ import { NoopAssessmentJournal } from "./data/assessment-journal.ts";
 import { OsvProvider } from "./providers/osv.ts";
 import { CisaKevProvider } from "./providers/cisa-kev.ts";
 import { ScorecardProvider } from "./providers/scorecard.ts";
+import { GitHubRepositoryProvider } from "./providers/github-repository.ts";
+import { DepsDevProvider } from "./providers/deps-dev.ts";
 import { NpmRegistryProvider } from "./providers/npm-registry.ts";
 import { CircleDiscoveryProvider } from "./providers/circle-discovery.ts";
 import { X402Probe } from "./providers/x402-probe.ts";
@@ -26,7 +28,9 @@ export class OmniIntelligence {
     private readonly probe: X402Probe,
     private readonly history: HistoryStore,
     private readonly threatIntel: ThreatIntelStore,
-    private readonly journal: AssessmentJournal = new NoopAssessmentJournal()
+    private readonly journal: AssessmentJournal = new NoopAssessmentJournal(),
+    private readonly github: GitHubRepositoryProvider = {} as GitHubRepositoryProvider,
+    private readonly depsDev: DepsDevProvider = {} as DepsDevProvider
   ) {}
 
   private async assessAndJournal(snapshot: RiskSnapshot): Promise<RiskAssessment> {
@@ -93,18 +97,43 @@ export class OmniIntelligence {
   }
 
   async repositoryRisk(owner: string, repo: string): Promise<RiskAssessment> {
-    const key = `assessment:repo:${owner}/${repo}`;
-    return this.cache.getOrLoad(key, 1800, async () => {
-      const errors: string[] = [];
-      const evidence: RiskSnapshot["evidence"] = [];
-      let scorecard: number | undefined;
+    const target = `github.com/${owner}/${repo}`;
+    let repositoryEvidence: RepositoryEvidence;
+    try { repositoryEvidence = await this.github.collect(owner, repo); }
+    catch (error) {
+      repositoryEvidence = { target: { repository: target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, provenance: [], coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
+    }
+    const immutable = repositoryEvidence.target.resolvedCommitSha;
+    if (!immutable) return this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence);
+    // Resolve mutable refs first; only immutable commit identities may enter the cache.
+    return this.cache.getOrLoad(`assessment:repo:${owner}/${repo}:${immutable}`, 1800, async () => this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence));
+  }
+
+  private async repositoryRiskFromEvidence(owner: string, repo: string, repositoryEvidence: RepositoryEvidence): Promise<RiskAssessment> {
+    const evidence: RiskSnapshot["evidence"] = [{ source: "GitHub", kind: "repository_primary_evidence", observedAt: new Date().toISOString(), detail: { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { resolvedCommitSha: repositoryEvidence.target.resolvedCommitSha } : {}), coverage: repositoryEvidence.coverage.status, limitations: repositoryEvidence.coverage.limitations } }];
+    const sourceErrors: string[] = []; let scorecard: number | undefined;
+    try { const result = await this.scorecard.repository(owner, repo); scorecard = result.score; evidence.push(result.evidence); }
+    catch (error) { sourceErrors.push(`OpenSSF Scorecard: ${error instanceof Error ? error.message : "unknown error"}`); }
+    for (const coordinate of repositoryEvidence.dependencies.exact) {
       try {
-        const result = await this.scorecard.repository(owner, repo);
-        scorecard = result.score;
-        evidence.push(result.evidence);
-      } catch (error) { errors.push(`OpenSSF Scorecard: ${error instanceof Error ? error.message : "unknown error"}`); }
-      return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), evidence, sourceErrors: errors });
-    });
+        const observed = await this.depsDev.packageVersion(coordinate);
+        repositoryEvidence.provenance.push(...observed.provenance);
+        repositoryEvidence.dependencies.resolvedGraph.packagesChecked += 1;
+        repositoryEvidence.dependencies.resolvedGraph.nodesObserved += observed.graph.nodeCount;
+        if (!observed.graph.checked && observed.graph.error) {
+          repositoryEvidence.dependencies.resolvedGraph.errors.push(`deps.dev graph ${coordinate.name}@${coordinate.version}: ${observed.graph.error}`);
+          repositoryEvidence.coverage.status = "partial";
+          repositoryEvidence.coverage.limitations.push(`deps_dev_graph_unavailable:${coordinate.name}@${coordinate.version}`);
+        }
+        evidence.push(observed.evidence);
+      }
+      catch (error) { repositoryEvidence.sourceErrors.push(`deps.dev ${coordinate.name}@${coordinate.version}: ${error instanceof Error ? error.message : "unknown error"}`); repositoryEvidence.coverage.status = "partial"; repositoryEvidence.coverage.limitations.push(`deps_dev_unavailable:${coordinate.name}@${coordinate.version}`); }
+    }
+    // Collector failures are intentionally not merged into sourceErrors under omni-risk-v1.
+    evidence[0]!.detail.collectorErrors = [...repositoryEvidence.sourceErrors];
+    evidence[0]!.detail.coverage = repositoryEvidence.coverage.status;
+    evidence[0]!.detail.limitations = [...new Set(repositoryEvidence.coverage.limitations)].sort();
+    return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, evidence, sourceErrors });
   }
 
   async dependenciesRisk(packages: Array<{ ecosystem: string; name: string; version: string }>) {

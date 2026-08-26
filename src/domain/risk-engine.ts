@@ -58,6 +58,19 @@ export class RiskEngine {
     let repoRisk: number | undefined;
     if (features.scorecard !== undefined) repoRisk = Math.round((policy.repository.scorecardMaximum - Math.max(0, Math.min(policy.repository.scorecardMaximum, features.scorecard))) * policy.repository.scorecardRiskMultiplier);
 
+    // Observation-only evidence: never feed omni-risk-v1 score, recommendation,
+    // generic source errors, or Scorecard-only repository coverage.
+    if (features.repository.present) {
+      if (features.repository.partial) push(signals, "REPOSITORY_EVIDENCE_PARTIAL", "low", "GitHub repository evidence", {});
+      if (features.repository.installLifecycleScriptCount > 0) push(signals, "INSTALL_LIFECYCLE_SCRIPT_OBSERVED", "low", "GitHub repository evidence", { count: features.repository.installLifecycleScriptCount });
+      if (features.repository.downloadExecutePatternCount > 0) push(signals, "DOWNLOAD_EXECUTE_PATTERN_OBSERVED", "high", "GitHub repository evidence", { count: features.repository.downloadExecutePatternCount });
+      if (features.repository.mutableActionRefCount > 0) push(signals, "MUTABLE_GITHUB_ACTION_REF_OBSERVED", "medium", "GitHub repository evidence", { count: features.repository.mutableActionRefCount });
+      if (features.repository.workflowWritePermissionCount > 0) push(signals, "WORKFLOW_WRITE_PERMISSION_OBSERVED", "medium", "GitHub repository evidence", { count: features.repository.workflowWritePermissionCount });
+      if (features.repository.unresolvedDependencyCount > 0) push(signals, "DEPENDENCY_RESOLUTION_PARTIAL", "low", "GitHub repository evidence", { count: features.repository.unresolvedDependencyCount });
+      if (features.repository.provenanceStates.VERIFIED_SOURCE_MISMATCH > 0) push(signals, "PROVENANCE_SOURCE_MISMATCH", "high", "deps.dev", { count: features.repository.provenanceStates.VERIFIED_SOURCE_MISMATCH });
+      if (features.repository.provenanceStates.VERIFIED_COMMIT_MISMATCH > 0) push(signals, "PROVENANCE_COMMIT_MISMATCH", "high", "deps.dev", { count: features.repository.provenanceStates.VERIFIED_COMMIT_MISMATCH });
+    }
+
     let maliciousInfrastructureRisk: number | undefined;
     if (features.threatIntel.checked) {
       maliciousInfrastructureRisk = 0;
