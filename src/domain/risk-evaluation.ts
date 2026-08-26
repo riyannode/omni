@@ -5,6 +5,21 @@ export type EvaluationRow = {
   label: EvaluationLabel;
 };
 
+export type SubjectKind = "package" | "repository" | "dependency_set" | "x402_endpoint";
+
+export type ReplayableRow = VersionedSchemaRow & { subjectType: SubjectKind };
+
+// v1 rows whose feature extraction is semantically identical under the current
+// extractor: package and x402_endpoint features never read repositoryEvidence,
+// so replaying them cannot reinterpret historical evidence.
+const SAFE_REPLAY_SUBJECT_KINDS: readonly SubjectKind[] = ["package", "x402_endpoint", "dependency_set"];
+
+function isSafeReplay(row: ReplayableRow, snapshotSchemaVersion: number, featureSchemaVersion: number): boolean {
+  if (row.snapshotSchemaVersion === snapshotSchemaVersion && row.featureSchemaVersion === featureSchemaVersion) return true;
+  if (row.snapshotSchemaVersion !== 1 || row.featureSchemaVersion !== 1) return false;
+  return SAFE_REPLAY_SUBJECT_KINDS.includes(row.subjectType);
+}
+
 export type EvaluationMetrics = {
   TP: number;
   FP: number;
@@ -32,9 +47,9 @@ function canonicalize(value: unknown): unknown {
 
 export type VersionedSchemaRow = { snapshotSchemaVersion: number; featureSchemaVersion: number };
 
-export function partitionCompatibleRows<T extends VersionedSchemaRow>(rows: readonly T[], snapshotSchemaVersion: number, featureSchemaVersion: number): { compatible: T[]; incompatible: T[]; schemaVersionsPresent: { snapshot: number[]; feature: number[] } } {
+export function partitionCompatibleRows<T extends ReplayableRow>(rows: readonly T[], snapshotSchemaVersion: number, featureSchemaVersion: number): { compatible: T[]; incompatible: T[]; schemaVersionsPresent: { snapshot: number[]; feature: number[] } } {
   const compatible: T[] = []; const incompatible: T[] = [];
-  for (const row of rows) (row.snapshotSchemaVersion === snapshotSchemaVersion && row.featureSchemaVersion === featureSchemaVersion ? compatible : incompatible).push(row);
+  for (const row of rows) (isSafeReplay(row, snapshotSchemaVersion, featureSchemaVersion) ? compatible : incompatible).push(row);
   return { compatible, incompatible, schemaVersionsPresent: { snapshot: [...new Set(rows.map(row => row.snapshotSchemaVersion))].sort((a, b) => a - b), feature: [...new Set(rows.map(row => row.featureSchemaVersion))].sort((a, b) => a - b) } };
 }
 

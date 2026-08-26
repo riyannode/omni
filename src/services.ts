@@ -98,15 +98,17 @@ export class OmniIntelligence {
 
   async repositoryRisk(owner: string, repo: string): Promise<RiskAssessment> {
     const target = `github.com/${owner}/${repo}`;
-    let repositoryEvidence: RepositoryEvidence;
-    try { repositoryEvidence = await this.github.collect(owner, repo); }
-    catch (error) {
-      repositoryEvidence = { target: { repository: target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, provenance: [], coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
+    try {
+      const identity = await this.github.resolve(owner, repo);
+      return this.cache.getOrLoad(`assessment:repo:${owner}/${repo}:${identity.resolvedCommitSha}`, 1800, async () => {
+        const repositoryEvidence = await this.github.collectResolved(owner, repo, identity);
+        return this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence);
+      });
     }
-    const immutable = repositoryEvidence.target.resolvedCommitSha;
-    if (!immutable) return this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence);
-    // Resolve mutable refs first; only immutable commit identities may enter the cache.
-    return this.cache.getOrLoad(`assessment:repo:${owner}/${repo}:${immutable}`, 1800, async () => this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence));
+    catch (error) {
+      const repositoryEvidence: RepositoryEvidence = { target: { repository: target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
+      return this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence);
+    }
   }
 
   private async repositoryRiskFromEvidence(owner: string, repo: string, repositoryEvidence: RepositoryEvidence): Promise<RiskAssessment> {
@@ -116,12 +118,12 @@ export class OmniIntelligence {
     catch (error) { sourceErrors.push(`OpenSSF Scorecard: ${error instanceof Error ? error.message : "unknown error"}`); }
     for (const coordinate of repositoryEvidence.dependencies.exact) {
       try {
-        const observed = await this.depsDev.packageVersion(coordinate);
-        repositoryEvidence.provenance.push(...observed.provenance);
+        const observed = await this.depsDev.packageVersion(coordinate, { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { commit: repositoryEvidence.target.resolvedCommitSha } : {}) });
+        repositoryEvidence.dependencyObservations.push(observed.observation);
         repositoryEvidence.dependencies.resolvedGraph.packagesChecked += 1;
-        repositoryEvidence.dependencies.resolvedGraph.nodesObserved += observed.graph.nodeCount;
-        if (!observed.graph.checked && observed.graph.error) {
-          repositoryEvidence.dependencies.resolvedGraph.errors.push(`deps.dev graph ${coordinate.name}@${coordinate.version}: ${observed.graph.error}`);
+        repositoryEvidence.dependencies.resolvedGraph.nodesObserved += observed.observation.graph.nodeCount;
+        if (!observed.observation.graph.checked && observed.observation.graph.error) {
+          repositoryEvidence.dependencies.resolvedGraph.errors.push(`deps.dev graph ${coordinate.name}@${coordinate.version}: ${observed.observation.graph.error}`);
           repositoryEvidence.coverage.status = "partial";
           repositoryEvidence.coverage.limitations.push(`deps_dev_graph_unavailable:${coordinate.name}@${coordinate.version}`);
         }

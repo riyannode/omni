@@ -44,6 +44,12 @@ if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
 const candidatePath = process.argv[2];
 const policy = candidatePath ? validatePolicy(JSON.parse(await readFile(candidatePath, "utf8"))) : DEFAULT_RISK_POLICY;
 const rows = await createAssessmentJournal(process.env.DATABASE_URL).loadLabelled();
+// Replay compatibility: current-cohort rows always evaluate. Historical v1
+// package/x402/dependency_set rows are replayed because their feature extraction is
+// semantically unchanged (repositoryEvidence did not exist in v1 and is never read for
+// these subject kinds). v1 repository rows stay incompatible: replaying them under the
+// v2 extractor would reinterpret historical repository evidence with new optional
+// fields, so they are reported as skipped instead of silently re-scored.
 const cohorts = partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION);
 const engine = new RiskEngine(policy); let featureDrift = 0;
 const replayed = cohorts.compatible.map(row => { const freshFeatures = extractRiskFeatures(row.snapshot); if (!featuresEqual(freshFeatures, row.features)) featureDrift++; return { ...row, assessment: engine.assessFeatures(row.snapshot, freshFeatures) }; });

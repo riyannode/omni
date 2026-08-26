@@ -1,4 +1,4 @@
-import type { Evidence, ExactDependencyCoordinate, ProvenanceObservation } from "../domain/risk.ts";
+import type { DependencyObservation, Evidence, ExactDependencyCoordinate, ProvenanceObservation } from "../domain/risk.ts";
 import type { UpstreamHttp } from "./http.ts";
 
 const MAX_VERSION_RESPONSE_BYTES = 512 * 1024;
@@ -35,7 +35,7 @@ function expectation(data: ResponseData): Expected {
 export class DepsDevProvider {
   constructor(private readonly http: Http) {}
 
-  async packageVersion(coordinate: ExactDependencyCoordinate, expected: Expected = {}): Promise<{ licenses: string[]; advisories: string[]; provenance: ProvenanceObservation[]; graph: { checked: boolean; nodeCount: number; error?: string }; evidence: Evidence }> {
+  async packageVersion(coordinate: ExactDependencyCoordinate, expected: Expected = {}): Promise<{ observation: DependencyObservation; evidence: Evidence }> {
     const base = `https://api.deps.dev/v3/systems/${coordinate.ecosystem}/packages/${encodeURIComponent(coordinate.name)}/versions/${encodeURIComponent(coordinate.version)}`;
     const data = await this.http.boundedJson<ResponseData>(base, MAX_VERSION_RESPONSE_BYTES);
     let graph: { checked: boolean; nodeCount: number; error?: string };
@@ -47,6 +47,8 @@ export class DepsDevProvider {
     const normalized = normalizeProvenance(data.slsaProvenances?.[0] ?? data.attestations?.[0], expected.repository || expected.commit ? expected : expectation(data));
     const licenses = [...new Set((data.licenses ?? []).filter((item): item is string => typeof item === "string"))].sort();
     const advisories = [...new Set((data.advisoryKeys ?? []).flatMap(item => typeof item.id === "string" ? [item.id] : []))].sort();
-    return { licenses, advisories, graph, provenance: [{ package: coordinate, source: "deps.dev", ...normalized }], evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: new Date().toISOString(), detail: { ecosystem: coordinate.ecosystem, name: coordinate.name, version: coordinate.version, licenses, advisoryIds: advisories, provenanceState: normalized.state, ...(normalized.sourceRepository ? { sourceRepository: normalized.sourceRepository } : {}), ...(normalized.sourceCommit ? { sourceCommit: normalized.sourceCommit } : {}) } } };
+    const provenance = [{ package: coordinate, source: "deps.dev" as const, ...normalized }];
+    const observation: DependencyObservation = { coordinate, licenses, advisoryIds: advisories, graph, provenance };
+    return { observation, evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: new Date().toISOString(), detail: { ecosystem: coordinate.ecosystem, name: coordinate.name, version: coordinate.version, licenses, advisoryIds: advisories, provenanceState: normalized.state, ...(normalized.sourceRepository ? { sourceRepository: normalized.sourceRepository } : {}), ...(normalized.sourceCommit ? { sourceCommit: normalized.sourceCommit } : {}) } } };
   }
 }

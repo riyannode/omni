@@ -37,7 +37,7 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
   }
   const repositoryEvidence = snapshot.repositoryEvidence; const history = snapshot.endpointHistory;
   const provenanceStates = { NOT_CHECKED: 0, UNAVAILABLE: 0, PRESENT_UNVERIFIED: 0, VERIFIED: 0, VERIFIED_SOURCE_MISMATCH: 0, VERIFIED_COMMIT_MISMATCH: 0, ERROR: 0 } as Record<ProvenanceState, number>;
-  for (const observation of repositoryEvidence?.provenance ?? []) provenanceStates[observation.state] += 1;
+  for (const observation of repositoryEvidence?.dependencyObservations?.flatMap(item => item.provenance) ?? []) provenanceStates[observation.state] += 1;
   const count = (finding: string) => repositoryEvidence?.securityFiles.reduce((total, file) => total + file.findings.filter(item => item === finding).length, 0) ?? 0;
   return {
     schemaVersion: RISK_FEATURE_SCHEMA_VERSION, subject: snapshot.subject, vulnerabilities, vulnerabilityCount: vulnerabilities?.length ?? 0, knownExploitedVulnerabilityCount: vulnerabilities?.filter(item => item.knownExploited).length ?? 0, maximumVulnerabilitySeverity, exploitationChecked: snapshot.exploitationChecked === true,
