@@ -7,6 +7,8 @@ import { createAssessmentJournal } from "./data/assessment-journal.ts";
 import { OsvProvider } from "./providers/osv.ts";
 import { CisaKevProvider } from "./providers/cisa-kev.ts";
 import { ScorecardProvider } from "./providers/scorecard.ts";
+import { GitHubRepositoryProvider } from "./providers/github-repository.ts";
+import { DepsDevProvider } from "./providers/deps-dev.ts";
 import { NpmRegistryProvider } from "./providers/npm-registry.ts";
 import { CircleDiscoveryProvider } from "./providers/circle-discovery.ts";
 import { X402Probe } from "./providers/x402-probe.ts";
@@ -22,11 +24,13 @@ const history = createHistoryStore(config.DATABASE_URL);
 const threatIntel = createThreatIntelStore(config.DATABASE_URL);
 const assessmentJournal = createAssessmentJournal(config.DATABASE_URL);
 const http = new UpstreamHttp(config.UPSTREAM_TIMEOUT_MS, config.UPSTREAM_MAX_IN_FLIGHT, config.UPSTREAM_MAX_QUEUE);
+const github = new GitHubRepositoryProvider(http, config.GITHUB_TOKEN);
+const depsDev = new DepsDevProvider(http);
 const circle = new CircleDiscoveryProvider(cache, history, http);
 const omni = new OmniIntelligence(
   new RiskEngine(), cache,
   new OsvProvider(http), new CisaKevProvider(cache, http, config.kevFeedUrls.length > 0 ? config.kevFeedUrls : undefined), new ScorecardProvider(http), new NpmRegistryProvider(http),
-  circle, new X402Probe(http, config.allowedEndpointHosts), history, threatIntel, assessmentJournal
+  circle, new X402Probe(http, config.allowedEndpointHosts), history, threatIntel, assessmentJournal, github, depsDev
 );
 const gateway = createCircleGateway(config.SELLER_ADDRESS as `0x${string}`, config.CIRCLE_FACILITATOR_URL);
 const paidRequests = createPaidRequestStore(config.DATABASE_URL);

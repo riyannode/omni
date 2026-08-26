@@ -12,7 +12,8 @@ const envSchema = z.object({
   UPSTREAM_MAX_IN_FLIGHT: z.coerce.number().int().min(8).max(4096).default(256),
   UPSTREAM_MAX_QUEUE: z.coerce.number().int().min(0).max(50_000).default(2048),
   OMNI_ALLOWED_ENDPOINT_HOSTS: z.string().default(""),
-  OMNI_KEV_FEED_URLS: z.string().default("")
+  OMNI_KEV_FEED_URLS: z.string().default(""),
+  GITHUB_TOKEN: z.string().min(1).optional()
 });
 
 const parsed = envSchema.safeParse(process.env);
