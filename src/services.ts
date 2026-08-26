@@ -18,12 +18,99 @@ import { X402Probe } from "./providers/x402-probe.ts";
 
 const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
 const REPOSITORY_ENRICHMENT_CONCURRENCY = 4;
+export const MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE = 8;
+export const MAX_REPOSITORY_THREAT_FINDINGS_TOTAL = 64;
+export const MAX_REPOSITORY_THREAT_INTEL_BYTES = 64 * 1024;
+export const MAX_REPOSITORY_THREAT_INTEL_INDICATOR_BYTES = 1024;
+export const MAX_REPOSITORY_THREAT_INTEL_THREAT_TYPE_BYTES = 256;
+export const MAX_REPOSITORY_THREAT_INTEL_SOURCE_BYTES = 256;
+export const MAX_REPOSITORY_THREAT_INTEL_REFERENCE_BYTES = 2048;
+export const MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES = 8;
+export const MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES = 16;
+export const MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES = 512;
 
 function coordinateIdentity(coordinate: { ecosystem: string; name: string; version: string }): string { return `${coordinate.ecosystem}:${coordinate.name}@${coordinate.version}`; }
 
-async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore, coordinates: ExactDependencyCoordinate[], deferred: number, selectedCount: number): Promise<RepositoryThreatIntelObservation> {
-  if (coordinates.length === 0) return { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["no_exact_dependencies_selected"] };
-  const findings: RepositoryThreatIntelObservation["findings"] = [];
+const threatSeverityRank: Record<ThreatFinding["severity"], number> = { low: 1, medium: 2, high: 3, critical: 4 };
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function compareText(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
+function utf8Bytes(value: string): number { return encoder.encode(value).byteLength; }
+
+function truncateUtf8(value: unknown, maximumBytes: number): { value: string; truncated: boolean } {
+  const text = typeof value === "string" ? value : "";
+  const bytes = encoder.encode(text);
+  if (bytes.byteLength <= maximumBytes) return { value: text, truncated: false };
+  let end = maximumBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  return { value: decoder.decode(bytes.slice(0, end)), truncated: true };
+}
+
+function compareThreatFinding(left: RepositoryThreatIntelObservation["findings"][number], right: RepositoryThreatIntelObservation["findings"][number]): number {
+  const severity = threatSeverityRank[right.finding.severity] - threatSeverityRank[left.finding.severity];
+  if (severity !== 0) return severity;
+  const coordinateFields: Array<keyof ExactDependencyCoordinate> = ["ecosystem", "name", "version", "sourcePath", "manifestPath", "workspacePath"];
+  for (const field of coordinateFields) { const result = compareText(left.coordinate[field], right.coordinate[field]); if (result !== 0) return result; }
+  const findingFields: Array<keyof ThreatFinding> = ["indicatorType", "indicator", "threatType", "source", "reference"];
+  for (const field of findingFields) { const result = compareText(String(left.finding[field] ?? ""), String(right.finding[field] ?? "")); if (result !== 0) return result; }
+  return 0;
+}
+
+function normalizeThreatFinding(coordinate: ExactDependencyCoordinate, finding: ThreatFinding): { value: RepositoryThreatIntelObservation["findings"][number]; truncated: boolean } {
+  const indicator = truncateUtf8(finding.indicator, MAX_REPOSITORY_THREAT_INTEL_INDICATOR_BYTES);
+  const threatType = truncateUtf8(finding.threatType, MAX_REPOSITORY_THREAT_INTEL_THREAT_TYPE_BYTES);
+  const source = truncateUtf8(finding.source, MAX_REPOSITORY_THREAT_INTEL_SOURCE_BYTES);
+  const reference = finding.reference === undefined ? undefined : truncateUtf8(finding.reference, MAX_REPOSITORY_THREAT_INTEL_REFERENCE_BYTES);
+  return {
+    value: { coordinate, finding: { indicatorType: finding.indicatorType, indicator: indicator.value, threatType: threatType.value, severity: finding.severity, source: source.value, ...(reference ? { reference: reference.value } : {}) } },
+    truncated: indicator.truncated || threatType.truncated || source.truncated || Boolean(reference?.truncated)
+  };
+}
+
+function uniqueSortedFindings(findings: RepositoryThreatIntelObservation["findings"]): RepositoryThreatIntelObservation["findings"] {
+  const unique = new Map<string, RepositoryThreatIntelObservation["findings"][number]>();
+  for (const finding of findings) {
+    const key = JSON.stringify(finding);
+    if (!unique.has(key)) unique.set(key, finding);
+  }
+  return [...unique.values()].sort(compareThreatFinding);
+}
+
+function boundedEntries(entries: string[], maximumEntries: number, label: "errors" | "limitations"): { values: string[]; overflow: boolean; entryTruncated: boolean } {
+  let entryTruncated = false;
+  const normalized = [...new Set(entries.map(entry => {
+    const bounded = truncateUtf8(entry, MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES);
+    entryTruncated ||= bounded.truncated;
+    return bounded.value;
+  }))].sort(compareText);
+  const overflow = normalized.length > maximumEntries;
+  const marker = `threat_intel_${label}_truncated:${maximumEntries}_of_${normalized.length}`;
+  const values = overflow ? [...normalized.slice(0, Math.max(0, maximumEntries - 1)), marker] : normalized;
+  return { values: [...new Set(values)].sort(compareText), overflow, entryTruncated };
+}
+
+function fitRepositoryThreatIntelObservation(observation: RepositoryThreatIntelObservation): RepositoryThreatIntelObservation {
+  let result = { ...observation, packagesInspected: [...observation.packagesInspected], findings: [...observation.findings], errors: [...observation.errors], limitations: [...observation.limitations] };
+  if (utf8Bytes(JSON.stringify(result)) <= MAX_REPOSITORY_THREAT_INTEL_BYTES) return result;
+  result.limitations = [...new Set([...result.limitations, "threat_intel_payload_truncated"])].sort(compareText);
+  while (utf8Bytes(JSON.stringify(result)) > MAX_REPOSITORY_THREAT_INTEL_BYTES && result.findings.length > 0) result.findings.pop();
+  return result;
+}
+
+function finalizeRepositoryThreatIntelObservation(status: RepositoryThreatIntelObservation["status"], packagesInspected: ExactDependencyCoordinate[], findings: RepositoryThreatIntelObservation["findings"], errors: string[], limitations: string[]): RepositoryThreatIntelObservation {
+  const boundedErrors = boundedEntries(errors, MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES, "errors");
+  const rawLimitations = [...limitations];
+  if (boundedErrors.overflow) rawLimitations.push(`threat_intel_errors_truncated:${MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES}_of_${errors.length}`);
+  if (boundedErrors.entryTruncated) rawLimitations.push("threat_intel_error_entry_truncated");
+  if (rawLimitations.some(entry => utf8Bytes(entry) > MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES)) rawLimitations.push("threat_intel_limitation_entry_truncated");
+  const boundedLimitations = boundedEntries(rawLimitations, MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES, "limitations");
+  return fitRepositoryThreatIntelObservation({ status, packagesInspected: [...packagesInspected], findings: uniqueSortedFindings(findings), errors: boundedErrors.values, limitations: [...new Set(boundedLimitations.values)].sort(compareText) });
+}
+
+export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore, coordinates: ExactDependencyCoordinate[], deferred: number, selectedCount: number): Promise<RepositoryThreatIntelObservation> {
+  if (coordinates.length === 0) return finalizeRepositoryThreatIntelObservation("NOT_CHECKED", [], [], [], ["no_exact_dependencies_selected"]);
+  const findingsByCoordinate = new Map<string, RepositoryThreatIntelObservation["findings"]>();
   const errors: string[] = [];
   const limitations = deferred > 0 ? [`dependency_enrichment_limit_reached:${deferred}_of_${selectedCount}_deferred`] : [];
   let unavailable = false;
@@ -37,9 +124,10 @@ async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore, coord
       }
     }));
     for (const item of results) {
+      const identity = coordinateIdentity(item.coordinate);
       if ("error" in item) {
         unavailable = true;
-        errors.push(`threat_intel ${coordinateIdentity(item.coordinate)}: ${item.error}`);
+        errors.push(`threat_intel ${identity}: ${item.error}`);
         limitations.push(`threat_intel_lookup_failed:${item.coordinate.name}@${item.coordinate.version}`);
         continue;
       }
@@ -47,10 +135,29 @@ async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore, coord
         unavailable = true;
         limitations.push(`threat_intel_unavailable:${item.coordinate.name}@${item.coordinate.version}`);
       }
-      findings.push(...item.result.findings.map(finding => ({ coordinate: item.coordinate, finding })));
+      const normalized: RepositoryThreatIntelObservation["findings"] = [];
+      let fieldTruncated = false;
+      for (const finding of Array.isArray(item.result.findings) ? item.result.findings : []) {
+        const bounded = normalizeThreatFinding(item.coordinate, finding);
+        normalized.push(bounded.value);
+        fieldTruncated ||= bounded.truncated;
+      }
+      const unique = uniqueSortedFindings(normalized);
+      if (fieldTruncated) limitations.push(`threat_intel_finding_field_truncated:${identity}`);
+      if (unique.length > MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE) {
+        limitations.push(`threat_intel_findings_truncated:${identity}:${MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE}_of_${unique.length}`);
+        findingsByCoordinate.set(identity, unique.slice(0, MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE));
+      } else findingsByCoordinate.set(identity, unique);
     }
   }
-  return { status: unavailable ? "UNAVAILABLE" : "CHECKED", packagesInspected: coordinates, findings, errors, limitations: [...new Set(limitations)].sort() };
+  const allFindings = uniqueSortedFindings([...findingsByCoordinate.values()].flat());
+  if (allFindings.length > MAX_REPOSITORY_THREAT_FINDINGS_TOTAL) limitations.push(`threat_intel_total_findings_truncated:${MAX_REPOSITORY_THREAT_FINDINGS_TOTAL}_of_${allFindings.length}`);
+  const retained = allFindings.slice(0, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL);
+  return finalizeRepositoryThreatIntelObservation(unavailable ? "UNAVAILABLE" : "CHECKED", coordinates, retained, errors, limitations);
+}
+
+function repositoryThreatIntelDetail(observation: RepositoryThreatIntelObservation): Record<string, unknown> {
+  return { status: observation.status, packagesInspected: observation.packagesInspected, findings: observation.findings, errors: observation.errors, limitations: observation.limitations };
 }
 
 
@@ -171,7 +278,7 @@ export class OmniIntelligence {
     const expected = { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { commit: repositoryEvidence.target.resolvedCommitSha } : {}) };
     const threatIntelObservation = await collectRepositoryThreatIntel(this.threatIntel, enriched, deferred, selected.length);
     repositoryEvidence.dependencyThreatIntel = threatIntelObservation;
-    evidence.push({ source: "OMNI threat intelligence", kind: "repository_dependency_ioc_lookup", observedAt: new Date().toISOString(), detail: threatIntelObservation as unknown as Record<string, unknown> });
+    evidence.push({ source: "OMNI threat intelligence", kind: "repository_dependency_ioc_lookup", observedAt: new Date().toISOString(), detail: repositoryThreatIntelDetail(threatIntelObservation) });
     for (let offset = 0; offset < enriched.length; offset += REPOSITORY_ENRICHMENT_CONCURRENCY) {
       const chunk = enriched.slice(offset, offset + REPOSITORY_ENRICHMENT_CONCURRENCY);
       await Promise.all(chunk.map(async coordinate => {

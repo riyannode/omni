@@ -7,7 +7,7 @@ import { RISK_SNAPSHOT_SCHEMA_VERSION, type RiskSnapshot } from "../src/domain/r
 import { partitionCompatibleRows, featuresEqual, featuresEqualForCohort } from "../src/domain/risk-evaluation.ts";
 import { UpstreamHttp } from "../src/providers/http.ts";
 import { CachedLoader, type Cache } from "../src/data/cache.ts";
-import { OmniIntelligence } from "../src/services.ts";
+import { OmniIntelligence, MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL, MAX_REPOSITORY_THREAT_INTEL_BYTES, MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES, MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_INDICATOR_BYTES, MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_REFERENCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_SOURCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_THREAT_TYPE_BYTES } from "../src/services.ts";
 import { NoopAssessmentJournal, type AssessmentJournal } from "../src/data/assessment-journal.ts";
 import type { ExactDependencyCoordinate, RiskAssessment, RepositoryEvidence, ThreatFinding } from "../src/domain/risk.ts";
 
@@ -67,6 +67,12 @@ function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: Ret
   };
   const depsDev = fakeDepsDev(() => {});
   return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, staticScorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
+}
+
+async function repositoryObservation(repositoryEvidence: RepositoryEvidence, lookup: (coordinate: ExactDependencyCoordinate) => Promise<{ checked: boolean; findings: ThreatFinding[] }>) {
+  const snapshots: RiskSnapshot[] = [];
+  const assessment = await repositoryOmni(repositoryEvidence, threatIntelStore(lookup), capturingJournal(snapshots)).repositoryRisk("acme", "demo");
+  return { assessment, snapshot: snapshots[0]! };
 }
 
 function evidenceOf(assessment: RiskAssessment): RepositoryEvidence {
@@ -278,6 +284,102 @@ describe("repository evidence foundation", () => {
     const secondThreatIntel = threatIntelStore(async coordinate => { secondCalls.push(`${coordinate.name}@${coordinate.version}`); return { checked: true, findings: [] }; });
     await repositoryOmni(repositoryEvidenceWith([...coordinates].reverse()), secondThreatIntel, capturingJournal(secondSnapshots)).repositoryRisk("acme", "demo");
     expect(secondCalls).toEqual(calls);
+  });
+
+  test("bounds findings per package and preserves an explicit truncation limitation", async () => {
+    const coordinate = exactCoordinate("noisy-package", "1.0.0");
+    const findings = Array.from({ length: MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE + 4 }, (_, index): ThreatFinding => ({ indicatorType: "package", indicator: `npm:noisy-package@1.0.0:${String(index).padStart(2, "0")}`, threatType: "suspicious", severity: index % 2 === 0 ? "high" : "low", source: "fixture", reference: `https://intel.example/${index}` }));
+    const { snapshot } = await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings }));
+    const observation = snapshot.repositoryEvidence!.dependencyThreatIntel;
+    expect(observation.findings).toHaveLength(MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE);
+    expect(observation.limitations).toContain(`threat_intel_findings_truncated:NPM:noisy-package@1.0.0:${MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE}_of_${findings.length}`);
+    expect(observation.status).toBe("CHECKED");
+  });
+
+  test("bounds total findings and selects a deterministic normalized set", async () => {
+    const coordinates = Array.from({ length: 10 }, (_, index) => exactCoordinate(`package-${index}`, "1.0.0"));
+    const findingsFor = (coordinate: ExactDependencyCoordinate): ThreatFinding[] => Array.from({ length: 8 }, (_, index) => ({ indicatorType: "package", indicator: `npm:${coordinate.name}@${coordinate.version}:${index}`, threatType: "known_bad", severity: index % 2 === 0 ? "critical" : "medium", source: "fixture", reference: `https://intel.example/${coordinate.name}/${index}` }));
+    const first = await repositoryObservation(repositoryEvidenceWith(coordinates), async coordinate => ({ checked: true, findings: findingsFor(coordinate) }));
+    const second = await repositoryObservation(repositoryEvidenceWith([...coordinates].reverse()), async coordinate => ({ checked: true, findings: findingsFor(coordinate).reverse() }));
+    const left = first.snapshot.repositoryEvidence!.dependencyThreatIntel;
+    const right = second.snapshot.repositoryEvidence!.dependencyThreatIntel;
+    expect(left.findings).toHaveLength(MAX_REPOSITORY_THREAT_FINDINGS_TOTAL);
+    expect(left.limitations).toContain(`threat_intel_total_findings_truncated:${MAX_REPOSITORY_THREAT_FINDINGS_TOTAL}_of_80`);
+    expect(JSON.stringify(left)).toBe(JSON.stringify(right));
+    expect(left.status).toBe("CHECKED");
+  });
+
+  test("deduplicates and normalizes findings independently of upstream response order", async () => {
+    const coordinate = exactCoordinate("duplicate-package", "2.0.0");
+    const finding: ThreatFinding = { indicatorType: "package", indicator: "npm:duplicate-package@2.0.0", threatType: "malicious", severity: "critical", source: "fixture", reference: "https://intel.example/duplicate" };
+    const first = await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: [finding, finding, { ...finding, threatType: "advisory", severity: "high" }] }));
+    const second = await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: [{ ...finding, threatType: "advisory", severity: "high" }, finding, finding] }));
+    const left = first.snapshot.repositoryEvidence!.dependencyThreatIntel;
+    const right = second.snapshot.repositoryEvidence!.dependencyThreatIntel;
+    expect(left.findings).toHaveLength(2);
+    expect(JSON.stringify(left)).toBe(JSON.stringify(right));
+  });
+
+  test("bounds every externally sourced finding string as valid UTF-8 and records limitations", async () => {
+    const coordinate = exactCoordinate("long-fields", "3.0.0");
+    const finding: ThreatFinding = { indicatorType: "package", indicator: "😀".repeat(2_000), threatType: "t".repeat(2_000), severity: "high", source: "s".repeat(2_000), reference: "https://intel.example/" + "r".repeat(4_000) };
+    const { snapshot } = await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: [finding] }));
+    const observation = snapshot.repositoryEvidence!.dependencyThreatIntel;
+    const normalized = observation.findings[0]!.finding;
+    expect(new TextEncoder().encode(normalized.indicator).byteLength).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_INDICATOR_BYTES);
+    expect(new TextEncoder().encode(normalized.threatType).byteLength).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_THREAT_TYPE_BYTES);
+    expect(new TextEncoder().encode(normalized.source).byteLength).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_SOURCE_BYTES);
+    expect(new TextEncoder().encode(normalized.reference!).byteLength).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_REFERENCE_BYTES);
+    expect(() => JSON.parse(JSON.stringify(observation))).not.toThrow();
+    expect(observation.limitations).toContain("threat_intel_finding_field_truncated:NPM:long-fields@3.0.0");
+  });
+
+  test("keeps the complete normalized observation at or below the 64 KiB aggregate cap", async () => {
+    const coordinates = Array.from({ length: 24 }, (_, index) => exactCoordinate(`oversized-${index}`, "1.0.0"));
+    const findingsFor = (coordinate: ExactDependencyCoordinate): ThreatFinding[] => Array.from({ length: 24 }, (_, index) => ({ indicatorType: "package", indicator: `npm:${coordinate.name}@${coordinate.version}:${index}:` + "😀".repeat(600), threatType: "threat-type-" + "t".repeat(240), severity: index % 4 === 0 ? "critical" : "low", source: "source-" + "s".repeat(240), reference: "https://intel.example/" + "r".repeat(1_900) }));
+    const { assessment, snapshot } = await repositoryObservation(repositoryEvidenceWith(coordinates), async coordinate => ({ checked: true, findings: findingsFor(coordinate) }));
+    const observation = snapshot.repositoryEvidence!.dependencyThreatIntel;
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(observation)).byteLength;
+    const evidenceDetail = assessment.evidence.find(item => item.kind === "repository_dependency_ioc_lookup")!.detail;
+    const evidenceBytes = new TextEncoder().encode(JSON.stringify(evidenceDetail)).byteLength;
+    expect(serializedBytes).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_BYTES);
+    expect(evidenceBytes).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_BYTES);
+    expect(() => JSON.parse(JSON.stringify(observation))).not.toThrow();
+    expect(observation.status).toBe("CHECKED");
+    expect(observation.findings.length).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_FINDINGS_TOTAL);
+    expect(observation.limitations).toContain("threat_intel_payload_truncated");
+  });
+
+  test("bounds error and limitation entries while preserving overflow markers", async () => {
+    const coordinates = Array.from({ length: 24 }, (_, index) => exactCoordinate(`failed-${index}`, "1.0.0"));
+    const { snapshot } = await repositoryObservation(repositoryEvidenceWith(coordinates), async () => { throw new Error("provider-error-" + "x".repeat(10_000)); });
+    const observation = snapshot.repositoryEvidence!.dependencyThreatIntel;
+    const bytes = (value: string) => new TextEncoder().encode(value).byteLength;
+    expect(observation.errors.length).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES);
+    expect(observation.limitations.length).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES);
+    expect(observation.errors.every(item => bytes(item) <= MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES)).toBe(true);
+    expect(observation.limitations.every(item => bytes(item) <= MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES)).toBe(true);
+    expect(observation.limitations.some(item => item.startsWith("threat_intel_errors_truncated:"))).toBe(true);
+    expect(observation.limitations.some(item => item.startsWith("threat_intel_limitations_truncated:"))).toBe(true);
+    expect(new TextEncoder().encode(JSON.stringify(observation)).byteLength).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_BYTES);
+    expect(observation.status).toBe("UNAVAILABLE");
+  });
+
+  test("keeps omni-risk-v1 unchanged for empty, critical, oversized, and failed observations", async () => {
+    const baseline = new RiskEngine().assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "Scorecard", kind: "score", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] });
+    const coordinate = exactCoordinate("invariant", "1.0.0");
+    const critical: ThreatFinding = { indicatorType: "package", indicator: "npm:invariant@1.0.0", threatType: "malicious", severity: "critical", source: "fixture", reference: "https://intel.example/invariant" };
+    const oversized = Array.from({ length: 500 }, (_, index): ThreatFinding => ({ indicatorType: "package", indicator: `npm:invariant@1.0.0:${index}`, threatType: "malicious", severity: "critical", source: "fixture", reference: `https://intel.example/${index}` }));
+    const scenarios = [
+      await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: [] })),
+      await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: [critical] })),
+      await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: oversized })),
+      await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => { throw new Error("feed_down"); })
+    ];
+    for (const scenario of scenarios) {
+      expect({ riskScore: scenario.assessment.riskScore, recommendation: scenario.assessment.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+      expect(scenario.snapshot.sourceErrors ?? []).toEqual([]);
+    }
   });
 
   test("preserves omni-risk-v1 score/recommendation with available or unavailable new evidence", () => {
