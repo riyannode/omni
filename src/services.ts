@@ -38,6 +38,16 @@ const decoder = new TextDecoder();
 function compareText(left: string, right: string): number { return left < right ? -1 : left > right ? 1 : 0; }
 function utf8Bytes(value: string): number { return encoder.encode(value).byteLength; }
 
+const coordinateFields: Array<keyof ExactDependencyCoordinate> = ["ecosystem", "name", "version", "sourcePath", "manifestPath", "workspacePath"];
+
+function compareCoordinates(left: ExactDependencyCoordinate, right: ExactDependencyCoordinate): number {
+  for (const field of coordinateFields) {
+    const result = compareText(left[field], right[field]);
+    if (result !== 0) return result;
+  }
+  return 0;
+}
+
 function truncateUtf8(value: unknown, maximumBytes: number): { value: string; truncated: boolean } {
   const text = typeof value === "string" ? value : "";
   const bytes = encoder.encode(text);
@@ -50,8 +60,8 @@ function truncateUtf8(value: unknown, maximumBytes: number): { value: string; tr
 function compareThreatFinding(left: RepositoryThreatIntelObservation["findings"][number], right: RepositoryThreatIntelObservation["findings"][number]): number {
   const severity = threatSeverityRank[right.finding.severity] - threatSeverityRank[left.finding.severity];
   if (severity !== 0) return severity;
-  const coordinateFields: Array<keyof ExactDependencyCoordinate> = ["ecosystem", "name", "version", "sourcePath", "manifestPath", "workspacePath"];
-  for (const field of coordinateFields) { const result = compareText(left.coordinate[field], right.coordinate[field]); if (result !== 0) return result; }
+  const coordinateResult = compareCoordinates(left.coordinate, right.coordinate);
+  if (coordinateResult !== 0) return coordinateResult;
   const findingFields: Array<keyof ThreatFinding> = ["indicatorType", "indicator", "threatType", "source", "reference"];
   for (const field of findingFields) { const result = compareText(String(left.finding[field] ?? ""), String(right.finding[field] ?? "")); if (result !== 0) return result; }
   return 0;
@@ -90,12 +100,62 @@ function boundedEntries(entries: string[], maximumEntries: number, label: "error
   return { values: [...new Set(values)].sort(compareText), overflow, entryTruncated };
 }
 
+function isReservedLimitation(entry: string): boolean {
+  return entry === "threat_intel_payload_truncated"
+    || entry.startsWith("threat_intel_packages_inspected_truncated:")
+    || entry.startsWith("threat_intel_errors_truncated:")
+    || entry.startsWith("threat_intel_limitations_truncated:");
+}
+
+function boundedLimitations(entries: string[]): { values: string[]; entryTruncated: boolean } {
+  let entryTruncated = false;
+  const normalized = [...new Set(entries.map(entry => {
+    const bounded = truncateUtf8(entry, MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES);
+    entryTruncated ||= bounded.truncated;
+    return bounded.value;
+  }))].sort(compareText);
+  const mandatory = normalized.filter(isReservedLimitation);
+  const ordinary = normalized.filter(entry => !isReservedLimitation(entry));
+  const overflow = normalized.length > MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES;
+  const existingOverflowMarker = normalized.find(entry => entry.startsWith("threat_intel_limitations_truncated:"));
+  const overflowMarker = existingOverflowMarker ?? `threat_intel_limitations_truncated:${MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES}_of_${normalized.length}`;
+  const reserved = [...new Set([...mandatory, ...(overflow && !existingOverflowMarker ? [overflowMarker] : [])])];
+  const remaining = Math.max(0, MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES - reserved.length);
+  return { values: [...new Set([...reserved, ...ordinary.slice(0, remaining)])].sort(compareText), entryTruncated };
+}
+
+function replaceLimitationMarker(entries: string[], prefix: string, marker: string): string[] {
+  return [...entries.filter(entry => !entry.startsWith(prefix)), marker];
+}
+
 function fitRepositoryThreatIntelObservation(observation: RepositoryThreatIntelObservation): RepositoryThreatIntelObservation {
-  let result = { ...observation, packagesInspected: [...observation.packagesInspected], findings: [...observation.findings], errors: [...observation.errors], limitations: [...observation.limitations] };
-  if (utf8Bytes(JSON.stringify(result)) <= MAX_REPOSITORY_THREAT_INTEL_BYTES) return result;
-  result.limitations = [...new Set([...result.limitations, "threat_intel_payload_truncated"])].sort(compareText);
-  while (utf8Bytes(JSON.stringify(result)) > MAX_REPOSITORY_THREAT_INTEL_BYTES && result.findings.length > 0) result.findings.pop();
-  return result;
+  const observedPackageCount = observation.packagesInspected.length;
+  let packagesInspected = [...observation.packagesInspected].sort(compareCoordinates);
+  let findings = [...observation.findings];
+  let limitations = boundedLimitations(observation.limitations).values;
+  const result = (): RepositoryThreatIntelObservation => ({ ...observation, packagesInspected, findings, limitations });
+
+  if (utf8Bytes(JSON.stringify(result())) <= MAX_REPOSITORY_THREAT_INTEL_BYTES) return result();
+
+  limitations = boundedLimitations([...limitations, "threat_intel_payload_truncated"]).values;
+  while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_THREAT_INTEL_BYTES && findings.length > 0) findings.pop();
+  while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_THREAT_INTEL_BYTES && packagesInspected.length > 0) {
+    packagesInspected.pop();
+    limitations = boundedLimitations(replaceLimitationMarker(
+      limitations,
+      "threat_intel_packages_inspected_truncated:",
+      `threat_intel_packages_inspected_truncated:${packagesInspected.length}_of_${observedPackageCount}`
+    )).values;
+  }
+
+  if (utf8Bytes(JSON.stringify(result())) <= MAX_REPOSITORY_THREAT_INTEL_BYTES) return result();
+
+  const diagnostic = "threat_intel_observation_reduction_failed";
+  const fallbackLimitations = boundedLimitations([...limitations, diagnostic]).values;
+  const fallback: RepositoryThreatIntelObservation = { ...observation, packagesInspected: [], findings: [], errors: [], limitations: fallbackLimitations };
+  if (utf8Bytes(JSON.stringify(fallback)) <= MAX_REPOSITORY_THREAT_INTEL_BYTES) return fallback;
+
+  return { status: observation.status, packagesInspected: [], findings: [], errors: [], limitations: [] };
 }
 
 function finalizeRepositoryThreatIntelObservation(status: RepositoryThreatIntelObservation["status"], packagesInspected: ExactDependencyCoordinate[], findings: RepositoryThreatIntelObservation["findings"], errors: string[], limitations: string[]): RepositoryThreatIntelObservation {
@@ -104,8 +164,8 @@ function finalizeRepositoryThreatIntelObservation(status: RepositoryThreatIntelO
   if (boundedErrors.overflow) rawLimitations.push(`threat_intel_errors_truncated:${MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES}_of_${errors.length}`);
   if (boundedErrors.entryTruncated) rawLimitations.push("threat_intel_error_entry_truncated");
   if (rawLimitations.some(entry => utf8Bytes(entry) > MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES)) rawLimitations.push("threat_intel_limitation_entry_truncated");
-  const boundedLimitations = boundedEntries(rawLimitations, MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES, "limitations");
-  return fitRepositoryThreatIntelObservation({ status, packagesInspected: [...packagesInspected], findings: uniqueSortedFindings(findings), errors: boundedErrors.values, limitations: [...new Set(boundedLimitations.values)].sort(compareText) });
+  const bounded = boundedLimitations(rawLimitations);
+  return fitRepositoryThreatIntelObservation({ status, packagesInspected: [...packagesInspected], findings: uniqueSortedFindings(findings), errors: boundedErrors.values, limitations: bounded.values });
 }
 
 export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore, coordinates: ExactDependencyCoordinate[], deferred: number, selectedCount: number): Promise<RepositoryThreatIntelObservation> {

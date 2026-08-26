@@ -365,6 +365,46 @@ describe("repository evidence foundation", () => {
     expect(observation.status).toBe("UNAVAILABLE");
   });
 
+  test("absolutely caps zero-finding observations with pathological package coordinates", async () => {
+    const coordinates = Array.from({ length: 24 }, (_, index) => ({
+      ...exactCoordinate(`pathological-${index}`),
+      sourcePath: `src/${"s".repeat(12_000)}-${index}`,
+      manifestPath: `manifests/${"m".repeat(12_000)}-${index}`,
+      workspacePath: `workspaces/${"w".repeat(12_000)}-${index}`
+    }));
+    const { assessment, snapshot } = await repositoryObservation(repositoryEvidenceWith(coordinates), async () => ({ checked: true, findings: [] }));
+    const observation = snapshot.repositoryEvidence!.dependencyThreatIntel;
+    const detail = assessment.evidence.find(item => item.kind === "repository_dependency_ioc_lookup")!.detail;
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(observation)).byteLength;
+    const detailBytes = new TextEncoder().encode(JSON.stringify(detail)).byteLength;
+    expect(serializedBytes).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_BYTES);
+    expect(detailBytes).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_BYTES);
+    expect(observation.status).toBe("CHECKED");
+    expect(observation.findings).toHaveLength(0);
+    expect(observation.limitations).toContain("threat_intel_payload_truncated");
+    expect(observation.limitations.some(item => item.startsWith("threat_intel_packages_inspected_truncated:") && item.endsWith("_of_24"))).toBe(true);
+    expect(() => JSON.parse(JSON.stringify(observation))).not.toThrow();
+  });
+
+  test("reserves structural markers when limitation and aggregate caps overflow together", async () => {
+    const coordinates = Array.from({ length: 24 }, (_, index) => ({
+      ...exactCoordinate(`overflow-${index}`),
+      sourcePath: `src/${"s".repeat(4_000)}-${index}`,
+      manifestPath: `manifests/${"m".repeat(4_000)}-${index}`,
+      workspacePath: `workspaces/${"w".repeat(4_000)}-${index}`
+    }));
+    const { snapshot } = await repositoryObservation(repositoryEvidenceWith(coordinates), async () => { throw new Error("provider-error"); });
+    const observation = snapshot.repositoryEvidence!.dependencyThreatIntel;
+    expect(observation.limitations.length).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES);
+    expect(observation.limitations).toContain("threat_intel_payload_truncated");
+    expect(observation.limitations.some(item => item.startsWith("threat_intel_packages_inspected_truncated:") && item.endsWith("_of_24"))).toBe(true);
+    expect(observation.limitations.some(item => item.startsWith("threat_intel_errors_truncated:"))).toBe(true);
+    expect(observation.limitations.some(item => item.startsWith("threat_intel_limitations_truncated:"))).toBe(true);
+    expect(observation.limitations.filter(item => item.startsWith("threat_intel_limitations_truncated:")).length).toBe(1);
+    expect(new TextEncoder().encode(JSON.stringify(observation)).byteLength).toBeLessThanOrEqual(MAX_REPOSITORY_THREAT_INTEL_BYTES);
+    expect(observation.status).toBe("UNAVAILABLE");
+  });
+
   test("keeps omni-risk-v1 unchanged for empty, critical, oversized, and failed observations", async () => {
     const baseline = new RiskEngine().assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "Scorecard", kind: "score", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] });
     const coordinate = exactCoordinate("invariant", "1.0.0");
