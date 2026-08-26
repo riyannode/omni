@@ -5,6 +5,7 @@ import { RiskEngine } from "../src/domain/risk-engine.ts";
 import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/risk-features.ts";
 import { RISK_SNAPSHOT_SCHEMA_VERSION, type RiskSnapshot } from "../src/domain/risk.ts";
 import { partitionCompatibleRows } from "../src/domain/risk-evaluation.ts";
+import { UpstreamHttp } from "../src/providers/http.ts";
 
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -82,9 +83,25 @@ describe("repository evidence foundation", () => {
     expect(result.dependencies.unresolved).toEqual([]);
   });
 
+  test("bounds deps.dev JSON bodies and disables redirects", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: RequestInit[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      calls.push(init ?? {});
+      return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const http = new UpstreamHttp(1_000, 1, 1);
+      await expect(http.boundedJson("https://api.deps.dev/example", 128)).resolves.toEqual({ ok: true });
+      expect(calls[0]?.redirect).toBe("error");
+      globalThis.fetch = (async () => new Response("0123456789", { headers: { "content-length": "10" } })) as unknown as typeof fetch;
+      await expect(http.boundedJson("https://api.deps.dev/example", 4)).rejects.toThrow("upstream_response_oversized");
+    } finally { globalThis.fetch = originalFetch; }
+  });
+
   test("keeps deps.dev provenance states strict and source/commit mismatches visible", async () => {
     const urls: string[] = [];
-    const http = { async json(url: string) { urls.push(url); return { licenses: ["MIT"], advisoryKeys: [{ id: "GHSA-example" }], slsaProvenances: [{ verified: true, sourceRepository: "github.com/acme/demo", commit: commitSha, url: "https://provenance.example/1" }] }; } };
+    const http = { async boundedJson(url: string, _maximumBytes: number) { urls.push(url); return { licenses: ["MIT"], advisoryKeys: [{ id: "GHSA-example" }], slsaProvenances: [{ verified: true, sourceRepository: "github.com/acme/demo", commit: commitSha, url: "https://provenance.example/1" }] }; } };
     const observed = await new DepsDevProvider(http as never).packageVersion({ ecosystem: "NPM", name: "demo", version: "1.0.0", sourcePath: "package-lock.json" }, { repository: "github.com/acme/demo", commit: commitSha });
     expect(urls).toContain("https://api.deps.dev/v3/systems/NPM/packages/demo/versions/1.0.0:dependencies");
     expect(observed.provenance[0]).toMatchObject({ state: "VERIFIED", expectedSourceMatches: true, expectedCommitMatches: true });

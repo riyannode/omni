@@ -1,7 +1,11 @@
 import type { Evidence, ExactDependencyCoordinate, ProvenanceObservation } from "../domain/risk.ts";
 import type { UpstreamHttp } from "./http.ts";
 
-type Http = Pick<UpstreamHttp, "json">;
+const MAX_VERSION_RESPONSE_BYTES = 512 * 1024;
+const MAX_GRAPH_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_GRAPH_NODES = 20_000;
+
+type Http = Pick<UpstreamHttp, "boundedJson">;
 type Expected = { repository?: string; commit?: string };
 type Attestation = { verified?: boolean; sourceRepository?: string; commit?: string; url?: string };
 type ResponseData = { licenses?: string[]; advisoryKeys?: Array<{ id?: string }>; relatedProjects?: Array<{ projectKey?: { id?: string }; relationType?: string; relationProvenance?: string }>; slsaProvenances?: Attestation[]; attestations?: Attestation[] };
@@ -33,11 +37,12 @@ export class DepsDevProvider {
 
   async packageVersion(coordinate: ExactDependencyCoordinate, expected: Expected = {}): Promise<{ licenses: string[]; advisories: string[]; provenance: ProvenanceObservation[]; graph: { checked: boolean; nodeCount: number; error?: string }; evidence: Evidence }> {
     const base = `https://api.deps.dev/v3/systems/${coordinate.ecosystem}/packages/${encodeURIComponent(coordinate.name)}/versions/${encodeURIComponent(coordinate.version)}`;
-    const data = await this.http.json<ResponseData>(base);
+    const data = await this.http.boundedJson<ResponseData>(base, MAX_VERSION_RESPONSE_BYTES);
     let graph: { checked: boolean; nodeCount: number; error?: string };
     try {
-      const graphData = await this.http.json<{ nodes?: unknown[] }>(`${base}:dependencies`);
-      graph = { checked: true, nodeCount: Array.isArray(graphData.nodes) ? graphData.nodes.length : 0 };
+      const graphData = await this.http.boundedJson<{ nodes?: unknown[] }>(`${base}:dependencies`, MAX_GRAPH_RESPONSE_BYTES);
+      const nodeCount = Array.isArray(graphData.nodes) ? graphData.nodes.length : 0;
+      graph = nodeCount > MAX_GRAPH_NODES ? { checked: false, nodeCount: 0, error: "deps_graph_node_limit" } : { checked: true, nodeCount };
     } catch (error) { graph = { checked: false, nodeCount: 0, error: error instanceof Error ? error.message : "unknown error" }; }
     const normalized = normalizeProvenance(data.slsaProvenances?.[0] ?? data.attestations?.[0], expected.repository || expected.commit ? expected : expectation(data));
     const licenses = [...new Set((data.licenses ?? []).filter((item): item is string => typeof item === "string"))].sort();
