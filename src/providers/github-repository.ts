@@ -204,6 +204,6 @@ export class GitHubRepositoryProvider {
     limitations.push(...resolved.limitations, ...unsupportedEcosystems(dependencyManifestPaths));
     if (dependencyManifestPaths.length === 0) limitations.push("dependency_resolution_unavailable");
     if (resolved.unresolved.length > 0) limitations.push("dependency_versions_unresolved");
-    return { target: { repository: identity.repository, requestedRef: identity.requestedRef, resolvedCommitSha: identity.resolvedCommitSha }, securityFiles, dependencies: dependencyEvidence, dependencyObservations: [], coverage: { status: limitations.length === 0 ? "complete" : "partial", treeEntriesInspected: Math.min(entries.length, MAX_TREE_ENTRIES), filesInspected: securityFiles.filter(file => file.status === "inspected").length, bytesInspected, limitations: [...new Set(limitations)].sort() }, sourceErrors: [] };
+    return { target: { repository: identity.repository, requestedRef: identity.requestedRef, resolvedCommitSha: identity.resolvedCommitSha }, securityFiles, dependencies: dependencyEvidence, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: limitations.length === 0 ? "complete" : "partial", treeEntriesInspected: Math.min(entries.length, MAX_TREE_ENTRIES), filesInspected: securityFiles.filter(file => file.status === "inspected").length, bytesInspected, limitations: [...new Set(limitations)].sort() }, sourceErrors: [] };
   }
 }

@@ -1,4 +1,4 @@
-import type { DependencyObservation, ExactDependencyCoordinate, RepositoryEvidence, RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
+import type { DependencyObservation, ExactDependencyCoordinate, RepositoryEvidence, RepositoryThreatIntelObservation, RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
 import { CachedLoader } from "./data/cache.ts";
@@ -20,6 +20,38 @@ const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
 const REPOSITORY_ENRICHMENT_CONCURRENCY = 4;
 
 function coordinateIdentity(coordinate: { ecosystem: string; name: string; version: string }): string { return `${coordinate.ecosystem}:${coordinate.name}@${coordinate.version}`; }
+
+async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore, coordinates: ExactDependencyCoordinate[], deferred: number, selectedCount: number): Promise<RepositoryThreatIntelObservation> {
+  if (coordinates.length === 0) return { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["no_exact_dependencies_selected"] };
+  const findings: RepositoryThreatIntelObservation["findings"] = [];
+  const errors: string[] = [];
+  const limitations = deferred > 0 ? [`dependency_enrichment_limit_reached:${deferred}_of_${selectedCount}_deferred`] : [];
+  let unavailable = false;
+  for (let offset = 0; offset < coordinates.length; offset += REPOSITORY_ENRICHMENT_CONCURRENCY) {
+    const chunk = coordinates.slice(offset, offset + REPOSITORY_ENRICHMENT_CONCURRENCY);
+    const results = await Promise.all(chunk.map(async coordinate => {
+      try {
+        return { coordinate, result: await threatIntel.lookupPackage(coordinate.ecosystem, coordinate.name, coordinate.version) };
+      } catch (error) {
+        return { coordinate, error: `${error instanceof Error ? error.message : "unknown error"}`.slice(0, 256) };
+      }
+    }));
+    for (const item of results) {
+      if ("error" in item) {
+        unavailable = true;
+        errors.push(`threat_intel ${coordinateIdentity(item.coordinate)}: ${item.error}`);
+        limitations.push(`threat_intel_lookup_failed:${item.coordinate.name}@${item.coordinate.version}`);
+        continue;
+      }
+      if (!item.result.checked) {
+        unavailable = true;
+        limitations.push(`threat_intel_unavailable:${item.coordinate.name}@${item.coordinate.version}`);
+      }
+      findings.push(...item.result.findings.map(finding => ({ coordinate: item.coordinate, finding })));
+    }
+  }
+  return { status: unavailable ? "UNAVAILABLE" : "CHECKED", packagesInspected: coordinates, findings, errors, limitations: [...new Set(limitations)].sort() };
+}
 
 
 export class OmniIntelligence {
@@ -112,7 +144,7 @@ export class OmniIntelligence {
       });
     }
     catch (error) {
-      const repositoryEvidence: RepositoryEvidence = { target: { repository: target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
+      const repositoryEvidence: RepositoryEvidence = { target: { repository: target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
       return this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence);
     }
   }
@@ -137,19 +169,9 @@ export class OmniIntelligence {
       repositoryEvidence.coverage.limitations.push(`dependency_enrichment_limit_reached:${deferred}_of_${selected.length}_deferred`);
     }
     const expected = { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { commit: repositoryEvidence.target.resolvedCommitSha } : {}) };
-    // Threat-intel scope (PR #10 decision): the exact repository dependencies are
-    // checked against the existing bounded ThreatIntelStore.lookupPackage seam using
-    // the same deduplicated, capped, concurrency-bounded enrichment set as deps.dev —
-    // no extra fan-out. Findings are observation-only under omni-risk-v1.
-    let threatIntelChecked = false;
-    let threatFindings: RiskSnapshot["threatFindings"] = [];
-    try {
-      const lookups = await Promise.all(enriched.map(coordinate => this.threatIntel.lookupPackage(coordinate.ecosystem, coordinate.name, coordinate.version)));
-      threatIntelChecked = enriched.length === 0 || lookups.every(result => result.checked);
-      threatFindings = lookups.flatMap(result => result.findings);
-      if (threatFindings.length > 0) evidence.push({ source: "OMNI threat intelligence", kind: "repository_dependency_ioc_lookup", observedAt: new Date().toISOString(), detail: { matches: threatFindings.length, packagesChecked: enriched.length } });
-    }
-    catch (error) { sourceErrors.push(`Threat intelligence: ${error instanceof Error ? error.message : "unknown error"}`); }
+    const threatIntelObservation = await collectRepositoryThreatIntel(this.threatIntel, enriched, deferred, selected.length);
+    repositoryEvidence.dependencyThreatIntel = threatIntelObservation;
+    evidence.push({ source: "OMNI threat intelligence", kind: "repository_dependency_ioc_lookup", observedAt: new Date().toISOString(), detail: threatIntelObservation as unknown as Record<string, unknown> });
     for (let offset = 0; offset < enriched.length; offset += REPOSITORY_ENRICHMENT_CONCURRENCY) {
       const chunk = enriched.slice(offset, offset + REPOSITORY_ENRICHMENT_CONCURRENCY);
       await Promise.all(chunk.map(async coordinate => {
@@ -168,11 +190,10 @@ export class OmniIntelligence {
         catch (error) { repositoryEvidence.sourceErrors.push(`deps.dev ${coordinate.name}@${coordinate.version}: ${error instanceof Error ? error.message : "unknown error"}`); repositoryEvidence.coverage.status = "partial"; repositoryEvidence.coverage.limitations.push(`deps_dev_unavailable:${coordinate.name}@${coordinate.version}`); }
       }));
     }
-    // Collector failures are intentionally not merged into sourceErrors under omni-risk-v1.
     evidence[0]!.detail.collectorErrors = [...repositoryEvidence.sourceErrors];
     evidence[0]!.detail.coverage = repositoryEvidence.coverage.status;
     evidence[0]!.detail.limitations = [...new Set(repositoryEvidence.coverage.limitations)].sort();
-    return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, threatIntelChecked, ...(threatFindings.length > 0 ? { threatFindings } : {}), evidence, sourceErrors });
+    return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, evidence, sourceErrors });
   }
 
   async dependenciesRisk(packages: Array<{ ecosystem: string; name: string; version: string }>) {

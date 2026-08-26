@@ -16,11 +16,21 @@ export type RepositorySecurityFile = { path: string; category: "manifest" | "wor
 export type ProvenanceState = "NOT_CHECKED" | "UNAVAILABLE" | "PRESENT_UNVERIFIED" | "VERIFIED" | "VERIFIED_SOURCE_MISMATCH" | "VERIFIED_COMMIT_MISMATCH" | "VERIFIED_COMMIT_UNCONFIRMED" | "ERROR";
 export type ProvenanceObservation = { package: ExactDependencyCoordinate; state: ProvenanceState; source: "deps.dev"; sourceRepository?: string; sourceCommit?: string; expectedSourceMatches?: boolean; expectedCommitMatches?: boolean; attestationUrl?: string };
 export type DependencyObservation = { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number; error?: string }; provenance: ProvenanceObservation[] };
+export type RepositoryThreatIntelStatus = "NOT_CHECKED" | "CHECKED" | "UNAVAILABLE";
+export type RepositoryThreatIntelFinding = { coordinate: ExactDependencyCoordinate; finding: ThreatFinding };
+export type RepositoryThreatIntelObservation = {
+  status: RepositoryThreatIntelStatus;
+  packagesInspected: ExactDependencyCoordinate[];
+  findings: RepositoryThreatIntelFinding[];
+  errors: string[];
+  limitations: string[];
+};
 export type RepositoryEvidence = {
   target: { repository: string; requestedRef?: string; resolvedCommitSha?: string };
   securityFiles: RepositorySecurityFile[];
   dependencies: { exact: ExactDependencyCoordinate[]; unresolved: UnresolvedDependency[]; resolvedGraph: { packagesChecked: number; nodesObserved: number; errors: string[] } };
   dependencyObservations: DependencyObservation[];
+  dependencyThreatIntel: RepositoryThreatIntelObservation;
   coverage: { status: "complete" | "partial"; treeEntriesInspected: number; filesInspected: number; bytesInspected: number; limitations: string[] };
   sourceErrors: string[];
 };
