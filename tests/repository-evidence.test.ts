@@ -8,6 +8,7 @@ import { partitionCompatibleRows, featuresEqual, featuresEqualForCohort } from "
 import { UpstreamHttp } from "../src/providers/http.ts";
 import { CachedLoader, type Cache } from "../src/data/cache.ts";
 import { OmniIntelligence, MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL, MAX_REPOSITORY_THREAT_INTEL_BYTES, MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES, MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_INDICATOR_BYTES, MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_REFERENCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_SOURCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_THREAT_TYPE_BYTES } from "../src/services.ts";
+import type { ScorecardProviderResult } from "../src/providers/scorecard.ts";
 import { NoopAssessmentJournal, type AssessmentJournal } from "../src/data/assessment-journal.ts";
 import type { ExactDependencyCoordinate, RiskAssessment, RepositoryEvidence, ThreatFinding } from "../src/domain/risk.ts";
 
@@ -26,7 +27,7 @@ function fakeDepsDev(record: (coordinate: ExactDependencyCoordinate) => void): {
   } };
 }
 
-const staticScorecard = { async repository() { return { score: 9.5, evidence: { source: "Scorecard", kind: "score", observedAt: "2026-01-01T00:00:00.000Z", detail: { score: 9.5 } } }; } };
+const staticScorecard = { async repository() { return { status: "available" as const, score: 9.5, evidence: { source: "Scorecard", kind: "score", observedAt: "2026-01-01T00:00:00.000Z", detail: { score: 9.5 } } }; } };
 
 function exactCoordinate(name: string, version = "1.0.0"): ExactDependencyCoordinate {
   return { ecosystem: "NPM", name, version, sourcePath: "package-lock.json", manifestPath: "package.json", workspacePath: "." };
@@ -60,13 +61,15 @@ function capturingJournal(snapshots: RiskSnapshot[]) {
   };
 }
 
-function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: ReturnType<typeof threatIntelStore>, journal: AssessmentJournal = new NoopAssessmentJournal()) {
+type ScorecardStub = { repository(): Promise<ScorecardProviderResult> };
+
+function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: ReturnType<typeof threatIntelStore>, journal: AssessmentJournal = new NoopAssessmentJournal(), scorecard: ScorecardStub = staticScorecard) {
   const github = {
     async resolve() { return { repository: repositoryEvidence.target.repository, requestedRef: "main", resolvedCommitSha: commitSha, rootTreeSha: treeSha }; },
     async collectResolved() { return structuredClone(repositoryEvidence); }
   };
   const depsDev = fakeDepsDev(() => {});
-  return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, staticScorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
+  return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, scorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
 }
 
 async function repositoryObservation(repositoryEvidence: RepositoryEvidence, lookup: (coordinate: ExactDependencyCoordinate) => Promise<{ checked: boolean; findings: ThreatFinding[] }>) {
@@ -152,7 +155,7 @@ describe("repository evidence foundation", () => {
     };
     const values = new Map<string, string>();
     const cache: Cache = { async get(key) { return values.get(key) ?? null; }, async set(key, value) { values.set(key, value); } };
-    const scorecard = { async repository() { return { score: 9.5, evidence: { source: "Scorecard", kind: "score", observedAt: "2026-01-01T00:00:00.000Z", detail: { score: 9.5 } } }; } };
+    const scorecard = { async repository() { return { status: "available" as const, score: 9.5, evidence: { source: "Scorecard", kind: "score", observedAt: "2026-01-01T00:00:00.000Z", detail: { score: 9.5 } } }; } };
     const omni = new OmniIntelligence(new RiskEngine(), new CachedLoader(cache), {} as never, {} as never, scorecard as never, {} as never, {} as never, {} as never, {} as never, {} as never, new NoopAssessmentJournal(), github as never, {} as never);
 
     await omni.repositoryRisk("acme", "demo");
@@ -166,7 +169,7 @@ describe("repository evidence foundation", () => {
     const base = "https://api.github.com/repos/acme/demo";
     const http = { async request(url: string | URL) {
       const fixtures: Record<string, unknown> = {
-        [base]: { default_branch: "main" },
+        [base]: { full_name: "acme/demo", default_branch: "main" },
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: true, tree: [{ path: "package.json", type: "blob", sha: packageBlob, size: 999_999 }] }
       };
@@ -183,7 +186,7 @@ describe("repository evidence foundation", () => {
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
-        [base]: { default_branch: "main" },
+        [base]: { full_name: "acme/demo", default_branch: "main" },
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }, { path: "bun.lock", type: "blob", sha: bunBlob, size: 100 }] },
         [`${base}/contents/package.json?ref=${commitSha}`]: content(JSON.stringify({ dependencies: { safe: "^1.2.0" } })),
@@ -482,7 +485,7 @@ describe("repository evidence foundation", () => {
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
-        [base]: { default_branch: "main" },
+        [base]: { full_name: "acme/demo", default_branch: "main" },
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [
           { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
@@ -516,7 +519,7 @@ describe("repository evidence foundation", () => {
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
-        [base]: { default_branch: "main" },
+        [base]: { full_name: "acme/demo", default_branch: "main" },
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [
           { path: "app/package.json", type: "blob", sha: packageBlob, size: 100 },
@@ -539,7 +542,7 @@ describe("repository evidence foundation", () => {
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
-        [base]: { default_branch: "main" },
+        [base]: { full_name: "acme/demo", default_branch: "main" },
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [
           { path: "pyproject.toml", type: "blob", sha: packageBlob, size: 100 },
@@ -561,7 +564,7 @@ describe("repository evidence foundation", () => {
 
   test("fails closed on invalid commit identities, rate limits, timeouts, and oversized streamed bodies", async () => {
     const base = "https://api.github.com/repos/acme/demo";
-    const invalidIdentity = { async request() { return response({ default_branch: "main", sha: "not-a-sha", commit: { tree: {} } }); } };
+    const invalidIdentity = { async request() { return response({ full_name: "acme/demo", default_branch: "main", sha: "not-a-sha", commit: { tree: {} } }); } };
     await expect(new GitHubRepositoryProvider(invalidIdentity as never).collect("acme", "demo")).rejects.toThrow("github_commit_identity_invalid");
     const rateLimited = { async request() { return response({}, 403); } };
     await expect(new GitHubRepositoryProvider(rateLimited as never).collect("acme", "demo")).rejects.toThrow("github_rate_limited");
@@ -582,7 +585,7 @@ describe("repository evidence foundation", () => {
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
-        [base]: { default_branch: "main" },
+        [base]: { full_name: "acme/demo", default_branch: "main" },
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [
           { path: "missing/package.json", type: "blob", sha: packageBlob, size: 100 },
@@ -657,7 +660,7 @@ describe("repository evidence foundation", () => {
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
-        [base]: { default_branch: "main" },
+        [base]: { full_name: "acme/demo", default_branch: "main" },
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [
           { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
@@ -701,6 +704,33 @@ describe("repository evidence foundation", () => {
     const baseline = engine.assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: baselineEvidence });
     expect({ riskScore: assessment.riskScore, recommendation: assessment.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
     expect({ riskScore: second.riskScore, recommendation: second.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+  });
+
+  test("keeps not_indexed Scorecard conservative without treating it as an outage", async () => {
+    const repositoryEvidence = repositoryEvidenceWith([]);
+    const notIndexed = {
+      async repository() {
+        return {
+          status: "not_indexed" as const,
+          diagnostic: {
+            httpStatus: 404,
+            host: "api.scorecard.dev",
+            mode: "latest" as const,
+            repository: repositoryEvidence.target.repository,
+            reason: "missing_result"
+          }
+        };
+      }
+    };
+    const assessment = await repositoryOmni(repositoryEvidence, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), notIndexed).repositoryRisk("acme", "demo");
+
+    expect(assessment.dimensions.repositorySecurityPractices).toBe("unknown");
+    expect(assessment.evidenceCoverage).toBe(0);
+    expect(assessment.riskScore).toBe(50);
+    expect(assessment.recommendation).toBe("manual_review");
+    expect(assessment.sourceErrors).toEqual(["OpenSSF Scorecard: not_indexed (missing_result; HTTP 404 api.scorecard.dev; mode=latest; repository=github.com/acme/demo)"]);
+    expect(assessment.evidence.some(item => item.kind === "repository_primary_evidence")).toBe(true);
+    expect(assessment.evidence.some(item => item.kind === "repository_security_practices")).toBe(false);
   });
 });
 

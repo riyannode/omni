@@ -14,6 +14,22 @@ export type RepositoryIdentity = {
   rootTreeSha: string;
 };
 
+const REPOSITORY_PART = /^[A-Za-z0-9_.-]+$/;
+
+function normalizedRepoName(repo: string): string {
+  const normalized = repo.replace(/\.git$/i, "");
+  if (!REPOSITORY_PART.test(normalized)) throw new Error("github_repository_identity_invalid");
+  return normalized;
+}
+
+function canonicalParts(repository: string): { owner: string; repo: string } {
+  const parts = repository.split("/");
+  if (parts.length !== 3 || parts[0] !== "github.com" || !REPOSITORY_PART.test(parts[1]!) || !REPOSITORY_PART.test(parts[2]!) || parts[2]!.toLowerCase().endsWith(".git")) {
+    throw new Error("github_repository_identity_invalid");
+  }
+  return { owner: parts[1]!, repo: parts[2]! };
+}
+
 type Http = Pick<UpstreamHttp, "request">;
 type TreeEntry = { path?: string; type?: string; sha?: string; size?: number };
 type PackageLock = { packages?: Record<string, { version?: string }>; dependencies?: Record<string, { version?: string }> };
@@ -152,7 +168,7 @@ function unsupportedEcosystems(paths: readonly string[]): string[] {
 export class GitHubRepositoryProvider {
   constructor(private readonly http: Http, private readonly token?: string) {}
 
-  private base(owner: string, repo: string): string { return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`; }
+  private base(owner: string, repo: string): string { return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(normalizedRepoName(repo))}`; }
   private headers(): Headers {
     const headers = new Headers({ accept: "application/vnd.github+json", "x-github-api-version": "2026-03-10" });
     if (this.token) headers.set("authorization", `Bearer ${this.token}`);
@@ -161,21 +177,26 @@ export class GitHubRepositoryProvider {
 
   async resolve(owner: string, repo: string, requestedRef?: string): Promise<RepositoryIdentity> {
     const base = this.base(owner, repo); const headers = this.headers();
-    const metadata = await json<{ default_branch?: string }>(this.http, base, headers);
+    const metadata = await json<{ full_name?: string; default_branch?: string }>(this.http, base, headers);
+    if (typeof metadata.full_name !== "string") throw new Error("github_repository_identity_missing");
+    const fullName = metadata.full_name.split("/");
+    if (fullName.length !== 2 || !REPOSITORY_PART.test(fullName[0]!) || !REPOSITORY_PART.test(fullName[1]!) || fullName[1]!.toLowerCase().endsWith(".git")) throw new Error("github_repository_identity_invalid");
+    const canonicalRepository = `github.com/${metadata.full_name}`;
     const ref = requestedRef ?? metadata.default_branch;
     if (!ref) throw new Error("github_default_branch_missing");
     const commit = await json<{ sha?: string; commit?: { tree?: { sha?: string } } }>(this.http, `${base}/commits/${encodeURIComponent(ref)}`, headers);
     const resolvedCommitSha = commit.sha; const rootTreeSha = commit.commit?.tree?.sha;
     if (typeof resolvedCommitSha !== "string" || typeof rootTreeSha !== "string" || !/^[a-f0-9]{40}$/i.test(resolvedCommitSha) || !/^[a-f0-9]{40}$/i.test(rootTreeSha)) throw new Error("github_commit_identity_invalid");
-    return { repository: `github.com/${owner}/${repo}`, requestedRef: ref, resolvedCommitSha, rootTreeSha };
+    return { repository: canonicalRepository, requestedRef: ref, resolvedCommitSha, rootTreeSha };
   }
 
   async collect(owner: string, repo: string, requestedRef?: string): Promise<RepositoryEvidence> {
     return this.collectResolved(owner, repo, await this.resolve(owner, repo, requestedRef));
   }
 
-  async collectResolved(owner: string, repo: string, identity: RepositoryIdentity): Promise<RepositoryEvidence> {
-    const base = this.base(owner, repo); const headers = this.headers();
+  async collectResolved(_owner: string, _repo: string, identity: RepositoryIdentity): Promise<RepositoryEvidence> {
+    const parts = canonicalParts(identity.repository);
+    const base = this.base(parts.owner, parts.repo); const headers = this.headers();
     const response = await json<{ truncated?: boolean; tree?: TreeEntry[] }>(this.http, `${base}/git/trees/${identity.rootTreeSha}?recursive=1`, headers);
     const limitations: string[] = [];
     if (response.truncated) limitations.push("github_tree_truncated");

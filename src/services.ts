@@ -309,22 +309,28 @@ export class OmniIntelligence {
     const target = `github.com/${owner}/${repo}`;
     try {
       const identity = await this.github.resolve(owner, repo);
-      return this.cache.getOrLoad(`assessment:repo:${owner}/${repo}:${identity.resolvedCommitSha}`, 1800, async () => {
+      return this.cache.getOrLoad(`assessment:repo:${identity.repository}:${identity.resolvedCommitSha}`, 1800, async () => {
         const repositoryEvidence = await this.github.collectResolved(owner, repo, identity);
-        return this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence);
+        return this.repositoryRiskFromEvidence(repositoryEvidence);
       });
     }
     catch (error) {
       const repositoryEvidence: RepositoryEvidence = { target: { repository: target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
-      return this.repositoryRiskFromEvidence(owner, repo, repositoryEvidence);
+      return this.repositoryRiskFromEvidence(repositoryEvidence);
     }
   }
 
-  private async repositoryRiskFromEvidence(owner: string, repo: string, repositoryEvidence: RepositoryEvidence): Promise<RiskAssessment> {
+  private async repositoryRiskFromEvidence(repositoryEvidence: RepositoryEvidence): Promise<RiskAssessment> {
     const evidence: RiskSnapshot["evidence"] = [{ source: "GitHub", kind: "repository_primary_evidence", observedAt: new Date().toISOString(), detail: { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { resolvedCommitSha: repositoryEvidence.target.resolvedCommitSha } : {}), coverage: repositoryEvidence.coverage.status, limitations: repositoryEvidence.coverage.limitations } }];
     const sourceErrors: string[] = []; let scorecard: number | undefined;
-    try { const result = await this.scorecard.repository(owner, repo); scorecard = result.score; evidence.push(result.evidence); }
-    catch (error) { sourceErrors.push(`OpenSSF Scorecard: ${error instanceof Error ? error.message : "unknown error"}`); }
+    const scorecardIdentity = { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { resolvedCommitSha: repositoryEvidence.target.resolvedCommitSha } : {}) };
+    const scorecardResult = await this.scorecard.repository(scorecardIdentity, "latest");
+    if (scorecardResult.status === "available") { scorecard = scorecardResult.score; evidence.push(scorecardResult.evidence); }
+    else {
+      const detail = scorecardResult.diagnostic;
+      const status = detail.httpStatus === undefined ? "" : ` HTTP ${detail.httpStatus}`;
+      sourceErrors.push(`OpenSSF Scorecard: ${scorecardResult.status} (${detail.reason};${status} ${detail.host}; mode=${detail.mode}; repository=${detail.repository})`);
+    }
     // Deterministic order and upstream deduplication bound the deps.dev fan-out:
     // one enrichment per distinct package@version regardless of how many workspaces
     // declare it. Overflow is never silently discarded — it stays visible as a
@@ -364,7 +370,7 @@ export class OmniIntelligence {
     evidence[0]!.detail.collectorErrors = [...repositoryEvidence.sourceErrors];
     evidence[0]!.detail.coverage = repositoryEvidence.coverage.status;
     evidence[0]!.detail.limitations = [...new Set(repositoryEvidence.coverage.limitations)].sort();
-    return this.assessAndJournal({ subject: { type: "repository", id: `github.com/${owner}/${repo}` }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, evidence, sourceErrors });
+    return this.assessAndJournal({ subject: { type: "repository", id: repositoryEvidence.target.repository }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, evidence, sourceErrors });
   }
 
   async dependenciesRisk(packages: Array<{ ecosystem: string; name: string; version: string }>) {
