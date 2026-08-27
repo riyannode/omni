@@ -19,6 +19,7 @@ type OsvVuln = {
   id: string;
   published?: string;
   modified?: string;
+  withdrawn?: string | null;
   aliases?: string[];
   affected?: OsvAffected[];
   database_specific?: { severity?: string; source?: string; "malicious-packages-origins"?: OsvOrigin[] };
@@ -66,6 +67,10 @@ function normalizeRange(range: OsvRange): OsvAffectedRange {
   };
 }
 
+function normalizeVersions(versions: string[] | undefined): string[] {
+  return [...(versions ?? [])].sort(compareText);
+}
+
 function normalizeCwes(cwes: OsvCweRecord[] | undefined): OsvCwe[] | undefined {
   if (!Array.isArray(cwes)) return undefined;
   const normalized = cwes.map(cwe => ({
@@ -99,8 +104,8 @@ function normalizeAffected(affected: OsvAffected[] | undefined, fallback: { ecos
       const indicators = normalizeIndicators(item.database_specific?.indicators);
       return {
         package: packageInfo,
-        versions: [...(item.versions ?? [])],
-        ranges: (item.ranges ?? []).map(normalizeRange),
+        versions: normalizeVersions(item.versions),
+        ranges: (item.ranges ?? []).map(normalizeRange).sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right))),
         ...(sourceReference ? { sourceReference } : {}),
         ...(cwes ? { cwes } : {}),
         ...(indicators ? { indicators } : {})
@@ -118,8 +123,8 @@ function normalizeOrigins(origins: OsvOrigin[] | undefined): MaliciousPackageObs
       ...(stringOrUndefined(origin.modified_time) ? { modifiedAt: origin.modified_time } : {}),
       ...(stringOrUndefined(origin.import_time) ? { importedAt: origin.import_time } : {}),
       ...(stringOrUndefined(origin.sha256) ? { sha256: origin.sha256 } : {}),
-      ...(Array.isArray(origin.versions) ? { versions: [...origin.versions] } : {}),
-      ...(Array.isArray(origin.ranges) ? { ranges: origin.ranges.map(normalizeRange) } : {})
+      ...(Array.isArray(origin.versions) ? { versions: normalizeVersions(origin.versions) } : {}),
+      ...(Array.isArray(origin.ranges) ? { ranges: origin.ranges.map(normalizeRange).sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right))) } : {})
     }))
     .sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right)));
 }
@@ -155,9 +160,9 @@ export class OsvProvider {
 
     const vulnerabilities = data.vulns ?? [];
     const maliciousPackageObservations = vulnerabilities
-      .filter(vulnerability => vulnerability.id.startsWith("MAL-"))
+      .filter(vulnerability => vulnerability.id.startsWith("MAL-") && vulnerability.withdrawn == null)
       .map(vulnerability => maliciousObservation(vulnerability, ecosystem, name, version))
-      .sort((left, right) => compareText(left.id, right.id));
+      .sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right)));
     const findings = vulnerabilities
       .filter(vulnerability => !vulnerability.id.startsWith("MAL-"))
       .map(vulnerability => ({

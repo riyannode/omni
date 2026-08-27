@@ -92,6 +92,27 @@ describe("OSV malicious-package recognition", () => {
     await expect(query([])).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
   });
 
+  test("does not treat an explicitly withdrawn MAL record as active", async () => {
+    const withdrawn = { ...maliciousRecord("MAL-2026-0003", "1.0.2", "2026-02-03T00:00:00Z", "https://github.com/ossf/malicious-packages/blob/main/osv/withdrawn/npm/demo/MAL-2026-0003.json"), withdrawn: "2026-02-04T00:00:00Z" };
+    await expect(query([withdrawn])).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
+  });
+
+  test("normalizes nested version and duplicate-id ordering deterministically", async () => {
+    const first = maliciousRecord("MAL-2026-0004", "1.0.4", "2026-02-04T00:00:00Z", "https://example.com/source-b");
+    first.affected[0]!.versions.push("0.9.0");
+    const reordered = structuredClone(first);
+    reordered.affected[0]!.versions.reverse();
+    const firstResult = await query([first]);
+    const secondResult = await query([reordered]);
+    expect(JSON.stringify(firstResult.maliciousPackageObservations)).toBe(JSON.stringify(secondResult.maliciousPackageObservations));
+
+    const duplicateA = maliciousRecord("MAL-2026-0005", "1.0.5", "2026-02-05T00:00:00Z", "https://example.com/source-a");
+    const duplicateB = maliciousRecord("MAL-2026-0005", "1.0.5", "2026-02-06T00:00:00Z", "https://example.com/source-b");
+    const forward = await query([duplicateA, duplicateB]);
+    const backward = await query([duplicateB, duplicateA]);
+    expect(JSON.stringify(forward.maliciousPackageObservations)).toBe(JSON.stringify(backward.maliciousPackageObservations));
+  });
+
   test("preserves provider timeout/error semantics", async () => {
     const provider = new OsvProvider({ async json() { throw new Error("upstream 504 api.osv.dev"); } } as never);
     await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).rejects.toThrow("upstream 504 api.osv.dev");
