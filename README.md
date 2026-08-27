@@ -14,6 +14,10 @@ Three intelligence planes feed one deterministic `RiskEngine`:
 
 OMNI does **not** equate “not found in a threat feed” with “safe”. Results expose `evidenceCoverage`, `signals`, `sourceErrors`, and an advisory `recommendation`.
 
+## Production API
+
+The current production API is `https://api.askomni.xyz`. Source-hosted `openapi.yaml` and `llms.txt` retain a runtime template URL; deployed responses render that template with the configured public base URL.
+
 ## Trust before execution
 
 ```text
@@ -39,7 +43,7 @@ Successful paid results keep the canonical structured assessment fields inline. 
 
 ## Data sources
 
-Built-in network sources are OSV, CISA KEV, npm Registry, OpenSSF Scorecard, and Circle Discovery. The KEV loader tries `www.cisa.gov` first and falls back to the `cisagov/kev-data` mirror, because some egress ranges receive HTTP 403 from cisa.gov; override the ordered list with `OMNI_KEV_FEED_URLS`. The resolved `feedUrl` and `catalogVersion` are reported in the evidence detail. OMNI-owned PostgreSQL history accumulates endpoint/provider/schema/payment configuration changes over time.
+Built-in network sources are OSV, CISA KEV, npm Registry, OpenSSF Scorecard, and Circle Discovery. Repository assessments also use GitHub repository evidence and deps.dev observations; a configured `GITHUB_TOKEN` enables authenticated GitHub reads for higher upstream limits. The KEV loader tries `www.cisa.gov` first and falls back to the `cisagov/kev-data` mirror, because some egress ranges receive HTTP 403 from cisa.gov; override the ordered list with `OMNI_KEV_FEED_URLS`. The resolved `feedUrl` and `catalogVersion` are reported in the evidence detail. OMNI-owned PostgreSQL history accumulates endpoint/provider/schema/payment configuration changes over time. OpenSSF Scorecard reports `available`, `not_indexed`, `unavailable`, or `error`; `not_indexed` means that no Scorecard result is indexed for the repository, not that the provider is generally unavailable.
 
 Commercial threat feeds are deliberately **not hard-coded**. `threat_indicators` is a vendor-neutral IOC store for URL, hostname, wallet, and package indicators. Import only data whose license permits your commercial use and derived API responses. This avoids coupling OMNI's business to a feed whose terms prohibit redistribution.
 
@@ -53,7 +57,11 @@ Each NDJSON row:
 {"indicatorType":"wallet","indicator":"0xabc...","threatType":"reported_malicious","severity":"high","source":"licensed-feed","reference":"case-123"}
 ```
 
-If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant assessments cannot claim full evidence coverage.
+If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant assessments cannot claim full evidence coverage. Repository dependency threat intelligence is an observation-only evidence path under `omni-risk-v1`; it does not directly change the repository score or recommendation.
+
+OSV `MAL-*` records are returned separately as `maliciousPackageObservations`. They are not normal vulnerability findings, OMNI does not invent a severity for them, and they remain observation-only under `omni-risk-v1`; explicitly withdrawn MAL records are not returned as active observations.
+
+`RepositoryEvidence` is an internal typed evidence foundation used by the assessment implementation and journal. It is not a top-level field on the public `RiskAssessment` response.
 
 ## Stack
 

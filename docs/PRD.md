@@ -98,6 +98,24 @@ The structured assessment object is the canonical machine-readable result. Succe
 
 No LLM decides the verdict. Thresholds are policy defaults and must be calibrated against labelled incidents before they are described as predictive probabilities.
 
+## Future roadmap: bounded repository audit
+
+`/v1/repo/risk` is the fast deterministic pre-execution guardrail. `/v1/repo/audit` is a planned future product for deeper paid repository investigation; it is not yet implemented or available.
+
+The planned contract may include:
+
+- one x402 payment producing an `audit_id`;
+- a durable audit lifecycle bound to an exact repository SHA;
+- reuse of the existing `RepositoryEvidence` foundation;
+- a bounded investigator and verifier;
+- the deterministic `RiskEngine` remaining authoritative for the assessment;
+- a persisted report;
+- `GET /v1/audits/{id}` and `GET /v1/audits/{id}/report` reads without a second payment for the same audit;
+- bounded tools, turns, and wall-clock time;
+- no runtime self-learning and no automatic policy mutation.
+
+This roadmap does not imply that an audit queue, audit worker, agent framework, or audit endpoint exists today.
+
 ## Purchase-policy boundary
 
 OMNI does not decide whether a purchase is economically worthwhile for a specific user. The following remain external caller, user, or runtime policies:

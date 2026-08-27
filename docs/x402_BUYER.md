@@ -32,7 +32,7 @@ There are two distinct payments:
 1. **OMNI preflight acquisition** — the existing paid `GET /v1/x402/endpoint/preflight` route costs `$0.01` and uses the existing Circle seller middleware. The caller-supplied `getPreflight()` boundary may use an external x402 buyer to obtain this advisory result.
 2. **External target payment** — the payment for the third-party x402 endpoint. This is the payment governed by `buyer-policy.ts` in this reference integration.
 
-This PR does not implement or execute the OMNI bootstrap payment. It does not claim a fully live two-payment lifecycle unless both payments are separately executed.
+This reference integration does not implement or execute the OMNI bootstrap payment. It does not claim a fully live two-payment lifecycle unless both payments are separately executed.
 
 ## Decision statuses
 

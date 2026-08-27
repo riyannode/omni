@@ -2,6 +2,8 @@
 
 > OMNI is a deterministic pre-execution trust and risk API for software packages, dependency sets, repositories, and x402 endpoints. It returns advisory assessments with source-attributed evidence; it is not a settlement authority and does not authorize, sign, block, or settle payments.
 
+This document is rendered with the configured public base URL at runtime. Production links resolve to https://api.askomni.xyz.
+
 ## Paid API
 
 All four endpoints require x402 payment per request.
@@ -34,6 +36,9 @@ Fixed filenames are `package.risk.md` for `GET /v1/package/risk`, `repo.risk.md`
 - `evidenceCoverage` is the 0..1 fraction of evidence paths expected for that subject type that completed successfully. It is not statistical confidence.
 - `sourceErrors` lists named upstream sources that failed during the assessment. Treat results with source errors as less complete, not as safe.
 - `freshness.expiresAt` is an advisory deadline derived from evidence expiry. Callers should re-run preflight after `expiresAt`; do not silently continue acting on expired evidence.
+- Repository Scorecard status may be `available`, `not_indexed`, `unavailable`, or `error`; `not_indexed` means no indexed Scorecard result exists, not that the provider is generally unavailable.
+- OSV `MAL-*` records are returned separately as `maliciousPackageObservations`, without invented severity, and remain observation-only under `omni-risk-v1`; explicitly withdrawn MAL records are not active observations.
+- Repository dependency ThreatIntel is observation-only under `omni-risk-v1` and does not directly change the repository score or recommendation.
 
 ## x402 endpoint preflight workflow
 
@@ -56,6 +61,8 @@ x402 `PaymentRequirements.amount` is an atomic-unit string. Numeric canonicaliza
 - [OpenAPI specification](https://omni.example.com/openapi.yaml)
 - [Health check](https://omni.example.com/health) (process liveness only)
 - [Readiness](https://omni.example.com/ready) (replica can accept paid requests)
+
+`/v1/repo/audit` and `/v1/audits/{id}` are future roadmap concepts and are not currently available or part of this implemented endpoint list.
 
 ## Current paid acceptance
 
