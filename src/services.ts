@@ -18,6 +18,7 @@ import { X402Probe } from "./providers/x402-probe.ts";
 
 const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
 const REPOSITORY_ENRICHMENT_CONCURRENCY = 4;
+const REPOSITORY_ASSESSMENT_CACHE_TTL_SECONDS = 600;
 export const MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE = 8;
 export const MAX_REPOSITORY_THREAT_FINDINGS_TOTAL = 64;
 export const MAX_REPOSITORY_THREAT_INTEL_BYTES = 64 * 1024;
@@ -309,7 +310,7 @@ export class OmniIntelligence {
     const target = `github.com/${owner}/${repo}`;
     try {
       const identity = await this.github.resolve(owner, repo);
-      return this.cache.getOrLoad(`assessment:repo:${identity.repository}:${identity.resolvedCommitSha}`, 1800, async () => {
+      return this.cache.getOrLoad(`assessment:repo:${identity.repository}:${identity.resolvedCommitSha}`, REPOSITORY_ASSESSMENT_CACHE_TTL_SECONDS, async () => {
         const repositoryEvidence = await this.github.collectResolved(owner, repo, identity);
         return this.repositoryRiskFromEvidence(repositoryEvidence);
       });
