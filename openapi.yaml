@@ -95,7 +95,7 @@ paths:
     get:
       operationId: getRepositoryRisk
       summary: Assess GitHub repository security practices.
-      description: "Price: $0.01 USDC per request."
+      description: "Price: $0.01 USDC per request. GitHub repository evidence is bound to the resolved immutable commit; deps.dev provenance is checked against the expected repository/commit where available. Scorecard is currently queried in latest mode, so its evidence is not equivalent to commit-pinned GitHub evidence. Repository evidence limitations are surfaced as source-attributed evidence and do not alter the Scorecard-authoritative omni-risk-v1 repository score/recommendation."
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -243,7 +243,7 @@ components:
         kind: { type: string }
         observedAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
-        detail: { type: object, additionalProperties: true }
+        detail: { type: object, additionalProperties: true, description: Source-specific evidence detail. Internal RepositoryEvidence is not exposed as a top-level RiskAssessment field. }
     RiskDimensions:
       type: object
       required: [knownVulnerabilities, knownExploitation, packageSupplyChain, repositorySecurityPractices, maliciousInfrastructure, serviceIdentity, paymentConfigurationRisk, endpointOperationalRisk]
@@ -445,6 +445,7 @@ components:
           items: { $ref: '#/components/schemas/MaliciousPackageObservation' }
         sourceErrors:
           type: array
+          description: Named source failures. For repository Scorecard, not_indexed means that no indexed result exists for the repository; it is not a generic provider outage.
           items: { type: string }
         assessedAt: { type: string, format: date-time }
         freshness:

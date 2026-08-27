@@ -14,10 +14,10 @@ Description: Pre-execution trust and risk evidence for autonomous agents before 
 
 Suggested tags: `security`, `software-supply-chain`, `x402`, `agent-security`, `provenance`
 
-OpenAPI: `https://<production-host>/openapi.yaml`
+OpenAPI: `https://api.askomni.xyz/openapi.yaml`
 
-Health: `https://<production-host>/health`
-Readiness: `https://<production-host>/ready`
+Health: `https://api.askomni.xyz/health`
+Readiness: `https://api.askomni.xyz/ready`
 
 Payout wallet: use the same `SELLER_ADDRESS` configured in production.
 
