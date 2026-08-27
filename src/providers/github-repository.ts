@@ -180,11 +180,14 @@ export class GitHubRepositoryProvider {
     const metadata = await json<{ full_name?: string; default_branch?: string }>(this.http, base, headers);
     if (typeof metadata.full_name !== "string") throw new Error("github_repository_identity_missing");
     const fullName = metadata.full_name.split("/");
+    const normalizedRequestedRepo = normalizedRepoName(repo);
     if (fullName.length !== 2 || !REPOSITORY_PART.test(fullName[0]!) || !REPOSITORY_PART.test(fullName[1]!) || fullName[1]!.toLowerCase().endsWith(".git")) throw new Error("github_repository_identity_invalid");
+    if (fullName[0]!.toLowerCase() !== owner.toLowerCase() || fullName[1]!.toLowerCase() !== normalizedRequestedRepo.toLowerCase()) throw new Error("github_repository_identity_mismatch");
     const canonicalRepository = `github.com/${metadata.full_name}`;
+    const canonicalBase = this.base(fullName[0]!, fullName[1]!);
     const ref = requestedRef ?? metadata.default_branch;
     if (!ref) throw new Error("github_default_branch_missing");
-    const commit = await json<{ sha?: string; commit?: { tree?: { sha?: string } } }>(this.http, `${base}/commits/${encodeURIComponent(ref)}`, headers);
+    const commit = await json<{ sha?: string; commit?: { tree?: { sha?: string } } }>(this.http, `${canonicalBase}/commits/${encodeURIComponent(ref)}`, headers);
     const resolvedCommitSha = commit.sha; const rootTreeSha = commit.commit?.tree?.sha;
     if (typeof resolvedCommitSha !== "string" || typeof rootTreeSha !== "string" || !/^[a-f0-9]{40}$/i.test(resolvedCommitSha) || !/^[a-f0-9]{40}$/i.test(rootTreeSha)) throw new Error("github_commit_identity_invalid");
     return { repository: canonicalRepository, requestedRef: ref, resolvedCommitSha, rootTreeSha };

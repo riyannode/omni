@@ -50,6 +50,7 @@ describe("ScorecardProvider", () => {
       scorecardCommit: canonicalIdentity.resolvedCommitSha,
       commitMatch: "not_checked"
     });
+    expect(result.evidence.detail).not.toHaveProperty("resolvedCommitSha");
   });
 
   test("maps a proper repository 404 to not_indexed without an outage claim", async () => {
@@ -150,7 +151,7 @@ describe("GitHub repository identity", () => {
         calls.push(target);
         const responses: Record<string, unknown> = {
           "https://api.github.com/repos/RiyanNode/Omni": { full_name: "riyannode/omni", default_branch: "main" },
-          "https://api.github.com/repos/RiyanNode/Omni/commits/main": { sha: canonicalIdentity.resolvedCommitSha, commit: { tree: { sha: "abcdef0123456789abcdef0123456789abcdef01" } } }
+          "https://api.github.com/repos/riyannode/omni/commits/main": { sha: canonicalIdentity.resolvedCommitSha, commit: { tree: { sha: "abcdef0123456789abcdef0123456789abcdef01" } } }
         };
         return new Response(JSON.stringify(responses[target] ?? { message: "not found" }), { status: responses[target] ? 200 : 404 });
       }
@@ -161,7 +162,17 @@ describe("GitHub repository identity", () => {
     expect(identity.repository).toBe("github.com/riyannode/omni");
     expect(calls).toEqual([
       "https://api.github.com/repos/RiyanNode/Omni",
-      "https://api.github.com/repos/RiyanNode/Omni/commits/main"
+      "https://api.github.com/repos/riyannode/omni/commits/main"
     ]);
+  });
+
+  test("rejects GitHub metadata for a different repository", async () => {
+    const http = {
+      async request() {
+        return new Response(JSON.stringify({ full_name: "other/repository", default_branch: "main" }), { status: 200 });
+      }
+    };
+
+    await expect(new GitHubRepositoryProvider(http as never).resolve("acme", "demo")).rejects.toThrow("github_repository_identity_mismatch");
   });
 });

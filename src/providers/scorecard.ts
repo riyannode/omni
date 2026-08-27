@@ -116,7 +116,7 @@ export class ScorecardProvider {
           scorecardDate: scorecardDate ?? null,
           scorecardVersion: scorecardVersion ?? null,
           scorecardEngineCommit: scorecardEngineCommit ?? null,
-          resolvedCommitSha: identity.resolvedCommitSha ?? null,
+          ...(mode === "commit" && identity.resolvedCommitSha ? { resolvedCommitSha: identity.resolvedCommitSha } : {}),
           commitMatch: mode === "commit" ? true : "not_checked"
         }
       }

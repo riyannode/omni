@@ -308,15 +308,17 @@ export class OmniIntelligence {
 
   async repositoryRisk(owner: string, repo: string): Promise<RiskAssessment> {
     const target = `github.com/${owner}/${repo}`;
+    let canonicalRepository: string | undefined;
     try {
       const identity = await this.github.resolve(owner, repo);
+      canonicalRepository = identity.repository;
       return this.cache.getOrLoad(`assessment:repo:${identity.repository}:${identity.resolvedCommitSha}`, REPOSITORY_ASSESSMENT_CACHE_TTL_SECONDS, async () => {
         const repositoryEvidence = await this.github.collectResolved(owner, repo, identity);
         return this.repositoryRiskFromEvidence(repositoryEvidence);
       });
     }
     catch (error) {
-      const repositoryEvidence: RepositoryEvidence = { target: { repository: target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
+      const repositoryEvidence: RepositoryEvidence = { target: { repository: canonicalRepository ?? target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
       return this.repositoryRiskFromEvidence(repositoryEvidence);
     }
   }
