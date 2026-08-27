@@ -2,6 +2,13 @@ type Waiter = () => void;
 
 const USER_AGENT = "OMNI/0.2 (+https://github.com/omni; x402-risk-preflight)";
 
+export class UpstreamHttpError extends Error {
+  constructor(public readonly status: number, public readonly host: string) {
+    super(`upstream ${status} ${host}`);
+    this.name = "UpstreamHttpError";
+  }
+}
+
 function withIdentity(init: RequestInit): RequestInit {
   const headers = new Headers(init.headers);
   if (!headers.has("user-agent")) headers.set("user-agent", USER_AGENT);
@@ -23,7 +30,7 @@ export class UpstreamHttp {
     await this.acquire();
     try {
       const response = await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) });
-      if (!response.ok) throw new Error(`upstream ${response.status} ${new URL(url).host}`);
+      if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
       return await response.json() as T;
     } finally {
       this.release();
@@ -35,7 +42,7 @@ export class UpstreamHttp {
     await this.acquire();
     try {
       const response = await fetch(url, { ...withIdentity(init), redirect: "error", signal: AbortSignal.timeout(this.timeoutMs) });
-      if (!response.ok) throw new Error(`upstream ${response.status} ${new URL(url).host}`);
+      if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
       const length = response.headers.get("content-length");
       if (length !== null && Number(length) > maximumBytes) throw new Error("upstream_response_oversized");
       if (!response.body) throw new Error("upstream_response_missing_body");
