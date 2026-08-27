@@ -256,6 +256,7 @@ export class OmniIntelligence {
       let vulnerabilities: RiskSnapshot["vulnerabilities"];
       let exploitationChecked = false;
       let packageSupplyChain: RiskSnapshot["packageSupplyChain"];
+      let maliciousPackageObservations: RiskSnapshot["maliciousPackageObservations"] = [];
       let threatIntelChecked = false;
       let threatFindings: ThreatFinding[] = [];
       const evidence: RiskSnapshot["evidence"] = [];
@@ -263,6 +264,7 @@ export class OmniIntelligence {
       try {
         const osv = await this.osv.packageVulnerabilities(ecosystem, name, version);
         vulnerabilities = osv.findings;
+        maliciousPackageObservations = osv.maliciousPackageObservations ?? [];
         evidence.push(...osv.evidence);
         if (vulnerabilities.length > 0) {
           try {
@@ -295,7 +297,9 @@ export class OmniIntelligence {
       return this.assessAndJournal({
         subject: { type: "package", id: `${ecosystem}:${name}@${version}` },
         ...(vulnerabilities === undefined ? {} : { vulnerabilities }), exploitationChecked,
-        ...(packageSupplyChain ? { packageSupplyChain } : {}), threatIntelChecked, threatFindings,
+        ...(packageSupplyChain ? { packageSupplyChain } : {}),
+        ...(maliciousPackageObservations.length > 0 ? { maliciousPackageObservations } : {}),
+        threatIntelChecked, threatFindings,
         evidence, sourceErrors: errors
       });
     });
