@@ -68,6 +68,13 @@ function renderRiskSummary(result: Record<string, unknown>, lines: string[]): vo
     if (evidenceItem) lines.push(`- Source: ${inline(evidenceItem.source)}; Kind: ${inline(evidenceItem.kind)}; Observed At: ${inline(evidenceItem.observedAt)}; Detail: ${inline(evidenceItem.detail)}`);
   }
 
+  if (Array.isArray(result.maliciousPackageObservations)) {
+    const observations = result.maliciousPackageObservations;
+    lines.push("", "## Malicious Package Observations", "");
+    if (observations.length === 0) lines.push("No OpenSSF malicious-package observations were recorded.");
+    else for (const observation of observations) lines.push(`- ${inline(observation)}`);
+  }
+
   const sourceErrors = Array.isArray(result.sourceErrors) ? result.sourceErrors : [];
   lines.push("", "## Source Errors", "");
   if (sourceErrors.length === 0) lines.push("No source errors were recorded.");

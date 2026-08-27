@@ -283,6 +283,133 @@ components:
         content:
           type: string
           description: Deterministic Markdown rendering of the same canonical structured result.
+    OsvCwe:
+      type: object
+      additionalProperties: false
+      properties:
+        cweId: { type: string }
+        name: { type: string }
+        description: { type: string }
+    MaliciousPackageIndicators:
+      type: object
+      additionalProperties: false
+      required: [evidenceFiles, packageIntegrity]
+      properties:
+        evidenceFiles:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              path: { type: string }
+              sha256: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+              tlsh: { type: string }
+        packageIntegrity:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [hashes]
+            properties:
+              filename: { type: string }
+              hashes: { type: object, additionalProperties: { type: string } }
+    MaliciousPackageObservation:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, id, package, queriedVersion, affected, origins]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        id: { type: string, pattern: '^MAL-.+' }
+        package:
+          type: object
+          additionalProperties: false
+          required: [ecosystem, name]
+          properties:
+            ecosystem: { type: string }
+            name: { type: string }
+            purl: { type: string }
+        queriedVersion: { type: string }
+        published: { type: string, format: date-time }
+        modified: { type: string, format: date-time }
+        sourceReference: { type: string, format: uri }
+        affected:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [package, versions, ranges]
+            properties:
+              package:
+                type: object
+                additionalProperties: false
+                required: [ecosystem, name]
+                properties:
+                  ecosystem: { type: string }
+                  name: { type: string }
+                  purl: { type: string }
+              versions:
+                type: array
+                items: { type: string }
+              ranges:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [type, events]
+                  properties:
+                    type: { type: string }
+                    repo: { type: string, format: uri }
+                    events:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        minProperties: 1
+                        properties:
+                          introduced: { type: string }
+                          fixed: { type: string }
+                          lastAffected: { type: string }
+                          limit: { type: string }
+              sourceReference: { type: string, format: uri }
+              cwes:
+                type: array
+                items: { $ref: '#/components/schemas/OsvCwe' }
+              indicators: { $ref: '#/components/schemas/MaliciousPackageIndicators' }
+        origins:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [source]
+            properties:
+              source: { type: string }
+              id: { type: string }
+              modifiedAt: { type: string, format: date-time }
+              importedAt: { type: string, format: date-time }
+              sha256: { type: string, pattern: '^[0-9a-fA-F]{64}$' }
+              versions:
+                type: array
+                items: { type: string }
+              ranges:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [type, events]
+                  properties:
+                    type: { type: string }
+                    repo: { type: string, format: uri }
+                    events:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        minProperties: 1
+                        properties:
+                          introduced: { type: string }
+                          fixed: { type: string }
+                          lastAffected: { type: string }
+                          limit: { type: string }
     RiskAssessment:
       type: object
       required: [subject, policyVersion, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt, freshness]
@@ -312,6 +439,10 @@ components:
         evidence:
           type: array
           items: { $ref: '#/components/schemas/Evidence' }
+        maliciousPackageObservations:
+          type: array
+          description: OpenSSF MAL-* observations returned by OSV. Observation-only under omni-risk-v1; this field has no severity and does not alter scoring.
+          items: { $ref: '#/components/schemas/MaliciousPackageObservation' }
         sourceErrors:
           type: array
           items: { type: string }

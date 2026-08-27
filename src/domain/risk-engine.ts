@@ -125,7 +125,9 @@ export class RiskEngine {
         paymentConfigurationRisk: paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
         endpointOperationalRisk: endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
       },
-      signals, evidence: snapshot.evidence, sourceErrors: snapshot.sourceErrors ?? [], assessedAt: new Date().toISOString(), freshness: freshness(snapshot.evidence)
+      signals, evidence: snapshot.evidence, sourceErrors: snapshot.sourceErrors ?? [], assessedAt: new Date().toISOString(),
+      ...(snapshot.maliciousPackageObservations ? { maliciousPackageObservations: snapshot.maliciousPackageObservations } : {}),
+      freshness: freshness(snapshot.evidence)
     };
   }
 }

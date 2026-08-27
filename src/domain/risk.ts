@@ -1,4 +1,5 @@
 export const RISK_SNAPSHOT_SCHEMA_VERSION = 2 as const;
+export const MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION = 1 as const;
 
 export type Recommendation = "proceed" | "proceed_with_caution" | "manual_review" | "do_not_proceed";
 export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
@@ -7,6 +8,25 @@ export type Evidence = { source: string; kind: string; observedAt: string; detai
 export type VulnerabilityFinding = { id: string; severity: RiskLevel; knownExploited: boolean; aliases: string[] };
 export type PackageSupplyChain = { registry: "npm"; deprecated: boolean; hasInstallScript: boolean; integrityPresent: boolean; signatureCount: number; maintainerCount: number; publisher?: string; repositoryUrl?: string };
 export type ThreatFinding = { indicatorType: "url" | "hostname" | "wallet" | "package"; indicator: string; threatType: string; severity: Exclude<RiskLevel, "unknown">; source: string; reference?: string };
+export type OsvRangeEvent = { introduced?: string; fixed?: string; lastAffected?: string; limit?: string };
+export type OsvAffectedRange = { type: string; repo?: string; events: OsvRangeEvent[] };
+export type OsvCwe = { cweId?: string; name?: string; description?: string };
+export type MaliciousPackageEvidenceFile = { path?: string; sha256?: string; tlsh?: string };
+export type MaliciousPackageIntegrity = { filename?: string; hashes: Record<string, string> };
+export type MaliciousPackageIndicators = { evidenceFiles: MaliciousPackageEvidenceFile[]; packageIntegrity: MaliciousPackageIntegrity[] };
+export type OsvAffectedPackage = { package: { ecosystem: string; name: string; purl?: string }; versions: string[]; ranges: OsvAffectedRange[]; sourceReference?: string; cwes?: OsvCwe[]; indicators?: MaliciousPackageIndicators };
+export type MaliciousPackageOrigin = { source: string; id?: string; modifiedAt?: string; importedAt?: string; sha256?: string; versions?: string[]; ranges?: OsvAffectedRange[] };
+export type MaliciousPackageObservation = {
+  schemaVersion: typeof MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION;
+  id: string;
+  package: { ecosystem: string; name: string; purl?: string };
+  queriedVersion: string;
+  published?: string;
+  modified?: string;
+  sourceReference?: string;
+  affected: OsvAffectedPackage[];
+  origins: MaliciousPackageOrigin[];
+};
 export type EndpointHistory = { observationCount: number; firstSeenAt?: string; lastSeenAt?: string; payToChangeCount: number; priceChangeCount: number; networkChangeCount: number; schemaChangeCount: number; providerChangeCount: number; relatedResourcesByPayTo: number };
 export type RiskSignal = { code: string; severity: Exclude<RiskLevel, "unknown">; source: string; detail: Record<string, unknown> };
 
@@ -44,6 +64,7 @@ export type RiskSnapshot = {
   repositoryEvidence?: RepositoryEvidence;
   threatIntelChecked?: boolean;
   threatFindings?: ThreatFinding[];
+  maliciousPackageObservations?: MaliciousPackageObservation[];
   endpointHistory?: EndpointHistory;
   historyChecked?: boolean;
   activeProbeChecked?: boolean;
@@ -56,5 +77,6 @@ export type RiskAssessment = {
   subject: RiskSnapshot["subject"]; policyVersion: string; recommendation: Recommendation; riskScore: number; evidenceCoverage: number;
   dimensions: { knownVulnerabilities: RiskLevel; knownExploitation: RiskLevel; packageSupplyChain: RiskLevel; repositorySecurityPractices: RiskLevel; maliciousInfrastructure: RiskLevel; serviceIdentity: RiskLevel; paymentConfigurationRisk: RiskLevel; endpointOperationalRisk: RiskLevel };
   signals: RiskSignal[]; evidence: Evidence[]; sourceErrors: string[]; assessedAt: string;
+  maliciousPackageObservations?: MaliciousPackageObservation[];
   freshness: { oldestEvidenceAt: string | null; newestEvidenceAt: string | null; expiresAt?: string };
 };
