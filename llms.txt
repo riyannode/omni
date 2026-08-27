@@ -2,7 +2,7 @@
 
 > OMNI is a deterministic pre-execution trust and risk API for software packages, dependency sets, repositories, and x402 endpoints. It returns advisory assessments with source-attributed evidence; it is not a settlement authority and does not authorize, sign, block, or settle payments.
 
-The source document uses `https://omni.example.com` as a runtime template token. The deployed production document renders it as `https://api.askomni.xyz`.
+This document is rendered with the configured public base URL at runtime. Production links resolve to https://api.askomni.xyz.
 
 ## Paid API
 
