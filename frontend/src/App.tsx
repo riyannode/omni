@@ -511,7 +511,7 @@ function Footer() {
             </a>
           </nav>
           <div className="site-footer__support">
-            <span>Built for Circle x402 on Arc</span>
+            <span>Built with Circle x402</span>
             <span className="site-footer__support-marks" aria-label="Circle and Arc">
               <span><img className="site-footer__circle-mark" src="/footer/circle-logo.png" alt="" />Circle</span>
               <span><img className="site-footer__arc-mark" src="/footer/arc-logo.jpg" alt="" />Arc</span>
