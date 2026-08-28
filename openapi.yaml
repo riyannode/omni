@@ -3,6 +3,8 @@ info:
   title: OMNI Pre-Execution Trust & Risk API
   version: 0.2.0
   description: Machine-consumable pre-execution risk evidence for software supply chain and x402 services, paid per request with Circle Gateway nanopayments.
+  contact:
+    email: askomni.xyz@gmail.com
   x-guidance: >
     Use OMNI before an agent installs a package, trusts a GitHub repository,
     evaluates a dependency set, or pays an x402 endpoint. Inputs are an exact
