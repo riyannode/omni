@@ -517,6 +517,9 @@ function Footer() {
               <span><img className="site-footer__arc-mark" src="/footer/arc-logo.jpg" alt="" />Arc</span>
             </span>
           </div>
+          <a className="site-footer__agent-badge" href="https://agents.circle.com/sell/score?url=api.askomni.xyz" target="_blank" rel="noopener noreferrer">
+            <img src="https://agents.circle.com/sell/score/badge?url=api.askomni.xyz" alt="Accepts Agent Payments" />
+          </a>
         </div>
       </div>
       <div className="site-footer__bottom"><span>© 2026 OMNI</span><span>ADVISORY BY DESIGN</span></div>

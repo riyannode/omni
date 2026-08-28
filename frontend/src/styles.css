@@ -341,6 +341,9 @@ html[data-theme="dark"] .scanner-core img { filter: invert(1); mix-blend-mode: s
 .site-footer__support-marks > span { display: inline-flex; align-items: center; gap: 7px; color: var(--helper); }
 .site-footer__circle-mark, .site-footer__arc-mark { width: 20px; height: 20px; object-fit: cover; border-radius: 50%; }
 .site-footer__arc-mark { background: #061b3b; }
+.site-footer__agent-badge { display: inline-flex; align-items: center; width: fit-content; min-height: 30px; margin-top: 4px; border-radius: 999px; transition: transform 180ms ease, opacity 180ms ease; }
+.site-footer__agent-badge:hover, .site-footer__agent-badge:focus-visible { transform: translateY(-2px); opacity: 0.86; outline: none; }
+.site-footer__agent-badge img { display: block; max-width: min(100%, 224px); height: auto; }
 .site-footer__bottom { display: flex; justify-content: space-between; gap: 24px; padding: 18px 0 28px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.58rem; text-transform: uppercase; }
 html[data-theme="dark"] .site-footer__brand-mark img { filter: invert(1); mix-blend-mode: screen; }
 html[data-theme="dark"] .site-footer__icon--light { display: none; }
