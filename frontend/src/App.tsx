@@ -39,6 +39,18 @@ function updateRouteLocation(setLocation: (location: RouteLocation) => void): vo
   else commit();
 }
 
+function scrollToRouteTarget(targetId: string): void {
+  const target = targetId ? document.getElementById(targetId) : null;
+  let top = 0;
+  let current = target;
+  while (current) {
+    top += current.offsetTop;
+    current = current.offsetParent as HTMLElement | null;
+  }
+  top = target ? Math.max(0, top - 96) : 0;
+  window.scrollTo({ top, left: 0, behavior: target && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" });
+}
+
 function navigateInternal(href: string): void {
   const target = new URL(href, window.location.href);
   if (target.origin !== window.location.origin) return;
@@ -389,7 +401,7 @@ function EvidenceBento() {
 
   return (
     <div className="evidence-grid">
-      <article className="evidence-card evidence-card--supply reveal-card">
+      <article id="supply-chain-evidence" className="evidence-card evidence-card--supply reveal-card">
         <div className="card-header"><span>Supply chain</span><span className="card-index">{evidencePlanes[0].index}</span></div>
         <div className="evidence-card__visual supply-visual"><div className="supply-node supply-node--a" /><div className="supply-node supply-node--b" /><div className="supply-node supply-node--c" /><span className="supply-line" /></div>
         <h3>See what the agent will install.</h3>
@@ -649,9 +661,7 @@ function LandingPage() {
               <h1 id="hero-title" className="hero-title">Check risk before agents act.</h1>
               <p className="hero-lede">Before an agent installs software, calls a service, or pays, OMNI checks the software, service, and payment details.</p>
               <div className="hero-actions"><Magnetic><AgentQuickTestButton /></Magnetic><Magnetic strength={0.18}><InternalLink className="button button--text" href="/api">Open the API <span>↗</span></InternalLink></Magnetic></div>
-              <InternalLink className="hero-secondary-link" href="#evidence">See how it works <span>↘</span></InternalLink>
-              <p className="hero-quick-test-note">NO SIGNUP · NO API KEY · TESTNET · QUICK TEST $0.005</p>
-              <p className="hero-note">OMNI shows the evidence. Your policy decides what to allow.</p>
+              <InternalLink className="hero-secondary-link" href="#supply-chain-evidence">See how it works <span>↘</span></InternalLink>
             </div>
             <div className="hero-visual"><InterceptorCard /></div>
           </div>
@@ -688,10 +698,7 @@ function App() {
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      const targetId = routeLocation.hash.slice(1);
-      const target = targetId ? document.getElementById(targetId) : null;
-      if (target) target.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
-      else window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      scrollToRouteTarget(routeLocation.hash.slice(1));
     });
     return () => window.cancelAnimationFrame(frame);
   }, [routeLocation.pathname, routeLocation.search, routeLocation.hash]);
