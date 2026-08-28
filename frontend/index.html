@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f2f3f1" />
+    <meta name="description" content="OMNI verifies evidence before autonomous agents execute or pay." />
+    <title>OMNI | Trust before execution</title>
+    <script>
+      (() => {
+        const root = document.documentElement;
+        let theme = "light";
+        try {
+          theme = window.localStorage.getItem("omni-theme") === "dark" ? "dark" : "light";
+        } catch {
+          theme = "light";
+        }
+        root.dataset.theme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#0b0d10" : "#f2f3f1");
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
