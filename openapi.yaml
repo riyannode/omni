@@ -3,8 +3,21 @@ info:
   title: OMNI Pre-Execution Trust & Risk API
   version: 0.2.0
   description: Machine-consumable pre-execution risk evidence for software supply chain and x402 services, paid per request with Circle Gateway nanopayments.
+  x-guidance: >
+    Use OMNI before an agent installs a package, trusts a GitHub repository,
+    evaluates a dependency set, or pays an x402 endpoint. Inputs are an exact
+    package coordinate, repository owner/name, up to 100 exact package
+    coordinates, or a target endpoint URL. Outputs include riskScore,
+    recommendation, evidenceCoverage, source-attributed signals and evidence,
+    sourceErrors, and deterministic JSON/Markdown representations. OMNI is
+    advisory: caller policy decides whether to proceed, the wallet/runtime
+    enforces payment policy, and Circle settles payment. Call OMNI when fresh
+    pre-execution evidence is required before software execution or payment.
 servers:
   - url: https://omni.example.com
+externalDocs:
+  description: OMNI agent usage, payment, and integration guidance
+  url: https://omni.example.com/llms.txt
 paths:
   /health:
     get:
@@ -72,6 +85,13 @@ paths:
       operationId: getPackageRisk
       summary: Assess an exact package version before an agent installs it.
       description: "Price: $0.005 USDC per request. npm assessments combine vulnerability/exploitation evidence with registry supply-chain metadata and optional licensed threat-intelligence matches."
+      x-payment-info:
+        price:
+          mode: fixed
+          currency: USDC
+          amount: "0.005000"
+        protocols:
+          - x402: {}
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -96,6 +116,13 @@ paths:
       operationId: getRepositoryRisk
       summary: Assess GitHub repository security practices.
       description: "Price: $0.01 USDC per request. GitHub repository evidence is bound to the resolved immutable commit; deps.dev provenance is checked against the expected repository/commit where available. Scorecard is currently queried in latest mode, so its evidence is not equivalent to commit-pinned GitHub evidence. Repository evidence limitations are surfaced as source-attributed evidence and do not alter the Scorecard-authoritative omni-risk-v1 repository score/recommendation."
+      x-payment-info:
+        price:
+          mode: fixed
+          currency: USDC
+          amount: "0.010000"
+        protocols:
+          - x402: {}
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -119,6 +146,13 @@ paths:
       operationId: assessDependencies
       summary: Assess up to 100 exact dependency versions.
       description: "Price: $0.05 USDC per request. Packages are evaluated in bounded waves to protect upstream capacity."
+      x-payment-info:
+        price:
+          mode: fixed
+          currency: USDC
+          amount: "0.050000"
+        protocols:
+          - x402: {}
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -154,6 +188,13 @@ paths:
       operationId: preflightX402Endpoint
       summary: Assess an x402 endpoint before an agent decides to call or pay it.
       description: "Price: $0.01 USDC per request. Combines Circle Discovery identity, constrained unpaid handshake evidence, OMNI change history, payout configuration drift, and licensed IOC matches when configured. Listed non-GET endpoints are not invoked."
+      x-payment-info:
+        price:
+          mode: fixed
+          currency: USDC
+          amount: "0.010000"
+        protocols:
+          - x402: {}
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
