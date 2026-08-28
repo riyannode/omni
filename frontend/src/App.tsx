@@ -481,6 +481,49 @@ function EcosystemMarquee() {
   );
 }
 
+function Footer() {
+  return (
+    <footer className="site-footer">
+      <div className="site-footer__body">
+        <div className="site-footer__brand">
+          <InternalLink className="site-footer__brand-link" href="/" aria-label="OMNI home">
+            <span className="site-footer__brand-mark"><img src="/footer/omni-logo-bw.jpg" alt="" /></span>
+            <span>OMNI</span>
+          </InternalLink>
+          <p>Pre-execution trust &amp; risk for autonomous agents.</p>
+          <p>Source-attributed, deterministic, and advisory by design.</p>
+        </div>
+        <div className="site-footer__details">
+          <nav className="site-footer__social" aria-label="OMNI external links">
+            <a href="https://github.com/riyannode/omni" target="_blank" rel="noopener noreferrer" aria-label="OMNI on GitHub">
+              <span className="site-footer__icon site-footer__icon--light"><img src="/footer/github.svg" alt="" /></span>
+              <span className="site-footer__icon site-footer__icon--dark"><img src="/footer/github-light.svg" alt="" /></span>
+              <span>GitHub</span>
+            </a>
+            <a href="https://x.com/omnix402" target="_blank" rel="noopener noreferrer" aria-label="OMNI on X">
+              <span className="site-footer__icon site-footer__icon--light"><img src="/footer/x.svg" alt="" /></span>
+              <span className="site-footer__icon site-footer__icon--dark"><img src="/footer/x-light.svg" alt="" /></span>
+              <span>X</span>
+            </a>
+            <a href="mailto:askomni.xyz@gmail.com" aria-label="Email OMNI">
+              <span className="site-footer__mail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 6.5h17v11h-17zM4 7l8 6 8-6" /></svg></span>
+              <span>Email</span>
+            </a>
+          </nav>
+          <div className="site-footer__support">
+            <span>Built for Circle x402 on Arc</span>
+            <span className="site-footer__support-marks" aria-label="Circle and Arc">
+              <span><img className="site-footer__circle-mark" src="/footer/circle-logo.png" alt="" />Circle</span>
+              <span><img className="site-footer__arc-mark" src="/footer/arc-logo.jpg" alt="" />Arc</span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div className="site-footer__bottom"><span>© 2026 OMNI</span><span>ADVISORY BY DESIGN</span></div>
+    </footer>
+  );
+}
+
 function ApiPage() {
   const [theme, setTheme] = useState<Theme>(readThemePreference);
   const [copiedEndpoint, setCopiedEndpoint] = useState<string | null>(null);
@@ -588,7 +631,7 @@ function ApiPage() {
         </section>
       </main>
 
-      <footer className="site-footer"><div className="footer-links"><InternalLink href="/">OMNI</InternalLink><InternalLink href="/#thesis">Thesis</InternalLink><InternalLink href="/#evidence">Evidence</InternalLink><InternalLink href="/api" aria-current="page">API</InternalLink><a href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">GitHub ↗</a></div><span>OMNI / advisory by design</span></footer>
+      <Footer />
     </div>
   );
 }
@@ -682,7 +725,7 @@ function LandingPage() {
         <section className="final-section section-space" aria-labelledby="final-title"><div className="final-copy"><h2 id="final-title">Put evidence before action.</h2><p>Give your runtime a policy check it can explain.</p><div className="hero-actions"><Magnetic><InternalLink className="button button--dark" href="/api">Integrate OMNI <span>↗</span></InternalLink></Magnetic><Magnetic strength={0.18}><a className="button button--text" href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">View the repository <span>↗</span></a></Magnetic></div></div></section>
       </main>
 
-      <footer className="site-footer"><div className="footer-links"><InternalLink href="#thesis">Thesis</InternalLink><InternalLink href="#evidence">Evidence</InternalLink><InternalLink href="/api">API</InternalLink><a href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">GitHub ↗</a></div><span>OMNI / advisory by design</span></footer>
+      <Footer />
     </div>
   );
 }
