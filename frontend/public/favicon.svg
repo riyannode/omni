@@ -1,5 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-labelledby="title desc">
-  <title id="title">OMNI</title>
-  <desc id="desc">OMNI mark</desc>
-  <image href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABp0lEQVR42mNgGGDASKoGQWHR//jk3799zUgTB8AsfvjgDl518goqJDmEkVoWk+sQRkKWI1sMMxQfQHeovIIKXkcwUdNyXA7Cl26YCFkeHh5FtOW4ogmfI5jwWd7Y1MJw4uQpiix//fo1XkcwUhLsxOYIdDOR0wQLIc3kWIzLcrxRgO57ci1PTEpFsRzdI+hRwUKK78vLS4jyNbrl8goqOB3OhO7706fP4LQgKzODZMthoKenD2soMKI7gNS4xxbEuMzAlhiZSClQqKGG6JIQBnh5efEa/PDBHTiGgaSkBOo54PPnzyT76vWr19RzAHo8yyuoMMgrqMBLOGxg85at5Dtg4cJ5RDlEVFSUpAKsqbGeOAc42NthjWf0bEYqiI+Pxe2A929fM+KyANnynp5OvJYTk/3Q6wMWQlmK2DJ99Zq1lDdK0UvEkNAIkmo9YsoHomvDkNAIBl1dHYYtmzeQZSmx6YWRUFOMmpZjax8yYWvX47Jg27YdRFluYW5GdOOUBVfnQl5BBSMkTp85Q1aQ42sZk9QsJwcQapYP7o7JoOia0bpzOuAAABt5IzI+DwPvAAAAAElFTkSuQmCC" width="32" height="32" preserveAspectRatio="xMidYMid meet" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>OMNI mark</title>
+  <circle cx="32" cy="32" r="29" fill="#0b0d10"/>
+  <circle cx="32" cy="32" r="25" fill="none" stroke="#f2f3f1" stroke-width="5"/>
+  <path fill="#f2f3f1" d="M18 20.5C21.5 15.2 27.4 12.2 35.2 12.2H47L37.1 21.4H29.7C26 21.4 23.6 23 23.6 25.5c0 2.1 2.2 3.3 5.7 2.9l7.6-1.1c5.1-.7 8.6 1.7 8.6 5.9 0 6-6 12-16.8 16.8L17 54.2l10.5-11.4h-5.8c-4.8 0-7.8-2.5-7.8-6.5 0-4.2 2.8-8.6 7.8-11.5-2.2-.7-4.4-2.2-3.7-4.3Z"/>
 </svg>
