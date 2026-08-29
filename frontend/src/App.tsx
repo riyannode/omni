@@ -1,8 +1,22 @@
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { type AnchorHTMLAttributes, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type AnchorHTMLAttributes, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { copyAgentQuickTestPrompt } from "./agent-quick-test";
+import {
+  API_ENDPOINTS,
+  MAX_DEPENDENCIES,
+  buildAgentInspectionPrompt,
+  buildRequest,
+  copyText,
+  isEndpointId,
+  validateInspection,
+  type BuilderValues,
+  type EndpointId,
+  type InspectionInput,
+  type PackageInput,
+  type RepositoryInput,
+} from "./agent-inspection-prompt";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -107,12 +121,12 @@ const ecosystemLogos = [
   { key: "x402", label: "X402", src: "/x402-clean.png", kind: "mask" as const },
 ];
 
-const apiEndpoints = [
-  { method: "GET", path: "/v1/package/risk", price: "$0.005 USDC", copy: "Check package origin, advisories, and release signals before install." },
-  { method: "GET", path: "/v1/repo/risk", price: "$0.01 USDC", copy: "Check repository identity, activity, and risk evidence from named sources." },
-  { method: "POST", path: "/v1/dependencies/risk", price: "$0.05 USDC", copy: "Check a dependency set in one request." },
-  { method: "GET", path: "/v1/x402/endpoint/preflight", price: "$0.01 USDC", copy: "Check service identity and payment details before a paid call." },
-];
+const INITIAL_BUILDER_VALUES: BuilderValues = {
+  package: { ecosystem: "npm", name: "express", version: "5.2.1" },
+  repo: { owner: "expressjs", repo: "express" },
+  dependencies: [{ id: 1, ecosystem: "npm", name: "express", version: "5.2.1" }],
+  preflight: { url: "" },
+};
 
 function Logo({ size = "small" }: { size?: "small" | "large" }) {
   return (
@@ -529,8 +543,119 @@ function Footer() {
   );
 }
 
-function ApiPage() {
+type BuilderCopyState = "idle" | "request" | "prompt" | "failed";
+
+function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; values: BuilderValues; onChange: (next: BuilderValues) => void }) {
+  const resetRef = useRef<number | null>(null);
+  const [copyState, setCopyState] = useState<BuilderCopyState>("idle");
+  const input: InspectionInput = endpointId === "package"
+    ? { endpointId, values: values.package }
+    : endpointId === "repo"
+      ? { endpointId, values: values.repo }
+      : endpointId === "dependencies"
+        ? { endpointId, values: values.dependencies }
+        : { endpointId, values: values.preflight };
+  const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === endpointId);
+
+  useEffect(() => () => {
+    if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+  }, []);
+
+  if (!endpoint) return null;
+  const validationError = validateInspection(input);
+  const request = validationError ? null : buildRequest(input);
+  const updatePackage = (field: keyof PackageInput, value: string) => onChange({ ...values, package: { ...values.package, [field]: value } });
+  const updateRepo = (field: keyof RepositoryInput, value: string) => onChange({ ...values, repo: { ...values.repo, [field]: value } });
+  const updateDependency = (id: number, field: keyof PackageInput, value: string) => onChange({
+    ...values,
+    dependencies: values.dependencies.map((dependency) => dependency.id === id ? { ...dependency, [field]: value } : dependency),
+  });
+  const updatePreflight = (value: string) => onChange({ ...values, preflight: { url: value } });
+
+  const copy = async (kind: "request" | "prompt") => {
+    if (!request || validationError) return;
+    try {
+      await copyText(kind === "request" ? request.curl : buildAgentInspectionPrompt(input));
+      setCopyState(kind);
+    } catch {
+      setCopyState("failed");
+    }
+    if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+    resetRef.current = window.setTimeout(() => setCopyState("idle"), 2600);
+  };
+
+  const requestLabel = copyState === "request" ? "COPIED" : copyState === "failed" ? "COPY FAILED — RETRY" : "COPY REQUEST";
+  const promptLabel = copyState === "prompt" ? "PROMPT COPIED — PASTE TO YOUR AGENT" : copyState === "failed" ? "COPY FAILED — RETRY" : "COPY AGENT PROMPT";
+
+  return (
+    <div className="endpoint-builder" id={`${endpointId}-builder`}>
+      <div className="endpoint-builder__header">
+        <div>
+          <p className="eyebrow">Inspection prompt</p>
+          <h3>{endpoint.method} {endpoint.path}</h3>
+        </div>
+        <span className="endpoint-builder__price">{endpoint.atomicAmount} atomic · {endpoint.displayPrice} USDC</span>
+      </div>
+
+      <form className="builder-form" onSubmit={(event) => event.preventDefault()}>
+        {endpointId === "package" && <fieldset>
+          <legend>What package do you want to inspect?</legend>
+          <div className="builder-fields builder-fields--three">
+            <label><span>Ecosystem</span><input value={values.package.ecosystem} onChange={(event) => updatePackage("ecosystem", event.target.value)} placeholder="npm" /></label>
+            <label><span>Package</span><input value={values.package.name} onChange={(event) => updatePackage("name", event.target.value)} placeholder="express" /></label>
+            <label><span>Version</span><input value={values.package.version} onChange={(event) => updatePackage("version", event.target.value)} placeholder="5.2.1" /></label>
+          </div>
+        </fieldset>}
+
+        {endpointId === "repo" && <fieldset>
+          <legend>What repository do you want to inspect?</legend>
+          <div className="builder-fields builder-fields--two">
+            <label><span>Owner</span><input value={values.repo.owner} onChange={(event) => updateRepo("owner", event.target.value)} placeholder="expressjs" /></label>
+            <label><span>Repository</span><input value={values.repo.repo} onChange={(event) => updateRepo("repo", event.target.value)} placeholder="express" /></label>
+          </div>
+        </fieldset>}
+
+        {endpointId === "dependencies" && <fieldset>
+          <legend>What dependency set do you want to inspect?</legend>
+          <div className="dependency-list">
+            {values.dependencies.map((dependency, index) => <div className="dependency-row" key={dependency.id}>
+              <span className="dependency-row__index">{String(index + 1).padStart(2, "0")}</span>
+              <label><span>Ecosystem</span><input value={dependency.ecosystem} onChange={(event) => updateDependency(dependency.id, "ecosystem", event.target.value)} placeholder="npm" /></label>
+              <label><span>Package</span><input value={dependency.name} onChange={(event) => updateDependency(dependency.id, "name", event.target.value)} placeholder="express" /></label>
+              <label><span>Version</span><input value={dependency.version} onChange={(event) => updateDependency(dependency.id, "version", event.target.value)} placeholder="5.2.1" /></label>
+              <button className="builder-remove" type="button" onClick={() => onChange({ ...values, dependencies: values.dependencies.filter((candidate) => candidate.id !== dependency.id) })} disabled={values.dependencies.length === 1} aria-label={`Remove dependency ${index + 1}`}>Remove</button>
+            </div>)}
+          </div>
+          <div className="dependency-controls"><button className="builder-add" type="button" onClick={() => onChange({ ...values, dependencies: [...values.dependencies, { id: Math.max(...values.dependencies.map((dependency) => dependency.id), 0) + 1, ecosystem: "", name: "", version: "" }] })} disabled={values.dependencies.length >= MAX_DEPENDENCIES}>+ Add dependency</button><span>{values.dependencies.length} / {MAX_DEPENDENCIES}</span></div>
+        </fieldset>}
+
+        {endpointId === "preflight" && <fieldset>
+          <legend>What paid endpoint do you want OMNI to inspect?</legend>
+          <label className="builder-field--full"><span>Target URL</span><input type="url" value={values.preflight.url} onChange={(event) => updatePreflight(event.target.value)} placeholder="https://example.com/api/resource" /></label>
+        </fieldset>}
+      </form>
+
+      {validationError && <p className="builder-validation" role="status">{validationError}</p>}
+      <div className="builder-preview">
+        <div className="builder-preview__label"><span>Generated request</span><span>{request ? "ready to copy" : "waiting for required input"}</span></div>
+        <pre>{request?.display ?? "Complete the fields above to generate the exact request."}</pre>
+      </div>
+      <div className="builder-actions">
+        <button className="button button--dark" type="button" onClick={() => void copy("request")} disabled={!request} aria-label={`${requestLabel} for ${endpoint.path}`}>{requestLabel}</button>
+        <button className="button button--text" type="button" onClick={() => void copy("prompt")} disabled={!request || Boolean(validationError)} aria-label={`${promptLabel} for ${endpoint.path}`}>{promptLabel}</button>
+      </div>
+      <p className="builder-copy-feedback" aria-live="polite">{copyState === "request" ? "COPIED" : copyState === "prompt" ? "PROMPT COPIED — PASTE TO YOUR AGENT" : copyState === "failed" ? "COPY FAILED — RETRY" : ""}</p>
+    </div>
+  );
+}
+
+function ApiPage({ search }: { search: string }) {
   const [theme, setTheme] = useState<Theme>(readThemePreference);
+  const [selectedEndpoint, setSelectedEndpoint] = useState<EndpointId | null>(() => {
+    const value = new URLSearchParams(search).get("endpoint");
+    return isEndpointId(value) ? value : null;
+  });
+  const [builderValues, setBuilderValues] = useState<BuilderValues>(INITIAL_BUILDER_VALUES);
   const [copiedEndpoint, setCopiedEndpoint] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const copyResetRef = useRef<number | null>(null);
@@ -546,28 +671,25 @@ function ApiPage() {
     if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current);
   }, []);
 
+  useEffect(() => {
+    const value = new URLSearchParams(search).get("endpoint");
+    setSelectedEndpoint(isEndpointId(value) ? value : null);
+  }, [search]);
+
   useGSAP(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     gsap.fromTo(".api-page__hero, .api-page__window, .api-page__endpoint", { y: 28, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.08, duration: 0.8, ease: "power3.out" });
   }, { scope: rootRef });
 
   const toggleTheme = () => setTheme((current) => current === "light" ? "dark" : "light");
+  const selectEndpoint = (endpointId: EndpointId) => {
+    const next = selectedEndpoint === endpointId ? "/api" : `/api?endpoint=${endpointId}`;
+    setSelectedEndpoint(selectedEndpoint === endpointId ? null : endpointId);
+    navigateInternal(next);
+  };
   const copyEndpoint = async (endpoint: string) => {
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(endpoint);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = endpoint;
-        textarea.setAttribute("readonly", "true");
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.select();
-        const copied = document.execCommand("copy");
-        textarea.remove();
-        if (!copied) throw new Error("Clipboard unavailable");
-      }
+      await copyText(endpoint);
       setCopiedEndpoint(endpoint);
       setCopyError(null);
     } catch {
@@ -590,6 +712,7 @@ function ApiPage() {
           <InternalLink href="/#thesis">Thesis</InternalLink>
           <InternalLink href="/#evidence">Evidence</InternalLink>
           <InternalLink className="is-current" href="/api" aria-current="page">API</InternalLink>
+          <InternalLink href="/docs">Docs</InternalLink>
         </nav>
         <div className="nav-actions"><ThemeToggle theme={theme} onChange={toggleTheme} /><Magnetic strength={0.18}><InternalLink className="nav-cta" href="/#top">Back to OMNI <span>↗</span></InternalLink></Magnetic></div>
       </header>
@@ -598,8 +721,8 @@ function ApiPage() {
         <section className="api-page__hero section-space" aria-labelledby="api-page-title">
           <p className="eyebrow">HTTP / OpenAPI</p>
           <h1 id="api-page-title">One API for runtime evidence.</h1>
-          <p>Each route returns evidence you can inspect and use in your policy. OMNI does not approve actions or settle payments.</p>
-          <Magnetic><a className="button button--dark" href="https://github.com/riyannode/omni/blob/main/openapi.yaml" target="_blank" rel="noreferrer">Read the contract <span>↗</span></a></Magnetic>
+          <p>Each route returns evidence you can inspect and use in your policy. Build the exact request, then hand a safe prompt to your agent.</p>
+          <Magnetic><a className="button button--dark" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Read the contract <span>↗</span></a></Magnetic>
         </section>
 
         <section className="api-page__workspace section-space" aria-labelledby="api-workspace-title">
@@ -618,21 +741,91 @@ function ApiPage() {
           </div>
           <div className="api-page__endpoint-list endpoint-list" aria-labelledby="api-workspace-title">
             <div className="endpoint-list__head"><span id="api-workspace-title">Available endpoints</span><span>per request</span></div>
-            {apiEndpoints.map((endpoint) => (
-              <div className="api-page__endpoint endpoint-list__row" data-method={endpoint.method.toLowerCase()} key={endpoint.path}>
-                <span>
-                  <span className="endpoint-route"><b>{endpoint.method}</b><code>{endpoint.path}</code><button className={`endpoint-copy${copiedEndpoint === `${endpoint.method} ${endpoint.path}` ? " is-copied" : ""}`} type="button" onClick={() => void copyEndpoint(`${endpoint.method} ${endpoint.path}`)} aria-label={`${copiedEndpoint === `${endpoint.method} ${endpoint.path}` ? "Copied" : copyError === `${endpoint.method} ${endpoint.path}` ? "Retry copy" : "Copy"} ${endpoint.method} ${endpoint.path}`} title={`${copiedEndpoint === `${endpoint.method} ${endpoint.path}` ? "Copied" : copyError === `${endpoint.method} ${endpoint.path}` ? "Retry copy" : "Copy endpoint"}`}><CopyIcon checked={copiedEndpoint === `${endpoint.method} ${endpoint.path}`} /></button></span>
-                  <small>{endpoint.copy}</small>
-                </span>
-                <strong>{endpoint.price}</strong>
-              </div>
-            ))}
+            {API_ENDPOINTS.map((endpoint) => {
+              const routeLabel = `${endpoint.method} ${endpoint.path}`;
+              const isSelected = selectedEndpoint === endpoint.id;
+              return <Fragment key={endpoint.id}>
+                <div className={`api-page__endpoint endpoint-list__row ${isSelected ? "is-active" : ""}`} data-method={endpoint.method.toLowerCase()}>
+                  <div className="endpoint-list__main">
+                    <div className="endpoint-route"><b>{endpoint.method}</b><code>{endpoint.path}</code><button className={`endpoint-copy${copiedEndpoint === routeLabel ? " is-copied" : ""}`} type="button" onClick={() => void copyEndpoint(routeLabel)} aria-label={`${copiedEndpoint === routeLabel ? "Copied" : copyError === routeLabel ? "Retry copy" : "Copy"} ${routeLabel}`} title={`${copiedEndpoint === routeLabel ? "Copied" : copyError === routeLabel ? "Retry copy" : "Copy endpoint"}`}><CopyIcon checked={copiedEndpoint === routeLabel} /></button></div>
+                    <small>{endpoint.copy}</small>
+                    <button className="endpoint-inspect" type="button" onClick={() => selectEndpoint(endpoint.id)} aria-expanded={isSelected} aria-controls={`${endpoint.id}-builder`}>{isSelected ? "Close builder ↖" : "Inspect ↗"}</button>
+                  </div>
+                  <strong>{endpoint.price}</strong>
+                </div>
+                {isSelected && <ApiBuilder endpointId={endpoint.id} values={builderValues} onChange={setBuilderValues} />}
+              </Fragment>;
+            })}
           </div>
         </section>
 
         <section className="api-page__notes section-space" aria-labelledby="api-notes-title">
           <div><p className="eyebrow">Integration notes</p><h2 id="api-notes-title">One contract for every runtime.</h2></div>
           <p>Hermes, Codex, Claude, OpenClaw, MCP clients, CI, and plain HTTP clients can read the same result and decide what to do next.</p>
+        </section>
+      </main>
+
+      <Footer />
+    </div>
+  );
+}
+
+function DocsPage() {
+  const [theme, setTheme] = useState<Theme>(readThemePreference);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    persistThemePreference(theme);
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#0b0d10" : "#f2f3f1");
+  }, [theme]);
+
+  useGSAP(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    gsap.fromTo(".docs-page__hero, .docs-card", { y: 24, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.06, duration: 0.75, ease: "power3.out" });
+  }, { scope: rootRef });
+
+  return (
+    <div ref={rootRef} className="site-shell docs-page">
+      <OrbitField className="orbit-field--page" />
+      <header className="nav-shell">
+        <InternalLink className="nav-logo" href="/" aria-label="OMNI home"><Logo /></InternalLink>
+        <nav className="nav-links" aria-label="Primary navigation">
+          <InternalLink href="/#thesis">Thesis</InternalLink>
+          <InternalLink href="/#evidence">Evidence</InternalLink>
+          <InternalLink href="/api">API</InternalLink>
+          <InternalLink className="is-current" href="/docs" aria-current="page">Docs</InternalLink>
+        </nav>
+        <div className="nav-actions"><ThemeToggle theme={theme} onChange={() => setTheme((current) => current === "light" ? "dark" : "light")} /><Magnetic strength={0.18}><InternalLink className="nav-cta" href="/#top">Back to OMNI <span>↗</span></InternalLink></Magnetic></div>
+      </header>
+
+      <main className="page-shell" id="top">
+        <section className="docs-page__hero section-space" aria-labelledby="docs-page-title">
+          <p className="eyebrow">OMNI / Docs</p>
+          <h1 id="docs-page-title">Evidence before the next action.</h1>
+          <p>Use OMNI as a deterministic, source-attributed trust and risk layer before an agent installs software, trusts a repository, evaluates dependencies, or pays an x402 endpoint.</p>
+          <div className="hero-actions"><Magnetic><InternalLink className="button button--dark" href="/#top">Try with your agent <span>↗</span></InternalLink></Magnetic><Magnetic strength={0.18}><a className="button button--text" href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">Read llms.txt <span>↗</span></a></Magnetic></div>
+        </section>
+
+        <section className="docs-section section-space" aria-labelledby="docs-getting-started">
+          <div className="section-heading"><div><p className="eyebrow">Getting started</p><h2 id="docs-getting-started">A small contract with a clear handoff.</h2></div><p>OMNI returns evidence and advisory output. Caller policy and wallet enforcement decide what happens next.</p></div>
+          <div className="docs-card docs-card--wide"><strong>GETTING STARTED</strong><p>Read the machine-readable <a href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">llms.txt</a>, choose an endpoint, and use the API builder to generate an exact request plus a safe agent prompt.</p><InternalLink className="docs-action" href="/api">Open the API builder <span>↗</span></InternalLink></div>
+        </section>
+
+        <section className="docs-section section-space" aria-labelledby="docs-api-reference">
+          <div className="section-heading"><div><p className="eyebrow">API reference</p><h2 id="docs-api-reference">Four inspection routes.</h2></div><p>Prices and inputs mirror the checked-in OpenAPI contract. The builder stays responsible for request construction only.</p></div>
+          <div className="docs-reference-grid">{API_ENDPOINTS.map((endpoint) => <article className="docs-card" key={endpoint.id}><div className="docs-card__route"><b>{endpoint.method}</b><code>{endpoint.path}</code></div><h3>{endpoint.id === "package" ? "Package Risk" : endpoint.id === "repo" ? "Repository Risk" : endpoint.id === "dependencies" ? "Dependency Risk" : "x402 Endpoint Preflight"}</h3><p>{endpoint.copy}</p><span className="docs-card__price">{endpoint.price} · {endpoint.atomicAmount} atomic</span><InternalLink className="docs-action" href={`/api?endpoint=${endpoint.id}`}>Open in API builder <span>↗</span></InternalLink></article>)}</div>
+          <a className="docs-contract-link" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Open the canonical OpenAPI specification <span>↗</span></a>
+        </section>
+
+        <section className="docs-section section-space" aria-labelledby="docs-payments">
+          <div className="section-heading"><div><p className="eyebrow">Payments</p><h2 id="docs-payments">Challenge first. Pay once.</h2></div><p>x402 negotiation keeps the live payment requirements authoritative at execution time.</p></div>
+          <div className="docs-detail-grid"><article className="docs-card"><strong>HTTP 402 NEGOTIATION</strong><p>Request the exact OMNI resource without payment first. Inspect the `PAYMENT-REQUIRED` challenge, then submit a `PAYMENT-SIGNATURE` only when the resource, USDC asset, amount, network, and scheme satisfy caller policy.</p></article><article className="docs-card"><strong>REPLAY + IDEMPOTENCY</strong><p>Use one UUID v4 `Idempotency-Key` for one logical request and reuse it unchanged for the paid retry. A completed result can replay without another payment.</p></article><article className="docs-card"><strong>SETTLEMENT STATE</strong><p>`PAYMENT-RESPONSE` carries the settlement receipt when available. If payment state is uncertain, stop and do not retry automatically.</p></article></div>
+        </section>
+
+        <section className="docs-section section-space" aria-labelledby="docs-responses">
+          <div className="section-heading"><div><p className="eyebrow">Responses</p><h2 id="docs-responses">Structured evidence, readable twice.</h2></div><p>JSON is canonical for machines; the deterministic Markdown artifact is ready for people and reports.</p></div>
+          <div className="docs-detail-grid"><article className="docs-card"><strong>JSON ASSESSMENT</strong><p>Successful JSON responses include the assessment fields, source-attributed evidence, source errors, freshness, and an additive artifact object.</p></article><article className="docs-card"><strong>MARKDOWN ARTIFACT</strong><p>`artifact.content` is a deterministic Markdown representation of the same result. Its fixed filename and `text/markdown` media type are returned by OMNI.</p></article><article className="docs-card"><strong>COMMON HTTP ERRORS</strong><p>`400` means invalid input, `402` means payment is required, `406` means the representation is unsupported, `409` means an idempotency conflict, and `503` means paid-request capacity is unavailable.</p></article></div>
         </section>
       </main>
 
@@ -697,6 +890,7 @@ function LandingPage() {
           <InternalLink href="#thesis">Thesis</InternalLink>
           <InternalLink href="#evidence">Evidence</InternalLink>
           <InternalLink href="/api">API</InternalLink>
+          <InternalLink href="/docs">Docs</InternalLink>
         </nav>
         <div className="nav-actions"><ThemeToggle theme={theme} onChange={toggleTheme} /><Magnetic strength={0.18}><InternalLink className="nav-cta" href="/api">Integrate OMNI <span>↗</span></InternalLink></Magnetic></div>
       </header>
@@ -751,7 +945,7 @@ function App() {
     return () => window.cancelAnimationFrame(frame);
   }, [routeLocation.pathname, routeLocation.search, routeLocation.hash]);
 
-  return routeLocation.pathname === "/api" ? <ApiPage /> : <LandingPage />;
+  return routeLocation.pathname === "/docs" ? <DocsPage /> : routeLocation.pathname === "/api" ? <ApiPage search={routeLocation.search} /> : <LandingPage />;
 }
 
 export default App;
