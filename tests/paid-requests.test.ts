@@ -361,6 +361,36 @@ describe("paid request idempotency", () => {
     expect(gateway.settlementCount).toBe(0);
   });
 
+  test("allows stateless unpaid negotiation without a key but rejects malformed keys", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const omni = createOmni();
+    const app = createFixture(store, gateway, omni);
+    const { url } = await listen(app);
+
+    const invalidInput = await fetch(`${url}/v1/package/risk?ecosystem=npm&name=fixture`);
+    expect(invalidInput.status).toBe(400);
+    expect(await invalidInput.json()).toEqual({ error: "invalid_request" });
+    expect(invalidInput.headers.get("PAYMENT-REQUIRED")).toBeNull();
+    expect(store.rows.size).toBe(0);
+    expect(gateway.settlementCount).toBe(0);
+    expect(omni.calls).toBe(0);
+
+    const noKey = await fetch(`${url}/v1/package/risk?ecosystem=npm&name=fixture&version=1.0.0`);
+    expect(noKey.status).toBe(402);
+    expect(await noKey.json()).toEqual({});
+    expect(store.rows.size).toBe(0);
+    expect(gateway.settlementCount).toBe(0);
+    expect(omni.calls).toBe(0);
+
+    const malformed = await packageRequest(url, "not-a-uuid", { payment: false });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({ error: "idempotency_key_invalid", retryable: false });
+    expect(store.rows.size).toBe(0);
+    expect(gateway.settlementCount).toBe(0);
+    expect(omni.calls).toBe(0);
+  });
+
   test("applies the same unpaid negotiation contract to all four paid routes without changing prices", async () => {
     const store = new MemoryPaidRequestStore();
     const gateway = new TestGateway();
@@ -380,7 +410,8 @@ describe("paid request idempotency", () => {
   test("rejects missing and malformed/non-v4 keys before payment", async () => {
     const store = new MemoryPaidRequestStore();
     const gateway = new TestGateway();
-    const app = createFixture(store, gateway, createOmni());
+    const omni = createOmni();
+    const app = createFixture(store, gateway, omni);
     const { url } = await listen(app);
     const missing = await fetch(`${url}/v1/package/risk?ecosystem=npm&name=fixture&version=1.0.0`, { headers: { "PAYMENT-SIGNATURE": paymentHeader() } });
     const malformed = await packageRequest(url, "not-a-uuid");
@@ -389,6 +420,8 @@ describe("paid request idempotency", () => {
     expect(malformed.status).toBe(400);
     expect(nonV4.status).toBe(400);
     expect(gateway.settlementCount).toBe(0);
+    expect(gateway.prices).toEqual([]);
+    expect(omni.calls).toBe(0);
   });
 
   test("releases a pre-settlement claim after verification failure so a later valid retry can pay", async () => {
@@ -1076,5 +1109,38 @@ describe("installed Circle Gateway middleware lifecycle", () => {
     expect(await replay.json()).toEqual(firstBody);
     expect(settleCalls.value).toBe(1);
     expect(omni.calls).toBe(1);
+  });
+
+  test("actual SDK returns a 402 challenge for valid unpaid requests without an idempotency key", async () => {
+    const settleCalls = { value: 0 };
+    const circle = await facilitator(settleCalls);
+    const store = new MemoryPaidRequestStore();
+    const gateway = createGatewayMiddleware({ sellerAddress: SELLER, facilitatorUrl: circle.url });
+    const omni = {
+      calls: 0,
+      async packageRisk() {
+        omni.calls += 1;
+        return { subject: { type: "package", id: "npm:fixture@1.0.0" }, riskScore: 3, recommendation: "proceed" };
+      }
+    };
+    const app = createApp({
+      omni: omni as unknown as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway,
+      paidRequests: store,
+      circleTransfers: new CircleTransferLookup(circle.url, 500),
+      maxInFlight: 32
+    });
+    const fixture = await listen(app);
+    const response = await fetch(`${fixture.url}/v1/package/risk?ecosystem=npm&name=fixture&version=1.0.0`);
+
+    expect(response.status).toBe(402);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("PAYMENT-REQUIRED")).not.toBeNull();
+    expect(await response.json()).toEqual({});
+    expect(store.rows.size).toBe(0);
+    expect(settleCalls.value).toBe(0);
+    expect(omni.calls).toBe(0);
   });
 });

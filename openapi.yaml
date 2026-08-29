@@ -244,8 +244,8 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      required: true
-      description: Identifies one logical paid OMNI request. It must be a UUID v4 and must be reused unchanged for retries. Reusing it for different validated input returns a conflict.
+      required: false
+      description: Optional for an initial unpaid x402 discovery/challenge request. Required when submitting PAYMENT-SIGNATURE and for durable paid execution/replay semantics. It must be a UUID v4 and must be reused unchanged for retries. Reusing it for different validated input returns a conflict.
       schema:
         type: string
         format: uuid
