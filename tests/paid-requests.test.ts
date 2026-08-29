@@ -389,6 +389,14 @@ describe("paid request idempotency", () => {
     expect(store.rows.size).toBe(0);
     expect(gateway.settlementCount).toBe(0);
     expect(omni.calls).toBe(0);
+
+    const unsupportedAccept = await fetch(`${url}/v1/package/risk?ecosystem=npm&name=fixture&version=1.0.0`, { headers: { Accept: "application/xml" } });
+    expect(unsupportedAccept.status).toBe(406);
+    expect(await unsupportedAccept.json()).toEqual({ error: "not_acceptable", retryable: false });
+    expect(unsupportedAccept.headers.get("PAYMENT-REQUIRED")).toBeNull();
+    expect(store.rows.size).toBe(0);
+    expect(gateway.settlementCount).toBe(0);
+    expect(omni.calls).toBe(0);
   });
 
   test("applies the same unpaid negotiation contract to all four paid routes without changing prices", async () => {
@@ -1111,7 +1119,7 @@ describe("installed Circle Gateway middleware lifecycle", () => {
     expect(omni.calls).toBe(1);
   });
 
-  test("actual SDK returns a 402 challenge for valid unpaid requests without an idempotency key", async () => {
+  test("actual SDK returns 402 challenges for all paid routes without an idempotency key", async () => {
     const settleCalls = { value: 0 };
     const circle = await facilitator(settleCalls);
     const store = new MemoryPaidRequestStore();
@@ -1133,12 +1141,25 @@ describe("installed Circle Gateway middleware lifecycle", () => {
       maxInFlight: 32
     });
     const fixture = await listen(app);
-    const response = await fetch(`${fixture.url}/v1/package/risk?ecosystem=npm&name=fixture&version=1.0.0`);
+    const responses = await Promise.all([
+      fetch(`${fixture.url}/v1/package/risk?ecosystem=npm&name=fixture&version=1.0.0`),
+      fetch(`${fixture.url}/v1/repo/risk?owner=fixture&repo=repo`),
+      fetch(`${fixture.url}/v1/dependencies/risk`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ packages: [PACKAGE_INPUT] })
+      }),
+      fetch(`${fixture.url}/v1/x402/endpoint/preflight?url=https%3A%2F%2Fexample.com`)
+    ]);
 
-    expect(response.status).toBe(402);
-    expect(response.headers.get("content-type")).toContain("application/json");
-    expect(response.headers.get("PAYMENT-REQUIRED")).not.toBeNull();
-    expect(await response.json()).toEqual({});
+    expect(responses.map(response => response.status)).toEqual([402, 402, 402, 402]);
+    expect(responses.map(response => response.headers.get("content-type"))).toEqual(["application/json", "application/json", "application/json", "application/json"]);
+    expect(responses.map(response => response.headers.get("PAYMENT-REQUIRED") !== null)).toEqual([true, true, true, true]);
+    expect(await Promise.all(responses.map(response => response.json()))).toEqual([{}, {}, {}, {}]);
+
+    const challenges = responses.map(response => JSON.parse(Buffer.from(response.headers.get("PAYMENT-REQUIRED")!, "base64").toString("utf8")));
+    expect(challenges.map(challenge => challenge.accepts[0]?.amount)).toEqual(["5000", "10000", "50000", "10000"]);
+    expect(challenges.every(challenge => challenge.accepts.every((accept: { amount: string }) => accept.amount === challenge.accepts[0].amount))).toBe(true);
     expect(store.rows.size).toBe(0);
     expect(settleCalls.value).toBe(0);
     expect(omni.calls).toBe(0);
