@@ -120,30 +120,46 @@ export function isEndpointId(value: string | null): value is EndpointId {
   return value !== null && API_ENDPOINTS.some((endpoint) => endpoint.id === value);
 }
 
+function validatePackageCoordinate(values: PackageInput, subject: string): string | null {
+  const ecosystem = trim(values.ecosystem);
+  const name = trim(values.name);
+  const version = trim(values.version);
+  if (!ecosystem) return `Enter an ecosystem for the ${subject}.`;
+  if (ecosystem.length > 32) return `${subject} ecosystem must be 32 characters or fewer.`;
+  if (!name) return `Enter a package name for the ${subject}.`;
+  if (name.length > 256) return `${subject} package name must be 256 characters or fewer.`;
+  if (!version) return `Enter a package version for the ${subject}.`;
+  if (version.length > 128) return `${subject} version must be 128 characters or fewer.`;
+  return null;
+}
+
+const REPOSITORY_COMPONENT = /^[A-Za-z0-9_.-]{1,100}$/;
+
 export function validateInspection(input: InspectionInput): string | null {
-  if (input.endpointId === "package") {
-    if (!trim(input.values.ecosystem)) return "Enter an ecosystem.";
-    if (!trim(input.values.name)) return "Enter a package name.";
-    if (!trim(input.values.version)) return "Enter a package version.";
-    return null;
-  }
+  if (input.endpointId === "package") return validatePackageCoordinate(input.values, "package");
 
   if (input.endpointId === "repo") {
-    if (!trim(input.values.owner)) return "Enter a repository owner.";
-    if (!trim(input.values.repo)) return "Enter a repository name.";
+    const owner = trim(input.values.owner);
+    const repo = trim(input.values.repo);
+    if (!owner) return "Enter a repository owner.";
+    if (!REPOSITORY_COMPONENT.test(owner)) return "Owner must use 1–100 letters, numbers, dots, underscores, or hyphens.";
+    if (!repo) return "Enter a repository name.";
+    if (!REPOSITORY_COMPONENT.test(repo)) return "Repository must use 1–100 letters, numbers, dots, underscores, or hyphens.";
     return null;
   }
 
   if (input.endpointId === "dependencies") {
     if (input.values.length === 0) return "Add at least one dependency.";
     if (input.values.length > MAX_DEPENDENCIES) return `Use ${MAX_DEPENDENCIES} dependencies or fewer.`;
-    const incompleteIndex = input.values.findIndex((dependency) => !trim(dependency.ecosystem) || !trim(dependency.name) || !trim(dependency.version));
-    return incompleteIndex === -1 ? null : `Complete dependency ${incompleteIndex + 1}.`;
+    const incompleteIndex = input.values.findIndex((dependency) => validatePackageCoordinate(dependency, "dependency") !== null);
+    return incompleteIndex === -1 ? null : validatePackageCoordinate(input.values[incompleteIndex], `dependency ${incompleteIndex + 1}`);
   }
 
-  if (!trim(input.values.url)) return "Enter an HTTP or HTTPS URL.";
+  const url = trim(input.values.url);
+  if (!url) return "Enter an HTTP or HTTPS URL.";
+  if (url.length > 2048) return "Target URL must be 2048 characters or fewer.";
   try {
-    const parsed = new URL(input.values.url.trim());
+    const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "Use an HTTP or HTTPS URL.";
   } catch {
     return "Enter a valid HTTP or HTTPS URL.";
@@ -198,41 +214,37 @@ function targetDescription(input: InspectionInput): string {
   return trim(input.values.url);
 }
 
-function requestRepresentation(input: InspectionInput): string {
-  if (input.endpointId !== "dependencies") return "Accept: application/json";
-  const body = JSON.stringify({
-    packages: input.values.map(({ ecosystem, name, version }) => ({
-      ecosystem: trim(ecosystem),
-      name: trim(name),
-      version: trim(version),
-    })),
-  }, null, 2);
-  return `Accept: application/json\n\nContent-Type: application/json\n${body}`;
-}
-
 export function buildAgentInspectionPrompt(input: InspectionInput): string {
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
   const request = buildRequest(input);
   const preflightRule = input.endpointId === "preflight"
-    ? "- Perform exactly one paid OMNI preflight request only. The target URL is input to OMNI; pay OMNI only to inspect it; do not make a payment request to the target endpoint.\n"
+    ? "- The target URL is INPUT to OMNI. Pay OMNI only. Never pay the inspected target endpoint.\n"
     : "";
 
-  return `Check whether an official Circle Agent Wallet / CLI is already installed, configured, and usable for TESTNET x402.
+  return `Set up or reuse an official Circle Agent Wallet for TESTNET x402.
 
-If it works, reuse it. Do not reinstall Circle tooling or create another wallet.
-
-If it is missing or unusable, run:
+Run:
 
 curl -sL https://agents.circle.com/skills/setup.md
 
-and follow the official Circle instructions only for the missing setup.
+and use the returned instructions to set up, log in to, or reuse the wallet.
+
+If a usable TESTNET wallet already exists, reuse it.
+
+If login requires an email, OTP, legal confirmation, or another user input, ask the user and continue after they provide it.
+
+If Circle cannot be reached, retry the same login operation up to 3 times. If it still fails, diagnose and report the connectivity problem.
+
+Do not change DNS, VPN, proxy, or other network settings without explicit user approval.
+
+Once the wallet is usable, continue with OMNI.
 
 Read:
 
 https://api.askomni.xyz/llms.txt
 
-Then perform exactly one OMNI inspection request:
+Perform exactly one OMNI inspection:
 
 ${request.display}
 
@@ -240,38 +252,32 @@ The user wants OMNI to inspect:
 ${targetDescription(input)}
 
 Rules:
-- TESTNET ONLY. Never use mainnet.
+- TESTNET ONLY.
 - Create one fresh UUID v4 Idempotency-Key.
-- Request without payment first and inspect the real HTTP 402 challenge.
-- Pay only if the challenged resource matches the exact OMNI request.
-- The payment asset must be USDC.
-- Select the network and scheme only from the live HTTP 402 challenge.
-- The amount must be exactly ${endpoint.atomicAmount} atomic units = ${endpoint.displayPrice} USDC.
-- Use the payment destination from the live challenge; never guess it.
-- Authorize at most one ${endpoint.displayPrice} USDC payment.
-- Reuse the exact same request and Idempotency-Key for the paid retry.
-${input.endpointId === "dependencies" ? "- For the POST request, reuse the exact same JSON body for the paid retry.\n" : ""}${preflightRule}- If payment state is uncertain, stop. Do not retry automatically.
-- Never reveal private keys, seed phrases, signing secrets, wallet credentials, or payment authorization secrets.
+- Make the unpaid request first and inspect the real HTTP 402.
+- The challenged resource must match the exact OMNI request.
+- The asset must be USDC.
+- Network, scheme, asset, and payTo come from the live challenge.
+- The amount must equal exactly ${endpoint.atomicAmount} atomic units = ${endpoint.displayPrice} USDC.
+- If the live challenge price differs from the expected amount, STOP.
+- If the challenged resource differs, STOP.
+- If the asset is not USDC, STOP.
+- Authorize at most one payment.
+- Reuse the exact request and Idempotency-Key for the paid retry.
+${input.endpointId === "dependencies" ? "- For POST, reuse the exact same JSON body for the paid retry.\n" : ""}${preflightRule}- If payment state is uncertain, STOP. Never retry payment automatically.
+- Never expose private keys, seed phrases, wallet credentials, signing secrets, or payment authorization secrets.
+- Do not repeat or log OTP after using it.
 
-Request representation:
-
-${requestRepresentation(input)}
-
-After HTTP 200, show the user:
+After HTTP 200:
 
 1. JSON Assessment
-
-Show the returned assessment JSON, but omit artifact.content from the JSON display to avoid duplicating the Markdown.
-
-Preserve artifact filename and mediaType and do not invent, infer, rename, or change other returned values.
+   Show JSON without artifact.content.
 
 2. OMNI Markdown Report
+   Render artifact.content.
 
-Render the returned artifact.content as Markdown.
-
-If artifact.content is unexpectedly missing, report that state and stop.
-
-Do not make another paid request just to obtain Markdown.`;
+If artifact.content is missing, report it and stop.
+Do not make another paid request.`;
 }
 
 export async function copyText(value: string): Promise<void> {

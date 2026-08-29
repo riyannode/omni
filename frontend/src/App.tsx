@@ -601,17 +601,17 @@ function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; 
         {endpointId === "package" && <fieldset>
           <legend>What package do you want to inspect?</legend>
           <div className="builder-fields builder-fields--three">
-            <label><span>Ecosystem</span><input value={values.package.ecosystem} onChange={(event) => updatePackage("ecosystem", event.target.value)} placeholder="npm" /></label>
-            <label><span>Package</span><input value={values.package.name} onChange={(event) => updatePackage("name", event.target.value)} placeholder="express" /></label>
-            <label><span>Version</span><input value={values.package.version} onChange={(event) => updatePackage("version", event.target.value)} placeholder="5.2.1" /></label>
+            <label><span>Ecosystem</span><input value={values.package.ecosystem} onChange={(event) => updatePackage("ecosystem", event.target.value)} placeholder="npm" maxLength={32} /></label>
+            <label><span>Package</span><input value={values.package.name} onChange={(event) => updatePackage("name", event.target.value)} placeholder="express" maxLength={256} /></label>
+            <label><span>Version</span><input value={values.package.version} onChange={(event) => updatePackage("version", event.target.value)} placeholder="5.2.1" maxLength={128} /></label>
           </div>
         </fieldset>}
 
         {endpointId === "repo" && <fieldset>
           <legend>What repository do you want to inspect?</legend>
           <div className="builder-fields builder-fields--two">
-            <label><span>Owner</span><input value={values.repo.owner} onChange={(event) => updateRepo("owner", event.target.value)} placeholder="expressjs" /></label>
-            <label><span>Repository</span><input value={values.repo.repo} onChange={(event) => updateRepo("repo", event.target.value)} placeholder="express" /></label>
+            <label><span>Owner</span><input value={values.repo.owner} onChange={(event) => updateRepo("owner", event.target.value)} placeholder="expressjs" maxLength={100} /></label>
+            <label><span>Repository</span><input value={values.repo.repo} onChange={(event) => updateRepo("repo", event.target.value)} placeholder="express" maxLength={100} /></label>
           </div>
         </fieldset>}
 
@@ -620,9 +620,9 @@ function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; 
           <div className="dependency-list">
             {values.dependencies.map((dependency, index) => <div className="dependency-row" key={dependency.id}>
               <span className="dependency-row__index">{String(index + 1).padStart(2, "0")}</span>
-              <label><span>Ecosystem</span><input value={dependency.ecosystem} onChange={(event) => updateDependency(dependency.id, "ecosystem", event.target.value)} placeholder="npm" /></label>
-              <label><span>Package</span><input value={dependency.name} onChange={(event) => updateDependency(dependency.id, "name", event.target.value)} placeholder="express" /></label>
-              <label><span>Version</span><input value={dependency.version} onChange={(event) => updateDependency(dependency.id, "version", event.target.value)} placeholder="5.2.1" /></label>
+              <label><span>Ecosystem</span><input value={dependency.ecosystem} onChange={(event) => updateDependency(dependency.id, "ecosystem", event.target.value)} placeholder="npm" maxLength={32} /></label>
+              <label><span>Package</span><input value={dependency.name} onChange={(event) => updateDependency(dependency.id, "name", event.target.value)} placeholder="express" maxLength={256} /></label>
+              <label><span>Version</span><input value={dependency.version} onChange={(event) => updateDependency(dependency.id, "version", event.target.value)} placeholder="5.2.1" maxLength={128} /></label>
               <button className="builder-remove" type="button" onClick={() => onChange({ ...values, dependencies: values.dependencies.filter((candidate) => candidate.id !== dependency.id) })} disabled={values.dependencies.length === 1} aria-label={`Remove dependency ${index + 1}`}>Remove</button>
             </div>)}
           </div>
@@ -631,7 +631,7 @@ function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; 
 
         {endpointId === "preflight" && <fieldset>
           <legend>What paid endpoint do you want OMNI to inspect?</legend>
-          <label className="builder-field--full"><span>Target URL</span><input type="url" value={values.preflight.url} onChange={(event) => updatePreflight(event.target.value)} placeholder="https://example.com/api/resource" /></label>
+          <label className="builder-field--full"><span>Target URL</span><input type="url" value={values.preflight.url} onChange={(event) => updatePreflight(event.target.value)} placeholder="https://example.com/api/resource" maxLength={2048} /></label>
         </fieldset>}
       </form>
 
