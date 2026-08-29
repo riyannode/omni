@@ -39,6 +39,18 @@ function updateRouteLocation(setLocation: (location: RouteLocation) => void): vo
   else commit();
 }
 
+function scrollToRouteTarget(targetId: string): void {
+  const target = targetId ? document.getElementById(targetId) : null;
+  let top = 0;
+  let current = target;
+  while (current) {
+    top += current.offsetTop;
+    current = current.offsetParent as HTMLElement | null;
+  }
+  top = target ? Math.max(0, top - 96) : 0;
+  window.scrollTo({ top, left: 0, behavior: target && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" });
+}
+
 function navigateInternal(href: string): void {
   const target = new URL(href, window.location.href);
   if (target.origin !== window.location.origin) return;
@@ -389,7 +401,7 @@ function EvidenceBento() {
 
   return (
     <div className="evidence-grid">
-      <article className="evidence-card evidence-card--supply reveal-card">
+      <article id="supply-chain-evidence" className="evidence-card evidence-card--supply reveal-card">
         <div className="card-header"><span>Supply chain</span><span className="card-index">{evidencePlanes[0].index}</span></div>
         <div className="evidence-card__visual supply-visual"><div className="supply-node supply-node--a" /><div className="supply-node supply-node--b" /><div className="supply-node supply-node--c" /><span className="supply-line" /></div>
         <h3>See what the agent will install.</h3>
@@ -466,6 +478,52 @@ function EcosystemMarquee() {
         </div>
       </div>
     </div>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="site-footer">
+      <div className="site-footer__body">
+        <div className="site-footer__brand">
+          <InternalLink className="site-footer__brand-link" href="/" aria-label="OMNI home">
+            <span className="site-footer__brand-mark"><img src="/footer/omni-logo-bw.jpg" alt="" /></span>
+            <span>OMNI</span>
+          </InternalLink>
+          <p>Pre-execution trust &amp; risk for autonomous agents.</p>
+          <p>Source-attributed, deterministic, and advisory by design.</p>
+        </div>
+        <div className="site-footer__details">
+          <nav className="site-footer__social" aria-label="OMNI external links">
+            <a href="https://github.com/riyannode/omni" target="_blank" rel="noopener noreferrer" aria-label="OMNI on GitHub">
+              <span className="site-footer__icon site-footer__icon--light"><img src="/footer/github.svg" alt="" /></span>
+              <span className="site-footer__icon site-footer__icon--dark"><img src="/footer/github-light.svg" alt="" /></span>
+              <span>GitHub</span>
+            </a>
+            <a href="https://x.com/omnix402" target="_blank" rel="noopener noreferrer" aria-label="OMNI on X">
+              <span className="site-footer__icon site-footer__icon--light"><img src="/footer/x.svg" alt="" /></span>
+              <span className="site-footer__icon site-footer__icon--dark"><img src="/footer/x-light.svg" alt="" /></span>
+              <span>X</span>
+            </a>
+            <a href="mailto:askomni.xyz@gmail.com" aria-label="Email OMNI">
+              <span className="site-footer__mail-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 6.5h17v11h-17zM4 7l8 6 8-6" /></svg></span>
+              <span>Email</span>
+            </a>
+          </nav>
+          <div className="site-footer__support">
+            <span>Built with Circle x402</span>
+            <span className="site-footer__support-marks" aria-label="Circle and Arc">
+              <span><img className="site-footer__circle-mark" src="/footer/circle-logo.png" alt="" />Circle</span>
+              <span><img className="site-footer__arc-mark" src="/footer/arc-logo.jpg" alt="" />Arc</span>
+            </span>
+          </div>
+          <a className="site-footer__agent-badge" href="https://agents.circle.com/sell/score?url=api.askomni.xyz" target="_blank" rel="noopener noreferrer">
+            <img src="https://agents.circle.com/sell/score/badge?url=api.askomni.xyz" alt="Accepts Agent Payments" />
+          </a>
+        </div>
+      </div>
+      <div className="site-footer__bottom"><span>© 2026 OMNI</span><span>ADVISORY BY DESIGN</span></div>
+    </footer>
   );
 }
 
@@ -576,7 +634,7 @@ function ApiPage() {
         </section>
       </main>
 
-      <footer className="site-footer"><div className="footer-links"><InternalLink href="/">OMNI</InternalLink><InternalLink href="/#thesis">Thesis</InternalLink><InternalLink href="/#evidence">Evidence</InternalLink><InternalLink href="/api" aria-current="page">API</InternalLink><a href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">GitHub ↗</a></div><span>OMNI / advisory by design</span></footer>
+      <Footer />
     </div>
   );
 }
@@ -649,9 +707,7 @@ function LandingPage() {
               <h1 id="hero-title" className="hero-title">Check risk before agents act.</h1>
               <p className="hero-lede">Before an agent installs software, calls a service, or pays, OMNI checks the software, service, and payment details.</p>
               <div className="hero-actions"><Magnetic><AgentQuickTestButton /></Magnetic><Magnetic strength={0.18}><InternalLink className="button button--text" href="/api">Open the API <span>↗</span></InternalLink></Magnetic></div>
-              <InternalLink className="hero-secondary-link" href="#evidence">See how it works <span>↘</span></InternalLink>
-              <p className="hero-quick-test-note">NO SIGNUP · NO API KEY · TESTNET · QUICK TEST $0.005</p>
-              <p className="hero-note">OMNI shows the evidence. Your policy decides what to allow.</p>
+              <InternalLink className="hero-secondary-link" href="#supply-chain-evidence">See how it works <span>↘</span></InternalLink>
             </div>
             <div className="hero-visual"><InterceptorCard /></div>
           </div>
@@ -672,7 +728,7 @@ function LandingPage() {
         <section className="final-section section-space" aria-labelledby="final-title"><div className="final-copy"><h2 id="final-title">Put evidence before action.</h2><p>Give your runtime a policy check it can explain.</p><div className="hero-actions"><Magnetic><InternalLink className="button button--dark" href="/api">Integrate OMNI <span>↗</span></InternalLink></Magnetic><Magnetic strength={0.18}><a className="button button--text" href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">View the repository <span>↗</span></a></Magnetic></div></div></section>
       </main>
 
-      <footer className="site-footer"><div className="footer-links"><InternalLink href="#thesis">Thesis</InternalLink><InternalLink href="#evidence">Evidence</InternalLink><InternalLink href="/api">API</InternalLink><a href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">GitHub ↗</a></div><span>OMNI / advisory by design</span></footer>
+      <Footer />
     </div>
   );
 }
@@ -688,10 +744,7 @@ function App() {
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      const targetId = routeLocation.hash.slice(1);
-      const target = targetId ? document.getElementById(targetId) : null;
-      if (target) target.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
-      else window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      scrollToRouteTarget(routeLocation.hash.slice(1));
     });
     return () => window.cancelAnimationFrame(frame);
   }, [routeLocation.pathname, routeLocation.search, routeLocation.hash]);

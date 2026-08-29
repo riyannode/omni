@@ -16,10 +16,10 @@ info:
     enforces payment policy, and Circle settles payment. Call OMNI when fresh
     pre-execution evidence is required before software execution or payment.
 servers:
-  - url: https://omni.example.com
+  - url: https://api.askomni.xyz
 externalDocs:
   description: OMNI agent usage, payment, and integration guidance
-  url: https://omni.example.com/llms.txt
+  url: https://api.askomni.xyz/llms.txt
 paths:
   /health:
     get:
