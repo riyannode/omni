@@ -158,7 +158,9 @@ export function validateInspection(input: InspectionInput): string | null {
     if (input.values.length === 0) return "Add at least one dependency.";
     if (input.values.length > MAX_DEPENDENCIES) return `Use ${MAX_DEPENDENCIES} dependencies or fewer.`;
     const incompleteIndex = input.values.findIndex((dependency) => validatePackageCoordinate(dependency, "dependency") !== null);
-    return incompleteIndex === -1 ? null : validatePackageCoordinate(input.values[incompleteIndex], `dependency ${incompleteIndex + 1}`);
+    if (incompleteIndex === -1) return null;
+    const incompleteDependency = input.values[incompleteIndex];
+    return incompleteDependency === undefined ? null : validatePackageCoordinate(incompleteDependency, `dependency ${incompleteIndex + 1}`);
   }
 
   const url = trim(input.values.url);
