@@ -103,6 +103,9 @@ paths:
       responses:
         '200':
           description: Risk assessment with source-attributed evidence and explicit source failures.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: '#/components/headers/PaymentResponse'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RiskAssessmentResponse' }
@@ -133,6 +136,9 @@ paths:
       responses:
         '200':
           description: Risk assessment with source-attributed evidence and explicit source failures.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: '#/components/headers/PaymentResponse'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RiskAssessmentResponse' }
@@ -175,6 +181,9 @@ paths:
       responses:
         '200':
           description: Per-package assessments and aggregate summary.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: '#/components/headers/PaymentResponse'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DependencyAssessment' }
@@ -204,6 +213,9 @@ paths:
       responses:
         '200':
           description: "Endpoint risk assessment with source-attributed evidence and explicit source failures. preflightContext is observational/advisory: it reports the payment configuration observed during preflight and is not an authorization object."
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: '#/components/headers/PaymentResponse'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/X402EndpointPreflight' }
@@ -215,6 +227,11 @@ paths:
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
         '406': { $ref: '#/components/responses/NotAcceptable' }
 components:
+  headers:
+    PaymentResponse:
+      description: Optional base64-encoded JSON Circle x402 payment receipt emitted for the original successful settlement. OMNI durable replays intentionally omit this header rather than fabricating a new payment receipt. The decoded JSON contains success (boolean), transaction (string), network (string), and payer (string).
+      schema:
+        type: string
   parameters:
     Accept:
       name: Accept
@@ -227,8 +244,8 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      required: true
-      description: Identifies one logical paid OMNI request. It must be a UUID v4 and must be reused unchanged for retries. Reusing it for different validated input returns a conflict.
+      required: false
+      description: Optional for an initial unpaid x402 discovery/challenge request. Required when submitting PAYMENT-SIGNATURE and for durable paid execution/replay semantics. It must be a UUID v4 and must be reused unchanged for retries. Reusing it for different validated input returns a conflict.
       schema:
         type: string
         format: uuid

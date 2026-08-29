@@ -219,7 +219,16 @@ export class PaidRouteIntegration {
       return;
     }
     const keyHeader = req.headers["idempotency-key"];
+    const paymentPresent = isPaymentSignaturePresent(req);
     if (typeof keyHeader !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(keyHeader)) {
+      if (keyHeader === undefined && !paymentPresent) {
+        if (representationFromAccept(req.accepts(["json", "markdown"])) === undefined) {
+          sendError(res, 406, "not_acceptable");
+          return;
+        }
+        await this.invokeGatewayWithoutRecord(spec, req, res);
+        return;
+      }
       sendError(res, 400, "idempotency_key_invalid");
       return;
     }
@@ -230,7 +239,6 @@ export class PaidRouteIntegration {
     }
     const idempotencyKey = readIdempotencyKey(req)!;
     const requestFingerprint = fingerprint(spec.route, req.method, input);
-    const paymentPresent = isPaymentSignaturePresent(req);
     let existing: PaidRequest | undefined;
     try {
       existing = await this.store.get(idempotencyKey);
