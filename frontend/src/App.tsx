@@ -486,14 +486,26 @@ function Footer() {
     <footer className="site-footer">
       <div className="site-footer__body">
         <div className="site-footer__brand">
-          <InternalLink className="site-footer__brand-link" href="/" aria-label="OMNI home">
-            <span className="site-footer__brand-mark"><img src="/footer/omni-logo-bw.jpg" alt="" /></span>
-            <span>OMNI</span>
-          </InternalLink>
+          <div className="site-footer__brand-head">
+            <InternalLink className="site-footer__brand-link" href="/" aria-label="OMNI home">
+              <span className="site-footer__brand-mark"><img src="/footer/omni-logo-bw.jpg" alt="" /></span>
+              <span>OMNI</span>
+            </InternalLink>
+            <a className="site-footer__agent-badge" href="https://agents.circle.com/sell/score?url=api.askomni.xyz" target="_blank" rel="noopener noreferrer">
+              <img src="https://agents.circle.com/sell/score/badge?url=api.askomni.xyz" alt="Accepts Agent Payments" />
+            </a>
+          </div>
           <p>Pre-execution trust &amp; risk for autonomous agents.</p>
           <p>Source-attributed, deterministic, and advisory by design.</p>
         </div>
         <div className="site-footer__details">
+          <div className="site-footer__support">
+            <span>Built with Circle x402</span>
+            <span className="site-footer__support-marks" aria-label="Circle and Arc">
+              <span><img className="site-footer__circle-mark" src="/footer/circle-logo.png" alt="" />Circle</span>
+              <span><img className="site-footer__arc-mark" src="/footer/arc-logo.jpg" alt="" />Arc</span>
+            </span>
+          </div>
           <nav className="site-footer__social" aria-label="OMNI external links">
             <a href="https://github.com/riyannode/omni" target="_blank" rel="noopener noreferrer" aria-label="OMNI on GitHub">
               <span className="site-footer__icon site-footer__icon--light"><img src="/footer/github.svg" alt="" /></span>
@@ -510,16 +522,6 @@ function Footer() {
               <span>Email</span>
             </a>
           </nav>
-          <div className="site-footer__support">
-            <span>Built with Circle x402</span>
-            <span className="site-footer__support-marks" aria-label="Circle and Arc">
-              <span><img className="site-footer__circle-mark" src="/footer/circle-logo.png" alt="" />Circle</span>
-              <span><img className="site-footer__arc-mark" src="/footer/arc-logo.jpg" alt="" />Arc</span>
-            </span>
-          </div>
-          <a className="site-footer__agent-badge" href="https://agents.circle.com/sell/score?url=api.askomni.xyz" target="_blank" rel="noopener noreferrer">
-            <img src="https://agents.circle.com/sell/score/badge?url=api.askomni.xyz" alt="Accepts Agent Payments" />
-          </a>
         </div>
       </div>
       <div className="site-footer__bottom"><span>© 2026 OMNI</span><span>ADVISORY BY DESIGN</span></div>
