@@ -424,7 +424,7 @@ export class OmniIntelligence {
       if (listedMethod === undefined || listedMethod === "GET") {
         try {
           const probe = await this.probe.unpaidGet(resource);
-          activeProbeChecked = true; responseStatus = probe.status; paymentOptions = probe.paymentOptions; evidence.push(probe.evidence);
+          activeProbeChecked = true; responseStatus = probe.status; paymentOptions = probe.paymentOptions.length; observedPaymentRequirements = probe.paymentOptions; evidence.push(probe.evidence);
         } catch (error) { errors.push(`Active probe: ${error instanceof Error ? error.message : "unknown error"}`); }
       } else {
         activeProbeChecked = true;

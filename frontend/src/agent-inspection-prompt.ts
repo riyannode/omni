@@ -304,7 +304,15 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
   const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-testnet"];
   const request = buildRequest(input);
   const preflightRule = input.endpointId === "preflight"
-    ? "- The target URL is INPUT to OMNI. Pay OMNI only. Never pay the inspected target endpoint.\n"
+    ? `- The target URL is INPUT to OMNI. Pay OMNI only. Never pay the inspected target endpoint.
+- TESTNET ONLY applies to the Circle wallet/payment used to call OMNI, not to the inspected endpoint's advertised networks.
+- The inspected endpoint may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely because it advertises MAINNET.
+- Report the payment options returned by OMNI exactly as observed.
+- Do not choose a target network.
+- Do not create or check wallets on the target networks.
+- Do not run Circle payment against the target endpoint.
+- OMNI performs the unpaid target probe server-side.
+`
     : "";
   const paymentRulesAfterNetwork = SHARED_PAYMENT_RULES.afterNetwork
     .replace("{{atomicAmount}}", endpoint.atomicAmount)
