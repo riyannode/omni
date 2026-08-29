@@ -1,7 +1,7 @@
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { Fragment, type AnchorHTMLAttributes, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type AnchorHTMLAttributes, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { copyAgentQuickTestPrompt } from "./agent-quick-test";
 import {
   API_ENDPOINTS,
@@ -45,11 +45,11 @@ function readRouteLocation(): RouteLocation {
   return { pathname: window.location.pathname, search: window.location.search, hash: window.location.hash };
 }
 
-function updateRouteLocation(setLocation: (location: RouteLocation) => void): void {
+function updateRouteLocation(setLocation: (location: RouteLocation) => void, shouldTransition: boolean): void {
   const commit = () => setLocation(readRouteLocation());
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const transitionDocument = document as unknown as ViewTransitionDocument;
-  if (typeof transitionDocument.startViewTransition === "function" && !reduceMotion) transitionDocument.startViewTransition(commit);
+  if (shouldTransition && typeof transitionDocument.startViewTransition === "function" && !reduceMotion) transitionDocument.startViewTransition(commit);
   else commit();
 }
 
@@ -589,14 +589,6 @@ function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; 
 
   return (
     <div className="endpoint-builder" id={`${endpointId}-builder`}>
-      <div className="endpoint-builder__header">
-        <div>
-          <p className="eyebrow">Inspection prompt</p>
-          <h3>{endpoint.method} {endpoint.path}</h3>
-        </div>
-        <span className="endpoint-builder__price">{endpoint.atomicAmount} atomic · {endpoint.displayPrice} USDC</span>
-      </div>
-
       <form className="builder-form" onSubmit={(event) => event.preventDefault()}>
         {endpointId === "package" && <fieldset>
           <legend>What package do you want to inspect?</legend>
@@ -660,6 +652,8 @@ function ApiPage({ search }: { search: string }) {
   const [copyError, setCopyError] = useState<string | null>(null);
   const copyResetRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const endpointRowRefs = useRef(new Map<EndpointId, HTMLDivElement>());
+  const pendingAnchorRef = useRef<{ endpointId: EndpointId; top: number } | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -676,6 +670,16 @@ function ApiPage({ search }: { search: string }) {
     setSelectedEndpoint(isEndpointId(value) ? value : null);
   }, [search]);
 
+  useLayoutEffect(() => {
+    const anchor = pendingAnchorRef.current;
+    pendingAnchorRef.current = null;
+    if (!anchor || selectedEndpoint !== anchor.endpointId) return;
+    const row = endpointRowRefs.current.get(anchor.endpointId);
+    if (!row) return;
+    const delta = row.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) > 0.5) window.scrollBy({ top: delta, left: 0, behavior: "auto" });
+  }, [selectedEndpoint]);
+
   useGSAP(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     gsap.fromTo(".api-page__hero, .api-page__window, .api-page__endpoint", { y: 28, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.08, duration: 0.8, ease: "power3.out" });
@@ -683,6 +687,8 @@ function ApiPage({ search }: { search: string }) {
 
   const toggleTheme = () => setTheme((current) => current === "light" ? "dark" : "light");
   const selectEndpoint = (endpointId: EndpointId) => {
+    const clickedRow = endpointRowRefs.current.get(endpointId);
+    if (clickedRow) pendingAnchorRef.current = { endpointId, top: clickedRow.getBoundingClientRect().top };
     const next = selectedEndpoint === endpointId ? "/api" : `/api?endpoint=${endpointId}`;
     setSelectedEndpoint(selectedEndpoint === endpointId ? null : endpointId);
     navigateInternal(next);
@@ -745,7 +751,7 @@ function ApiPage({ search }: { search: string }) {
               const routeLabel = `${endpoint.method} ${endpoint.path}`;
               const isSelected = selectedEndpoint === endpoint.id;
               return <Fragment key={endpoint.id}>
-                <div className={`api-page__endpoint endpoint-list__row ${isSelected ? "is-active" : ""}`} data-method={endpoint.method.toLowerCase()}>
+                <div ref={(node) => { if (node) endpointRowRefs.current.set(endpoint.id, node); else endpointRowRefs.current.delete(endpoint.id); }} className={`api-page__endpoint endpoint-list__row ${isSelected ? "is-active" : ""}`} data-method={endpoint.method.toLowerCase()}>
                   <div className="endpoint-list__main">
                     <div className="endpoint-route"><b>{endpoint.method}</b><code>{endpoint.path}</code><button className={`endpoint-copy${copiedEndpoint === routeLabel ? " is-copied" : ""}`} type="button" onClick={() => void copyEndpoint(routeLabel)} aria-label={`${copiedEndpoint === routeLabel ? "Copied" : copyError === routeLabel ? "Retry copy" : "Copy"} ${routeLabel}`} title={`${copiedEndpoint === routeLabel ? "Copied" : copyError === routeLabel ? "Retry copy" : "Copy endpoint"}`}><CopyIcon checked={copiedEndpoint === routeLabel} /></button></div>
                     <small>{endpoint.copy}</small>
@@ -931,9 +937,16 @@ function LandingPage() {
 
 function App() {
   const [routeLocation, setRouteLocation] = useState<RouteLocation>(readRouteLocation);
+  const routeLocationRef = useRef(routeLocation);
 
   useEffect(() => {
-    const onPopState = () => updateRouteLocation(setRouteLocation);
+    const onPopState = () => {
+      const nextLocation = readRouteLocation();
+      const previousLocation = routeLocationRef.current;
+      routeLocationRef.current = nextLocation;
+      const shouldTransition = nextLocation.pathname !== previousLocation.pathname || nextLocation.hash !== previousLocation.hash;
+      updateRouteLocation(setRouteLocation, shouldTransition);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -943,7 +956,7 @@ function App() {
       scrollToRouteTarget(routeLocation.hash.slice(1));
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [routeLocation.pathname, routeLocation.search, routeLocation.hash]);
+  }, [routeLocation.pathname, routeLocation.hash]);
 
   return routeLocation.pathname === "/docs" ? <DocsPage /> : routeLocation.pathname === "/api" ? <ApiPage search={routeLocation.search} /> : <LandingPage />;
 }
