@@ -19,12 +19,11 @@ function privateIpv6(ip: string): boolean {
 }
 
 export class X402Probe {
-  constructor(private readonly http: UpstreamHttp, private readonly allowedHosts: Set<string>) {}
+  constructor(private readonly http: UpstreamHttp) {}
 
-  private async assertPublic(url: URL, circleListed: boolean): Promise<void> {
+  private async assertPublic(url: URL): Promise<void> {
     if (url.protocol !== "https:") throw new Error("endpoint probe requires https");
     const host = url.hostname.toLowerCase();
-    if (!circleListed && !this.allowedHosts.has(host)) throw new Error("unlisted endpoint host not allowlisted");
 
     if (isIP(host)) {
       if (privateIpv4(host) || privateIpv6(host)) throw new Error("private endpoint address rejected");
@@ -38,9 +37,9 @@ export class X402Probe {
     }
   }
 
-  async unpaidGet(resource: string, circleListed: boolean): Promise<{ status: number; paymentOptions: number; evidence: Evidence }> {
+  async unpaidGet(resource: string): Promise<{ status: number; paymentOptions: number; evidence: Evidence }> {
     const url = new URL(resource);
-    await this.assertPublic(url, circleListed);
+    await this.assertPublic(url);
     const response = await this.http.request(url, {
       method: "GET",
       redirect: "manual",
