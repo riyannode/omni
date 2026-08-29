@@ -148,6 +148,7 @@ html[data-theme="dark"] .brand-mark { filter: invert(1); mix-blend-mode: screen;
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 24px; min-height: 52px; padding: 0 20px; border-radius: 999px; font: 500 0.72rem/1 var(--mono); letter-spacing: 0.03em; text-transform: uppercase; transition: transform 180ms ease, background 180ms ease, color 180ms ease; }
 .button:hover, .button:focus-visible { transform: translateY(-3px); }
 .button--dark { background: var(--ink); color: var(--canvas); }
+.hero .hero-grid .hero-actions .button { font-size: 12.08px; }
 .button--text { min-height: 52px; padding: 0 20px; color: var(--ink); border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--canvas) 16%, transparent); }
 .button--text:hover, .button--text:focus-visible { background: var(--panel); border-color: var(--ink); }
 .hero-note { margin: 30px 0 0; color: var(--helper); font: 400 0.68rem/1.5 var(--mono); }
