@@ -128,6 +128,84 @@ const INITIAL_BUILDER_VALUES: BuilderValues = {
   preflight: { url: "" },
 };
 
+type ApiPreviewSegment = { text: string; className?: string };
+type ApiPreviewBlock = { kind: "line"; segments: readonly ApiPreviewSegment[] } | { kind: "divider" };
+
+const API_PREVIEW_BLOCKS: readonly ApiPreviewBlock[] = [
+  { kind: "line", segments: [{ text: "GET", className: "syntax-muted" }, { text: " /v1/x402/endpoint/preflight" }] },
+  { kind: "line", segments: [{ text: "Accept: application/json", className: "syntax-muted" }] },
+  { kind: "line", segments: [{ text: "Idempotency-Key: UUID v4", className: "syntax-muted" }] },
+  { kind: "divider" },
+  { kind: "line", segments: [{ text: "recommendation", className: "syntax-key" }, { text: ": " }, { text: "advisory", className: "syntax-value" }] },
+  { kind: "line", segments: [{ text: "evidenceCoverage", className: "syntax-key" }, { text: ": " }, { text: "source-derived", className: "syntax-value" }] },
+  { kind: "line", segments: [{ text: "policyVersion", className: "syntax-key" }, { text: ": " }, { text: "deterministic", className: "syntax-value" }] },
+];
+
+const API_PREVIEW_TEXT_LENGTH = API_PREVIEW_BLOCKS.reduce((total, block) => total + (block.kind === "line" ? block.segments.reduce((lineTotal, segment) => lineTotal + segment.text.length, 0) : 0), 0);
+const API_PREVIEW_TYPE_DELAY_MS = 28;
+const API_PREVIEW_HOLD_MS = 3000;
+const API_PREVIEW_BLANK_MS = 450;
+
+function ApiPreview() {
+  const [typedChars, setTypedChars] = useState(0);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setTypedChars(API_PREVIEW_TEXT_LENGTH);
+      return;
+    }
+
+    let current = 0;
+    let typingTimer: number | null = null;
+    let holdTimer: number | null = null;
+    let blankTimer: number | null = null;
+    const typeNext = () => {
+      current += 1;
+      setTypedChars(current);
+      if (current < API_PREVIEW_TEXT_LENGTH) {
+        typingTimer = window.setTimeout(typeNext, API_PREVIEW_TYPE_DELAY_MS);
+        return;
+      }
+
+      holdTimer = window.setTimeout(() => {
+        current = 0;
+        setTypedChars(0);
+        blankTimer = window.setTimeout(typeNext, API_PREVIEW_BLANK_MS);
+      }, API_PREVIEW_HOLD_MS);
+    };
+
+    blankTimer = window.setTimeout(typeNext, API_PREVIEW_BLANK_MS);
+    return () => {
+      if (typingTimer !== null) window.clearTimeout(typingTimer);
+      if (holdTimer !== null) window.clearTimeout(holdTimer);
+      if (blankTimer !== null) window.clearTimeout(blankTimer);
+    };
+  }, []);
+
+  let blockStart = 0;
+  return (
+    <div className="api-window__body">
+      {API_PREVIEW_BLOCKS.map((block, blockIndex) => {
+        if (block.kind === "divider") return typedChars >= blockStart ? <div className="api-divider" key={`divider-${blockIndex}`} /> : null;
+
+        const lineStart = blockStart;
+        const lineLength = block.segments.reduce((total, segment) => total + segment.text.length, 0);
+        blockStart += lineLength;
+        let segmentStart = lineStart;
+        const segments = block.segments.map((segment, segmentIndex) => {
+          const visibleLength = Math.max(0, Math.min(segment.text.length, typedChars - segmentStart));
+          const rendered = visibleLength > 0 ? <span className={segment.className} key={`${blockIndex}-${segmentIndex}`}>{segment.text.slice(0, visibleLength)}</span> : null;
+          segmentStart += segment.text.length;
+          return rendered;
+        });
+
+        return typedChars > lineStart ? <p key={`line-${blockIndex}`}>{segments}</p> : null;
+      })}
+      {typedChars > 0 ? <div className="api-cursor" /> : null}
+    </div>
+  );
+}
+
 function Logo({ size = "small" }: { size?: "small" | "large" }) {
   return (
     <span className={`logo-lockup logo-lockup--${size}`}>
@@ -510,7 +588,7 @@ function Footer() {
             </a>
           </div>
           <p>Pre-execution trust &amp; risk for autonomous agents.</p>
-          <p>Source-attributed, deterministic, and advisory by design.</p>
+          <p>OMNI returns deterministic, source-backed advice before execution.</p>
         </div>
         <div className="site-footer__details">
           <div className="site-footer__support">
@@ -734,16 +812,7 @@ function ApiPage({ search }: { search: string }) {
         <section className="api-page__workspace section-space" aria-labelledby="api-workspace-title">
           <div className="api-page__window api-window">
             <div className="api-window__bar"><span /><span /><span /><strong>omni / preflight</strong></div>
-            <div className="api-window__body">
-              <p><span className="syntax-muted">GET</span> /v1/x402/endpoint/preflight</p>
-              <p className="syntax-muted">Accept: application/json</p>
-              <p className="syntax-muted">Idempotency-Key: UUID v4</p>
-              <div className="api-divider" />
-              <p><span className="syntax-key">recommendation</span>: <span className="syntax-value">advisory</span></p>
-              <p><span className="syntax-key">evidenceCoverage</span>: <span className="syntax-value">source-derived</span></p>
-              <p><span className="syntax-key">policyVersion</span>: <span className="syntax-value">deterministic</span></p>
-              <div className="api-cursor" />
-            </div>
+            <ApiPreview />
           </div>
           <div className="api-page__endpoint-list endpoint-list" aria-labelledby="api-workspace-title">
             <div className="endpoint-list__head"><span id="api-workspace-title">Available endpoints</span><span>per request</span></div>
@@ -808,30 +877,30 @@ function DocsPage() {
       <main className="page-shell" id="top">
         <section className="docs-page__hero section-space" aria-labelledby="docs-page-title">
           <p className="eyebrow">OMNI / Docs</p>
-          <h1 id="docs-page-title">Evidence before the next action.</h1>
-          <p>Use OMNI as a deterministic, source-attributed trust and risk layer before an agent installs software, trusts a repository, evaluates dependencies, or pays an x402 endpoint.</p>
-          <div className="hero-actions"><Magnetic><InternalLink className="button button--dark" href="/#top">Try with your agent <span>↗</span></InternalLink></Magnetic><Magnetic strength={0.18}><a className="button button--text" href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">Read llms.txt <span>↗</span></a></Magnetic></div>
+          <h1 id="docs-page-title">How OMNI checks a request.</h1>
+          <p>OMNI returns a deterministic risk check with its sources before an agent installs software, trusts a repository, checks dependencies, or pays an x402 endpoint.</p>
+          <div className="hero-actions"><Magnetic><InternalLink className="button button--dark" href="/#top">Try OMNI <span>↗</span></InternalLink></Magnetic><Magnetic strength={0.18}><a className="button button--text" href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">Read llms.txt <span>↗</span></a></Magnetic></div>
         </section>
 
         <section className="docs-section section-space" aria-labelledby="docs-getting-started">
-          <div className="section-heading"><div><p className="eyebrow">Getting started</p><h2 id="docs-getting-started">A small contract with a clear handoff.</h2></div><p>OMNI returns evidence and advisory output. Caller policy and wallet enforcement decide what happens next.</p></div>
-          <div className="docs-card docs-card--wide"><strong>GETTING STARTED</strong><p>Read the machine-readable <a href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">llms.txt</a>, choose an endpoint, and use the API builder to generate an exact request plus a safe agent prompt.</p><InternalLink className="docs-action" href="/api">Open the API builder <span>↗</span></InternalLink></div>
+          <div className="section-heading"><div><p className="eyebrow">Getting started</p><h2 id="docs-getting-started">Start with the contract.</h2></div><p>OMNI returns evidence and advice. Your policy and wallet rules decide what happens next.</p></div>
+          <div className="docs-card docs-card--wide"><strong>GETTING STARTED</strong><p>Read the machine-readable <a href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">llms.txt</a>, pick an endpoint, then use the API builder to create the exact request and a safe prompt for your agent.</p><InternalLink className="docs-action" href="/api">Open API builder <span>↗</span></InternalLink></div>
         </section>
 
         <section className="docs-section section-space" aria-labelledby="docs-api-reference">
-          <div className="section-heading"><div><p className="eyebrow">API reference</p><h2 id="docs-api-reference">Four inspection routes.</h2></div><p>Prices and inputs mirror the checked-in OpenAPI contract. The builder stays responsible for request construction only.</p></div>
-          <div className="docs-reference-grid">{API_ENDPOINTS.map((endpoint) => <article className="docs-card" key={endpoint.id}><div className="docs-card__route"><b>{endpoint.method}</b><code>{endpoint.path}</code></div><h3>{endpoint.id === "package" ? "Package Risk" : endpoint.id === "repo" ? "Repository Risk" : endpoint.id === "dependencies" ? "Dependency Risk" : "x402 Endpoint Preflight"}</h3><p>{endpoint.copy}</p><span className="docs-card__price">{endpoint.price} · {endpoint.atomicAmount} atomic</span><InternalLink className="docs-action" href={`/api?endpoint=${endpoint.id}`}>Open in API builder <span>↗</span></InternalLink></article>)}</div>
-          <a className="docs-contract-link" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Open the canonical OpenAPI specification <span>↗</span></a>
+          <div className="section-heading"><div><p className="eyebrow">API reference</p><h2 id="docs-api-reference">Four routes to inspect.</h2></div><p>Prices and inputs match the OpenAPI contract. The builder only creates requests.</p></div>
+          <div className="docs-reference-grid">{API_ENDPOINTS.map((endpoint) => <article className="docs-card" key={endpoint.id}><div className="docs-card__route"><b>{endpoint.method}</b><code>{endpoint.path}</code></div><h3>{endpoint.id === "package" ? "Package risk" : endpoint.id === "repo" ? "Repository risk" : endpoint.id === "dependencies" ? "Dependency risk" : "x402 endpoint preflight"}</h3><p>{endpoint.copy}</p><span className="docs-card__price">{endpoint.price} · {endpoint.atomicAmount} atomic</span><InternalLink className="docs-action" href={`/api?endpoint=${endpoint.id}`}>Open in API builder <span>↗</span></InternalLink></article>)}</div>
+          <a className="docs-contract-link" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Open the canonical OpenAPI spec <span>↗</span></a>
         </section>
 
         <section className="docs-section section-space" aria-labelledby="docs-payments">
-          <div className="section-heading"><div><p className="eyebrow">Payments</p><h2 id="docs-payments">Challenge first. Pay once.</h2></div><p>x402 negotiation keeps the live payment requirements authoritative at execution time.</p></div>
-          <div className="docs-detail-grid"><article className="docs-card"><strong>HTTP 402 NEGOTIATION</strong><p>Request the exact OMNI resource without payment first. Inspect the `PAYMENT-REQUIRED` challenge, then submit a `PAYMENT-SIGNATURE` only when the resource, USDC asset, amount, network, and scheme satisfy caller policy.</p></article><article className="docs-card"><strong>REPLAY + IDEMPOTENCY</strong><p>Use one UUID v4 `Idempotency-Key` for one logical request and reuse it unchanged for the paid retry. A completed result can replay without another payment.</p></article><article className="docs-card"><strong>SETTLEMENT STATE</strong><p>`PAYMENT-RESPONSE` carries the settlement receipt when available. If payment state is uncertain, stop and do not retry automatically.</p></article></div>
+          <div className="section-heading"><div><p className="eyebrow">Payments</p><h2 id="docs-payments">Check the payment first.</h2></div><p>The live x402 challenge provides the payment details.</p></div>
+          <div className="docs-detail-grid"><article className="docs-card"><strong>HTTP 402 CHALLENGE</strong><p>Request the exact OMNI resource without paying. Read `PAYMENT-REQUIRED`, then send `PAYMENT-SIGNATURE` only if the resource, USDC, amount, network, and scheme match your policy.</p></article><article className="docs-card"><strong>IDEMPOTENCY KEY</strong><p>Use one UUID v4 `Idempotency-Key` for each logical request. Reuse it on the paid retry. A completed result can be replayed without another payment.</p></article><article className="docs-card"><strong>SETTLEMENT RECEIPT</strong><p>The `PAYMENT-RESPONSE` includes a settlement receipt when available. If payment state is unclear, stop and do not retry automatically.</p></article></div>
         </section>
 
         <section className="docs-section section-space" aria-labelledby="docs-responses">
-          <div className="section-heading"><div><p className="eyebrow">Responses</p><h2 id="docs-responses">Structured evidence, readable twice.</h2></div><p>JSON is canonical for machines; the deterministic Markdown artifact is ready for people and reports.</p></div>
-          <div className="docs-detail-grid"><article className="docs-card"><strong>JSON ASSESSMENT</strong><p>Successful JSON responses include the assessment fields, source-attributed evidence, source errors, freshness, and an additive artifact object.</p></article><article className="docs-card"><strong>MARKDOWN ARTIFACT</strong><p>`artifact.content` is a deterministic Markdown representation of the same result. Its fixed filename and `text/markdown` media type are returned by OMNI.</p></article><article className="docs-card"><strong>COMMON HTTP ERRORS</strong><p>`400` means invalid input, `402` means payment is required, `406` means the representation is unsupported, `409` means an idempotency conflict, and `503` means paid-request capacity is unavailable.</p></article></div>
+          <div className="section-heading"><div><p className="eyebrow">Responses</p><h2 id="docs-responses">JSON and Markdown.</h2></div><p>JSON is the canonical machine-readable format. The deterministic Markdown artifact is for people and reports.</p></div>
+          <div className="docs-detail-grid"><article className="docs-card"><strong>JSON RESULT</strong><p>A successful JSON response includes the assessment, source-attributed evidence, source errors, freshness, and an additive artifact object.</p></article><article className="docs-card"><strong>MARKDOWN RESULT</strong><p>`artifact.content` is the deterministic Markdown version of the same result. OMNI returns a fixed filename and the `text/markdown` media type.</p></article><article className="docs-card"><strong>HTTP ERRORS</strong><p>`400`: invalid input. `402`: payment required. `406`: unsupported representation. `409`: idempotency conflict. `503`: paid-request capacity unavailable.</p></article></div>
         </section>
       </main>
 
