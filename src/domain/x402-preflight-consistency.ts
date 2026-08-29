@@ -39,8 +39,8 @@ function observedGatewayExtra(extra: unknown): ObservedPaymentRequirement["extra
 
 export function observePaymentOptions(rawAccepts: unknown): ObservedPaymentRequirement[] {
   if (!Array.isArray(rawAccepts)) return [];
-  return rawAccepts.map(rawAccept => {
-    if (typeof rawAccept !== "object" || rawAccept === null || Array.isArray(rawAccept)) return {};
+  return rawAccepts.flatMap(rawAccept => {
+    if (typeof rawAccept !== "object" || rawAccept === null || Array.isArray(rawAccept)) return [];
     const accept = rawAccept as Record<string, unknown>;
     const observed: ObservedPaymentRequirement = {};
     if (typeof accept.scheme === "string") observed.scheme = accept.scheme as NonNullable<ObservedPaymentRequirement["scheme"]>;
@@ -48,10 +48,10 @@ export function observePaymentOptions(rawAccepts: unknown): ObservedPaymentRequi
     if (typeof accept.amount === "string") observed.amount = accept.amount as NonNullable<ObservedPaymentRequirement["amount"]>;
     if (typeof accept.asset === "string") observed.asset = accept.asset as NonNullable<ObservedPaymentRequirement["asset"]>;
     if (typeof accept.payTo === "string") observed.payTo = accept.payTo as NonNullable<ObservedPaymentRequirement["payTo"]>;
-    if (typeof accept.maxTimeoutSeconds === "number") observed.maxTimeoutSeconds = accept.maxTimeoutSeconds;
+    if (typeof accept.maxTimeoutSeconds === "number" && Number.isInteger(accept.maxTimeoutSeconds)) observed.maxTimeoutSeconds = accept.maxTimeoutSeconds;
     const extra = observedGatewayExtra(accept.extra);
     if (extra !== undefined) observed.extra = extra;
-    return observed;
+    return Object.keys(observed).length > 0 ? [observed] : [];
   });
 }
 
