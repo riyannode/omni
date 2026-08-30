@@ -1,8 +1,22 @@
 import { useGSAP } from "@gsap/react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { type AnchorHTMLAttributes, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type AnchorHTMLAttributes, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { copyAgentQuickTestPrompt } from "./agent-quick-test";
+import {
+  API_ENDPOINTS,
+  MAX_DEPENDENCIES,
+  buildAgentInspectionPrompt,
+  buildRequest,
+  copyText,
+  isEndpointId,
+  validateInspection,
+  type BuilderValues,
+  type EndpointId,
+  type InspectionInput,
+  type PackageInput,
+  type RepositoryInput,
+} from "./agent-inspection-prompt";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -31,23 +45,17 @@ function readRouteLocation(): RouteLocation {
   return { pathname: window.location.pathname, search: window.location.search, hash: window.location.hash };
 }
 
-function updateRouteLocation(setLocation: (location: RouteLocation) => void): void {
+function updateRouteLocation(setLocation: (location: RouteLocation) => void, shouldTransition: boolean): void {
   const commit = () => setLocation(readRouteLocation());
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const transitionDocument = document as unknown as ViewTransitionDocument;
-  if (typeof transitionDocument.startViewTransition === "function" && !reduceMotion) transitionDocument.startViewTransition(commit);
+  if (shouldTransition && typeof transitionDocument.startViewTransition === "function" && !reduceMotion) transitionDocument.startViewTransition(commit);
   else commit();
 }
 
 function scrollToRouteTarget(targetId: string): void {
   const target = targetId ? document.getElementById(targetId) : null;
-  let top = 0;
-  let current = target;
-  while (current) {
-    top += current.offsetTop;
-    current = current.offsetParent as HTMLElement | null;
-  }
-  top = target ? Math.max(0, top - 96) : 0;
+  const top = target ? Math.max(0, window.scrollY + target.getBoundingClientRect().top - 112) : 0;
   window.scrollTo({ top, left: 0, behavior: target && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" });
 }
 
@@ -73,33 +81,6 @@ function InternalLink({ href, onClick, ...props }: AnchorHTMLAttributes<HTMLAnch
   return <a {...props} href={href} onClick={handleClick} />;
 }
 
-const evidencePlanes = [
-  {
-    key: "supply-chain",
-    index: "01",
-    title: "Supply-chain evidence",
-    sources: "OSV · CISA KEV · npm · OpenSSF",
-    copy: "OMNI checks a package or repository before an agent installs the package or uses the repository.",
-    route: "GET /v1/package/risk",
-  },
-  {
-    key: "identity",
-    index: "02",
-    title: "Service identity",
-    sources: "Circle Discovery · x402 probe",
-    copy: "OMNI checks who provides the endpoint, its history, and the limits of its x402 handshake.",
-    route: "GET /v1/x402/endpoint/preflight",
-  },
-  {
-    key: "payment",
-    index: "03",
-    title: "Payment configuration",
-    sources: "payTo · network · price · history",
-    copy: "OMNI captures payment terms during preflight so callers can compare them against the actual challenge before payment.",
-    route: "preflightContext.paymentOptions",
-  },
-];
-
 const ecosystemLogos = [
   { key: "circle", label: "CIRCLE", src: "/circle-gradient.png", kind: "image" as const },
   { key: "arc", label: "ARC", src: "/arc-clean.png", kind: "mask" as const },
@@ -107,12 +88,128 @@ const ecosystemLogos = [
   { key: "x402", label: "X402", src: "/x402-clean.png", kind: "mask" as const },
 ];
 
-const apiEndpoints = [
-  { method: "GET", path: "/v1/package/risk", price: "$0.005 USDC", copy: "Check package origin, advisories, and release signals before install." },
-  { method: "GET", path: "/v1/repo/risk", price: "$0.01 USDC", copy: "Check repository identity, activity, and risk evidence from named sources." },
-  { method: "POST", path: "/v1/dependencies/risk", price: "$0.05 USDC", copy: "Check a dependency set in one request." },
-  { method: "GET", path: "/v1/x402/endpoint/preflight", price: "$0.01 USDC", copy: "Check service identity and payment details before a paid call." },
+const INITIAL_BUILDER_VALUES: BuilderValues = {
+  package: { ecosystem: "npm", name: "express", version: "5.2.1" },
+  repo: { owner: "expressjs", repo: "express" },
+  dependencies: [{ id: 1, ecosystem: "npm", name: "express", version: "5.2.1" }],
+  preflight: { url: "" },
+};
+
+type ApiPreviewSegment = { text: string; className?: string };
+type ApiPreviewBlock = { kind: "line"; segments: readonly ApiPreviewSegment[] } | { kind: "divider" };
+
+const API_PREVIEW_BLOCKS: readonly ApiPreviewBlock[] = [
+  { kind: "line", segments: [{ text: "GET", className: "syntax-muted" }, { text: " /v1/x402/endpoint/preflight" }] },
+  { kind: "line", segments: [{ text: "Accept: application/json", className: "syntax-muted" }] },
+  { kind: "line", segments: [{ text: "Idempotency-Key: UUID v4", className: "syntax-muted" }] },
+  { kind: "divider" },
+  { kind: "line", segments: [{ text: "recommendation", className: "syntax-key" }, { text: ": " }, { text: "advisory", className: "syntax-value" }] },
+  { kind: "line", segments: [{ text: "evidenceCoverage", className: "syntax-key" }, { text: ": " }, { text: "source-derived", className: "syntax-value" }] },
+  { kind: "line", segments: [{ text: "policyVersion", className: "syntax-key" }, { text: ": " }, { text: "deterministic", className: "syntax-value" }] },
 ];
+
+const API_PREVIEW_TEXT_LENGTH = API_PREVIEW_BLOCKS.reduce((total, block) => total + (block.kind === "line" ? block.segments.reduce((lineTotal, segment) => lineTotal + segment.text.length, 0) : 0), 0);
+const API_PREVIEW_TYPE_DELAY_MS = 28;
+const API_PREVIEW_HOLD_MS = 3000;
+const API_PREVIEW_BLANK_MS = 450;
+
+type DocsArticleId = "overview" | "quickstart" | "package" | "repository" | "dependencies" | "preflight" | "results" | "evidence" | "payment" | "security" | "architecture" | "wallet";
+type DocsNavGroup = { label: string; items: readonly { href: string; label: string }[] };
+type DocsSection = { id: string; title: string; content: ReactNode };
+type DocsArticle = { label: string; title: string; intro: string; actions?: ReactNode; sections: readonly DocsSection[] };
+
+const DOCS_NAV_GROUPS: readonly DocsNavGroup[] = [
+  { label: "Start here", items: [{ href: "/docs", label: "What OMNI does" }, { href: "/docs/quickstart", label: "Quickstart" }] },
+  { label: "API reference", items: [{ href: "/docs/package-risk", label: "Package risk" }, { href: "/docs/repository-risk", label: "Repository risk" }, { href: "/docs/dependency-risk", label: "Dependency risk" }, { href: "/docs/x402-preflight", label: "x402 preflight" }] },
+  { label: "Understand a result", items: [{ href: "/docs/results", label: "Assessment fields" }, { href: "/docs/evidence", label: "Evidence and source errors" }] },
+  { label: "Payment and safety", items: [{ href: "/docs/x402-payment", label: "The x402 flow" }, { href: "/docs/security", label: "Safety and failures" }] },
+  { label: "Project reference", items: [{ href: "/docs/architecture", label: "Architecture" }, { href: "/docs/agent-wallet", label: "Agent wallet guide" }] },
+];
+
+const DOCS_ARTICLE_PATHS: Readonly<Record<string, DocsArticleId>> = {
+  "/docs": "overview",
+  "/docs/quickstart": "quickstart",
+  "/docs/package-risk": "package",
+  "/docs/repository-risk": "repository",
+  "/docs/dependency-risk": "dependencies",
+  "/docs/x402-preflight": "preflight",
+  "/docs/results": "results",
+  "/docs/evidence": "evidence",
+  "/docs/x402-payment": "payment",
+  "/docs/security": "security",
+  "/docs/architecture": "architecture",
+  "/docs/agent-wallet": "wallet",
+};
+
+const DOCS_LEGACY_HASH_PATHS: Readonly<Record<string, string>> = {
+  "docs-overview": "/docs",
+  "docs-quickstart": "/docs/quickstart",
+  "docs-endpoints": "/docs/package-risk",
+  "docs-results": "/docs/results",
+  "docs-evidence": "/docs/evidence",
+  "docs-payment": "/docs/x402-payment",
+  "docs-reference": "/docs/architecture",
+};
+
+function ApiPreview() {
+  const [typedChars, setTypedChars] = useState(0);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setTypedChars(API_PREVIEW_TEXT_LENGTH);
+      return;
+    }
+
+    let current = 0;
+    let typingTimer: number | null = null;
+    let holdTimer: number | null = null;
+    let blankTimer: number | null = null;
+    const typeNext = () => {
+      current += 1;
+      setTypedChars(current);
+      if (current < API_PREVIEW_TEXT_LENGTH) {
+        typingTimer = window.setTimeout(typeNext, API_PREVIEW_TYPE_DELAY_MS);
+        return;
+      }
+
+      holdTimer = window.setTimeout(() => {
+        current = 0;
+        setTypedChars(0);
+        blankTimer = window.setTimeout(typeNext, API_PREVIEW_BLANK_MS);
+      }, API_PREVIEW_HOLD_MS);
+    };
+
+    blankTimer = window.setTimeout(typeNext, API_PREVIEW_BLANK_MS);
+    return () => {
+      if (typingTimer !== null) window.clearTimeout(typingTimer);
+      if (holdTimer !== null) window.clearTimeout(holdTimer);
+      if (blankTimer !== null) window.clearTimeout(blankTimer);
+    };
+  }, []);
+
+  let blockStart = 0;
+  return (
+    <div className="api-window__body">
+      {API_PREVIEW_BLOCKS.map((block, blockIndex) => {
+        if (block.kind === "divider") return typedChars >= blockStart ? <div className="api-divider" key={`divider-${blockIndex}`} /> : null;
+
+        const lineStart = blockStart;
+        const lineLength = block.segments.reduce((total, segment) => total + segment.text.length, 0);
+        blockStart += lineLength;
+        let segmentStart = lineStart;
+        const segments = block.segments.map((segment, segmentIndex) => {
+          const visibleLength = Math.max(0, Math.min(segment.text.length, typedChars - segmentStart));
+          const rendered = visibleLength > 0 ? <span className={segment.className} key={`${blockIndex}-${segmentIndex}`}>{segment.text.slice(0, visibleLength)}</span> : null;
+          segmentStart += segment.text.length;
+          return rendered;
+        });
+
+        return typedChars > lineStart ? <p key={`line-${blockIndex}`}>{segments}</p> : null;
+      })}
+      {typedChars > 0 ? <div className="api-cursor" /> : null}
+    </div>
+  );
+}
 
 function Logo({ size = "small" }: { size?: "small" | "large" }) {
   return (
@@ -391,56 +488,37 @@ function InterceptorCard() {
   );
 }
 
-function EvidenceBento() {
-  const [activePlane, setActivePlane] = useState(0);
-  const active = evidencePlanes[activePlane];
-  useEffect(() => {
-    const interval = window.setInterval(() => setActivePlane((current) => (current + 1) % evidencePlanes.length), 4300);
-    return () => window.clearInterval(interval);
-  }, []);
-
+function EvidenceShowcase() {
   return (
-    <div className="evidence-grid">
-      <article id="supply-chain-evidence" className="evidence-card evidence-card--supply reveal-card">
-        <div className="card-header"><span>Supply chain</span><span className="card-index">{evidencePlanes[0].index}</span></div>
-        <div className="evidence-card__visual supply-visual"><div className="supply-node supply-node--a" /><div className="supply-node supply-node--b" /><div className="supply-node supply-node--c" /><span className="supply-line" /></div>
-        <h3>See what the agent will install.</h3>
-        <p>{evidencePlanes[0].copy}</p>
-        <span className="route-code">{evidencePlanes[0].route}</span>
-      </article>
-      <article className="evidence-card evidence-card--identity reveal-card">
-        <div className="card-header"><span>Service identity</span><span className="card-index">{evidencePlanes[1].index}</span></div>
-        <div className="identity-visual"><span className="identity-crosshair" /><span className="identity-ring" /><span className="identity-label">CIRCLE / DISCOVERY</span></div>
-        <h3>See the service clearly.</h3>
-        <p>{evidencePlanes[1].copy}</p>
-        <span className="route-code">{evidencePlanes[1].route}</span>
-      </article>
-      <article className="evidence-card evidence-card--payment reveal-card">
-        <div className="card-header"><span>Payment config</span><span className="card-index">{evidencePlanes[2].index}</span></div>
-        <div className="payment-visual"><span className="payment-pill">payTo</span><span className="payment-pill">network</span><span className="payment-pill">atomic price</span><span className="payment-arrow">↗</span></div>
-        <h3>Check payment before the wallet pays.</h3>
-        <p>{evidencePlanes[2].copy}</p>
-        <span className="route-code">{evidencePlanes[2].route}</span>
-      </article>
-      <article className="evidence-card evidence-card--coverage reveal-card">
-        <div className="card-header"><span>Assessment contract</span><span className="status-chip"><i /> deterministic</span></div>
-        <div className="coverage-row"><span>riskScore</span><span>0 to 100</span></div>
-        <div className="coverage-row"><span>recommendation</span><span>advisory</span></div>
-        <div className="coverage-row"><span>evidenceCoverage</span><span>0 to 1</span></div>
-        <div className="coverage-row"><span>sourceErrors</span><span>explicit</span></div>
-        <p>Evidence is a timestamped fact from a named source. It is not a verdict, probability, or payment approval.</p>
-      </article>
-      <div className="evidence-rail" aria-label="Evidence plane selector">
-        <div className="evidence-rail__buttons">
-          {evidencePlanes.map((plane, index) => (
-            <Magnetic key={plane.key} strength={0.14}>
-              <button className={index === activePlane ? "is-active" : ""} type="button" onClick={() => setActivePlane(index)} onFocus={() => setActivePlane(index)} aria-pressed={index === activePlane}>
-                <span>{plane.index}</span>{plane.title}
-              </button>
-            </Magnetic>
-          ))}
+    <div className="evidence-showcase">
+      <div className="evidence-video-layout">
+        <figure className="evidence-video" id="supply-chain-evidence">
+          <video
+            key="omni-orbit-video-blurry"
+            src="/omni-how-it-works-25s.mp4?v=omni-orbit-blurry"
+            autoPlay
+            loop
+            muted
+            playsInline
+            preload="metadata"
+            onCanPlay={(event) => { void event.currentTarget.play(); }}
+            aria-label="OMNI checks supply chain, service identity, and payment configuration before an agent acts"
+          />
+        </figure>
+      </div>
+
+      <div className="evidence-guide">
+        <div className="evidence-guide__intro">
+          <span className="evidence-guide__label">How to use it</span>
+          <h3>Check before you act.</h3>
+          <p>Choose what to check, send it to OMNI, then review the result.</p>
+          <InternalLink className="button button--dark evidence-guide__cta" href="/api">Open the API <span>↗</span></InternalLink>
         </div>
-        <p className="evidence-rail__copy">{active.sources}</p>
+        <ol className="evidence-guide__steps">
+          <li><div className="evidence-guide__step-top"><span>01</span><strong>Choose</strong></div><p>Pick a package, repository, or endpoint.</p></li>
+          <li><div className="evidence-guide__step-top"><span>02</span><strong>Check</strong></div><p>Send it to OMNI.</p></li>
+          <li><div className="evidence-guide__step-top"><span>03</span><strong>Review</strong></div><p>Read the result before you install or pay.</p></li>
+        </ol>
       </div>
     </div>
   );
@@ -496,7 +574,7 @@ function Footer() {
             </a>
           </div>
           <p>Pre-execution trust &amp; risk for autonomous agents.</p>
-          <p>Source-attributed, deterministic, and advisory by design.</p>
+          <p>OMNI returns deterministic, source-backed advice before execution.</p>
         </div>
         <div className="site-footer__details">
           <div className="site-footer__support">
@@ -529,12 +607,117 @@ function Footer() {
   );
 }
 
-function ApiPage() {
+type BuilderCopyState = "idle" | "request" | "prompt" | "failed";
+
+function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; values: BuilderValues; onChange: (next: BuilderValues) => void }) {
+  const resetRef = useRef<number | null>(null);
+  const [copyState, setCopyState] = useState<BuilderCopyState>("idle");
+  const input: InspectionInput = endpointId === "package"
+    ? { endpointId, values: values.package }
+    : endpointId === "repo"
+      ? { endpointId, values: values.repo }
+      : endpointId === "dependencies"
+        ? { endpointId, values: values.dependencies }
+        : { endpointId, values: values.preflight };
+  const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === endpointId);
+
+  useEffect(() => () => {
+    if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+  }, []);
+
+  if (!endpoint) return null;
+  const validationError = validateInspection(input);
+  const request = validationError ? null : buildRequest(input);
+  const updatePackage = (field: keyof PackageInput, value: string) => onChange({ ...values, package: { ...values.package, [field]: value } });
+  const updateRepo = (field: keyof RepositoryInput, value: string) => onChange({ ...values, repo: { ...values.repo, [field]: value } });
+  const updateDependency = (id: number, field: keyof PackageInput, value: string) => onChange({
+    ...values,
+    dependencies: values.dependencies.map((dependency) => dependency.id === id ? { ...dependency, [field]: value } : dependency),
+  });
+  const updatePreflight = (value: string) => onChange({ ...values, preflight: { url: value } });
+
+  const copy = async (kind: "request" | "prompt") => {
+    if (!request || validationError) return;
+    try {
+      await copyText(kind === "request" ? request.curl : buildAgentInspectionPrompt(input));
+      setCopyState(kind);
+    } catch {
+      setCopyState("failed");
+    }
+    if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+    resetRef.current = window.setTimeout(() => setCopyState("idle"), 2600);
+  };
+
+  const requestLabel = copyState === "request" ? "COPIED" : copyState === "failed" ? "COPY FAILED — RETRY" : "COPY REQUEST";
+  const promptLabel = copyState === "prompt" ? "PROMPT COPIED — PASTE TO YOUR AGENT" : copyState === "failed" ? "COPY FAILED — RETRY" : "COPY AGENT PROMPT";
+
+  return (
+    <div className="endpoint-builder" id={`${endpointId}-builder`}>
+      <form className="builder-form" onSubmit={(event) => event.preventDefault()}>
+        {endpointId === "package" && <fieldset>
+          <legend>What package do you want to inspect?</legend>
+          <div className="builder-fields builder-fields--three">
+            <label><span>Ecosystem</span><input value={values.package.ecosystem} onChange={(event) => updatePackage("ecosystem", event.target.value)} placeholder="npm" maxLength={32} /></label>
+            <label><span>Package</span><input value={values.package.name} onChange={(event) => updatePackage("name", event.target.value)} placeholder="express" maxLength={256} /></label>
+            <label><span>Version</span><input value={values.package.version} onChange={(event) => updatePackage("version", event.target.value)} placeholder="5.2.1" maxLength={128} /></label>
+          </div>
+        </fieldset>}
+
+        {endpointId === "repo" && <fieldset>
+          <legend>What repository do you want to inspect?</legend>
+          <div className="builder-fields builder-fields--two">
+            <label><span>Owner</span><input value={values.repo.owner} onChange={(event) => updateRepo("owner", event.target.value)} placeholder="expressjs" maxLength={100} /></label>
+            <label><span>Repository</span><input value={values.repo.repo} onChange={(event) => updateRepo("repo", event.target.value)} placeholder="express" maxLength={100} /></label>
+          </div>
+        </fieldset>}
+
+        {endpointId === "dependencies" && <fieldset>
+          <legend>What dependency set do you want to inspect?</legend>
+          <div className="dependency-list">
+            {values.dependencies.map((dependency, index) => <div className="dependency-row" key={dependency.id}>
+              <span className="dependency-row__index">{String(index + 1).padStart(2, "0")}</span>
+              <label><span>Ecosystem</span><input value={dependency.ecosystem} onChange={(event) => updateDependency(dependency.id, "ecosystem", event.target.value)} placeholder="npm" maxLength={32} /></label>
+              <label><span>Package</span><input value={dependency.name} onChange={(event) => updateDependency(dependency.id, "name", event.target.value)} placeholder="express" maxLength={256} /></label>
+              <label><span>Version</span><input value={dependency.version} onChange={(event) => updateDependency(dependency.id, "version", event.target.value)} placeholder="5.2.1" maxLength={128} /></label>
+              <button className="builder-remove" type="button" onClick={() => onChange({ ...values, dependencies: values.dependencies.filter((candidate) => candidate.id !== dependency.id) })} disabled={values.dependencies.length === 1} aria-label={`Remove dependency ${index + 1}`}>Remove</button>
+            </div>)}
+          </div>
+          <div className="dependency-controls"><button className="builder-add" type="button" onClick={() => onChange({ ...values, dependencies: [...values.dependencies, { id: Math.max(...values.dependencies.map((dependency) => dependency.id), 0) + 1, ecosystem: "", name: "", version: "" }] })} disabled={values.dependencies.length >= MAX_DEPENDENCIES}>+ Add dependency</button><span>{values.dependencies.length} / {MAX_DEPENDENCIES}</span></div>
+        </fieldset>}
+
+        {endpointId === "preflight" && <fieldset>
+          <legend>What paid endpoint do you want OMNI to inspect?</legend>
+          <label className="builder-field--full"><span>Target URL</span><input type="url" value={values.preflight.url} onChange={(event) => updatePreflight(event.target.value)} placeholder="https://example.com/api/resource" maxLength={2048} /></label>
+        </fieldset>}
+      </form>
+
+      {validationError && <p className="builder-validation" role="status">{validationError}</p>}
+      <div className="builder-preview">
+        <div className="builder-preview__label"><span>Generated request</span><span>{request ? "ready to copy" : "waiting for required input"}</span></div>
+        <pre>{request?.display ?? "Complete the fields above to generate the exact request."}</pre>
+      </div>
+      <div className="builder-actions">
+        <button className="button button--dark" type="button" onClick={() => void copy("request")} disabled={!request} aria-label={`${requestLabel} for ${endpoint.path}`}>{requestLabel}</button>
+        <button className="button button--text" type="button" onClick={() => void copy("prompt")} disabled={!request || Boolean(validationError)} aria-label={`${promptLabel} for ${endpoint.path}`}>{promptLabel}</button>
+      </div>
+      <p className="builder-copy-feedback" aria-live="polite">{copyState === "request" ? "COPIED" : copyState === "prompt" ? "PROMPT COPIED — PASTE TO YOUR AGENT" : copyState === "failed" ? "COPY FAILED — RETRY" : ""}</p>
+    </div>
+  );
+}
+
+function ApiPage({ search }: { search: string }) {
   const [theme, setTheme] = useState<Theme>(readThemePreference);
+  const [selectedEndpoint, setSelectedEndpoint] = useState<EndpointId | null>(() => {
+    const value = new URLSearchParams(search).get("endpoint");
+    return isEndpointId(value) ? value : null;
+  });
+  const [builderValues, setBuilderValues] = useState<BuilderValues>(INITIAL_BUILDER_VALUES);
   const [copiedEndpoint, setCopiedEndpoint] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const copyResetRef = useRef<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const endpointRowRefs = useRef(new Map<EndpointId, HTMLDivElement>());
+  const pendingAnchorRef = useRef<{ endpointId: EndpointId; top: number } | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -546,28 +729,37 @@ function ApiPage() {
     if (copyResetRef.current !== null) window.clearTimeout(copyResetRef.current);
   }, []);
 
+  useEffect(() => {
+    const value = new URLSearchParams(search).get("endpoint");
+    setSelectedEndpoint(isEndpointId(value) ? value : null);
+  }, [search]);
+
+  useLayoutEffect(() => {
+    const anchor = pendingAnchorRef.current;
+    pendingAnchorRef.current = null;
+    if (!anchor || selectedEndpoint !== anchor.endpointId) return;
+    const row = endpointRowRefs.current.get(anchor.endpointId);
+    if (!row) return;
+    const delta = row.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) > 0.5) window.scrollBy({ top: delta, left: 0, behavior: "auto" });
+  }, [selectedEndpoint]);
+
   useGSAP(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     gsap.fromTo(".api-page__hero, .api-page__window, .api-page__endpoint", { y: 28, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.08, duration: 0.8, ease: "power3.out" });
   }, { scope: rootRef });
 
   const toggleTheme = () => setTheme((current) => current === "light" ? "dark" : "light");
+  const selectEndpoint = (endpointId: EndpointId) => {
+    const clickedRow = endpointRowRefs.current.get(endpointId);
+    if (clickedRow) pendingAnchorRef.current = { endpointId, top: clickedRow.getBoundingClientRect().top };
+    const next = selectedEndpoint === endpointId ? "/api" : `/api?endpoint=${endpointId}`;
+    setSelectedEndpoint(selectedEndpoint === endpointId ? null : endpointId);
+    navigateInternal(next);
+  };
   const copyEndpoint = async (endpoint: string) => {
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(endpoint);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = endpoint;
-        textarea.setAttribute("readonly", "true");
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.select();
-        const copied = document.execCommand("copy");
-        textarea.remove();
-        if (!copied) throw new Error("Clipboard unavailable");
-      }
+      await copyText(endpoint);
       setCopiedEndpoint(endpoint);
       setCopyError(null);
     } catch {
@@ -587,9 +779,9 @@ function ApiPage() {
       <header className="nav-shell">
         <InternalLink className="nav-logo" href="/" aria-label="OMNI home"><Logo /></InternalLink>
         <nav className="nav-links" aria-label="Primary navigation">
-          <InternalLink href="/#thesis">Thesis</InternalLink>
-          <InternalLink href="/#evidence">Evidence</InternalLink>
+          <InternalLink href="/#top">Home</InternalLink>
           <InternalLink className="is-current" href="/api" aria-current="page">API</InternalLink>
+          <InternalLink href="/docs">Docs</InternalLink>
         </nav>
         <div className="nav-actions"><ThemeToggle theme={theme} onChange={toggleTheme} /><Magnetic strength={0.18}><InternalLink className="nav-cta" href="/#top">Back to OMNI <span>↗</span></InternalLink></Magnetic></div>
       </header>
@@ -598,35 +790,32 @@ function ApiPage() {
         <section className="api-page__hero section-space" aria-labelledby="api-page-title">
           <p className="eyebrow">HTTP / OpenAPI</p>
           <h1 id="api-page-title">One API for runtime evidence.</h1>
-          <p>Each route returns evidence you can inspect and use in your policy. OMNI does not approve actions or settle payments.</p>
-          <Magnetic><a className="button button--dark" href="https://github.com/riyannode/omni/blob/main/openapi.yaml" target="_blank" rel="noreferrer">Read the contract <span>↗</span></a></Magnetic>
+          <p>Each route returns evidence you can inspect and use in your policy. Build the exact request, then hand a safe prompt to your agent.</p>
+          <Magnetic><a className="button button--dark" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Read the contract <span>↗</span></a></Magnetic>
         </section>
 
         <section className="api-page__workspace section-space" aria-labelledby="api-workspace-title">
           <div className="api-page__window api-window">
             <div className="api-window__bar"><span /><span /><span /><strong>omni / preflight</strong></div>
-            <div className="api-window__body">
-              <p><span className="syntax-muted">GET</span> /v1/x402/endpoint/preflight</p>
-              <p className="syntax-muted">Accept: application/json</p>
-              <p className="syntax-muted">Idempotency-Key: UUID v4</p>
-              <div className="api-divider" />
-              <p><span className="syntax-key">recommendation</span>: <span className="syntax-value">advisory</span></p>
-              <p><span className="syntax-key">evidenceCoverage</span>: <span className="syntax-value">source-derived</span></p>
-              <p><span className="syntax-key">policyVersion</span>: <span className="syntax-value">deterministic</span></p>
-              <div className="api-cursor" />
-            </div>
+            <ApiPreview />
           </div>
           <div className="api-page__endpoint-list endpoint-list" aria-labelledby="api-workspace-title">
             <div className="endpoint-list__head"><span id="api-workspace-title">Available endpoints</span><span>per request</span></div>
-            {apiEndpoints.map((endpoint) => (
-              <div className="api-page__endpoint endpoint-list__row" data-method={endpoint.method.toLowerCase()} key={endpoint.path}>
-                <span>
-                  <span className="endpoint-route"><b>{endpoint.method}</b><code>{endpoint.path}</code><button className={`endpoint-copy${copiedEndpoint === `${endpoint.method} ${endpoint.path}` ? " is-copied" : ""}`} type="button" onClick={() => void copyEndpoint(`${endpoint.method} ${endpoint.path}`)} aria-label={`${copiedEndpoint === `${endpoint.method} ${endpoint.path}` ? "Copied" : copyError === `${endpoint.method} ${endpoint.path}` ? "Retry copy" : "Copy"} ${endpoint.method} ${endpoint.path}`} title={`${copiedEndpoint === `${endpoint.method} ${endpoint.path}` ? "Copied" : copyError === `${endpoint.method} ${endpoint.path}` ? "Retry copy" : "Copy endpoint"}`}><CopyIcon checked={copiedEndpoint === `${endpoint.method} ${endpoint.path}`} /></button></span>
-                  <small>{endpoint.copy}</small>
-                </span>
-                <strong>{endpoint.price}</strong>
-              </div>
-            ))}
+            {API_ENDPOINTS.map((endpoint) => {
+              const routeLabel = `${endpoint.method} ${endpoint.path}`;
+              const isSelected = selectedEndpoint === endpoint.id;
+              return <Fragment key={endpoint.id}>
+                <div ref={(node) => { if (node) endpointRowRefs.current.set(endpoint.id, node); else endpointRowRefs.current.delete(endpoint.id); }} className={`api-page__endpoint endpoint-list__row ${isSelected ? "is-active" : ""}`} data-method={endpoint.method.toLowerCase()}>
+                  <div className="endpoint-list__main">
+                    <div className="endpoint-route"><b>{endpoint.method}</b><code>{endpoint.path}</code><button className={`endpoint-copy${copiedEndpoint === routeLabel ? " is-copied" : ""}`} type="button" onClick={() => void copyEndpoint(routeLabel)} aria-label={`${copiedEndpoint === routeLabel ? "Copied" : copyError === routeLabel ? "Retry copy" : "Copy"} ${routeLabel}`} title={`${copiedEndpoint === routeLabel ? "Copied" : copyError === routeLabel ? "Retry copy" : "Copy endpoint"}`}><CopyIcon checked={copiedEndpoint === routeLabel} /></button></div>
+                    <small>{endpoint.copy}</small>
+                    <button className="endpoint-inspect" type="button" onClick={() => selectEndpoint(endpoint.id)} aria-expanded={isSelected} aria-controls={`${endpoint.id}-builder`}>{isSelected ? "Close builder ↖" : "Inspect ↗"}</button>
+                  </div>
+                  <strong>{endpoint.price}</strong>
+                </div>
+                {isSelected && <ApiBuilder endpointId={endpoint.id} values={builderValues} onChange={setBuilderValues} />}
+              </Fragment>;
+            })}
           </div>
         </section>
 
@@ -634,6 +823,295 @@ function ApiPage() {
           <div><p className="eyebrow">Integration notes</p><h2 id="api-notes-title">One contract for every runtime.</h2></div>
           <p>Hermes, Codex, Claude, OpenClaw, MCP clients, CI, and plain HTTP clients can read the same result and decide what to do next.</p>
         </section>
+      </main>
+
+      <Footer />
+    </div>
+  );
+}
+
+function highlightShellTokens(line: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|https?:\/\/[^\s'"\\]+|<[^>\n]+>|\$\{[^}\n]+\}|\$[A-Z_][A-Z0-9_]*|--?[A-Za-z][A-Za-z0-9-]*|#.*$|\b\d+(?:\.\d+)?\b)/g;
+  let lastIndex = 0;
+  let tokenIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(line)) !== null) {
+    const start = match.index;
+    const value = match[0];
+    if (start > lastIndex) nodes.push(line.slice(lastIndex, start));
+    const className = value.startsWith("#")
+      ? "docs-token-comment"
+      : value.startsWith("--") || (value.startsWith("-") && value.length > 1)
+        ? "docs-token-flag"
+        : value.startsWith("<")
+          ? "docs-token-placeholder"
+          : value.startsWith("$")
+            ? "docs-token-variable"
+            : value.startsWith('"') || value.startsWith("'") || value.startsWith("http")
+              ? "docs-token-string"
+              : "docs-token-number";
+    nodes.push(<span className={className} key={`token-${tokenIndex}`}>{value}</span>);
+    tokenIndex += 1;
+    lastIndex = start + value.length;
+  }
+  if (lastIndex < line.length) nodes.push(line.slice(lastIndex));
+  return nodes;
+}
+
+function highlightShell(code: string): ReactNode {
+  return code.split("\n").map((line, lineIndex) => {
+    const commandMatch = line.match(/^(\s*)(curl|circle|npm)(?=\s|$)/);
+    const highlightedLine = commandMatch
+      ? <>{commandMatch[1]}<span className="docs-token-command">{commandMatch[2]}</span>{highlightShellTokens(line.slice(commandMatch[0].length))}</>
+      : highlightShellTokens(line);
+    return <span className="docs-code-line" key={`line-${lineIndex}`}>{highlightedLine}</span>;
+  });
+}
+
+function DocsCodeBlock({ label, code }: { label: string; code: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const copyCode = async () => {
+    try {
+      await copyText(code);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+  };
+
+  return <div className="docs-code-block">
+    <div className="docs-code-block__bar"><span>{label}</span><button className={`docs-code-block__copy${copyState === "copied" ? " is-copied" : ""}`} type="button" onClick={() => void copyCode()} aria-label={`${copyState === "copied" ? "Copied" : copyState === "error" ? "Retry copy" : "Copy"} ${label} code`} title={`${copyState === "copied" ? "Copied" : copyState === "error" ? "Retry copy" : "Copy code"}`}><CopyIcon checked={copyState === "copied"} /></button></div>
+    <pre><code>{highlightShell(code)}</code></pre>
+  </div>;
+}
+
+function getEndpointDocsArticle(endpointId: EndpointId): DocsArticle {
+  const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === endpointId);
+  if (!endpoint) throw new Error(`Missing documentation endpoint: ${endpointId}`);
+
+  const details: Record<EndpointId, { title: string; intro: string; subject: string; result: string; decision: string }> = {
+    package: {
+      title: "Check a package before install.",
+      intro: "Use package risk when an agent is about to install one exact package version. OMNI returns source-backed evidence for the caller to apply to its own policy.",
+      subject: "Send the ecosystem, package name, and exact version. A versionless package name leaves too much room for the subject to change between the check and install.",
+      result: "The assessment combines the risk score, advisory recommendation, coverage, evidence, source errors, and freshness information for that version.",
+      decision: "Read the evidence before running the install. If coverage is low or a source failed, decide whether your policy stops, retries, or asks for review.",
+    },
+    repo: {
+      title: "Check a repository before using it.",
+      intro: "Use repository risk before an agent clones, reads, or depends on a GitHub repository. OMNI keeps the observed evidence separate from your runtime’s decision.",
+      subject: "Send the GitHub owner and repository name. Check the repository you intend to use, not a lookalike or a fork chosen later in the flow.",
+      result: "The response reports repository identity, activity, and named-source risk evidence alongside coverage and source errors.",
+      decision: "Use the result before cloning or trusting repository instructions. The result is advisory; it never authorizes code execution by itself.",
+    },
+    dependencies: {
+      title: "Check a dependency set in one request.",
+      intro: "Use dependency risk when an agent has a package list and needs one assessment before it installs or updates the set.",
+      subject: "Send the dependency coordinates as ecosystem, name, and exact version. Keep the list tied to the lockfile or planned install so the checked set is the executed set.",
+      result: "OMNI returns one deterministic assessment for the submitted dependency set, including the evidence coverage and any source failures that affect it.",
+      decision: "Review the resulting evidence before updating the environment. Treat a partial result as partial evidence, not an all-clear signal.",
+    },
+    preflight: {
+      title: "Preflight an x402 endpoint before payment.",
+      intro: "Use x402 preflight before an agent calls a paid endpoint. It records what OMNI can observe about the service and payment terms before the live request.",
+      subject: "Send the exact endpoint URL. OMNI checks the service identity, its observed history, and the available x402 payment configuration for that resource.",
+      result: "The response includes advisory evidence plus observed payment options. The execution-time HTTP 402 challenge remains the detail the caller must compare before paying.",
+      decision: "Keep the preflight close to the paid call. Compare the live resource, USDC amount, network, and scheme against your own policy before the signed retry.",
+    },
+  };
+  const detail = details[endpointId];
+  const title = endpointId === "package" ? "Package risk" : endpointId === "repo" ? "Repository risk" : endpointId === "dependencies" ? "Dependency risk" : "x402 endpoint preflight";
+  const requestExamples: Record<EndpointId, string> = {
+    package: `curl -i --get 'https://api.askomni.xyz/v1/package/risk' \\
+  --data-urlencode 'ecosystem=npm' \\
+  --data-urlencode 'name=express' \\
+  --data-urlencode 'version=5.2.1' \\
+  -H 'Accept: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>'`,
+    repo: `curl -i --get 'https://api.askomni.xyz/v1/repo/risk' \\
+  --data-urlencode 'owner=expressjs' \\
+  --data-urlencode 'repo=express' \\
+  -H 'Accept: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>'`,
+    dependencies: `curl -i -X POST 'https://api.askomni.xyz/v1/dependencies/risk' \\
+  -H 'Accept: application/json' \\
+  -H 'Content-Type: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>' \\
+  --data-raw '{
+    "packages": [
+      { "ecosystem": "npm", "name": "express", "version": "5.2.1" }
+    ]
+  }'`,
+    preflight: `curl -i --get 'https://api.askomni.xyz/v1/x402/endpoint/preflight' \\
+  --data-urlencode 'url=https://example.com/paid-resource' \\
+  -H 'Accept: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>'`,
+  };
+
+  return {
+    label: "API reference",
+    title: detail.title,
+    intro: detail.intro,
+    sections: [
+      { id: "request", title: "Send the exact subject.", content: <><p><b>{endpoint.method}</b> <code>{endpoint.path}</code></p><p>{detail.subject}</p><div className="docs-reader__note"><strong>{endpoint.price} per request.</strong><p>Use a new UUID v4 idempotency key for this logical request. Keep the same key if you make its paid retry.</p></div></> },
+      { id: "shell-example", title: "Run the request from a terminal.", content: <><p>This first request is unpaid. The protected route returns HTTP 402 until the caller sends a valid x402 payment. Keep the method, URL, headers, and body unchanged for the paid retry.</p><DocsCodeBlock label="shell" code={requestExamples[endpointId]} /></> },
+      { id: "result", title: "Read what OMNI found.", content: <p>{detail.result}</p> },
+      { id: "decision", title: "Keep the decision with your caller.", content: <p>{detail.decision}</p> },
+    ],
+  };
+}
+
+function getDocsArticle(articleId: DocsArticleId): DocsArticle {
+  if (articleId === "package" || articleId === "repository" || articleId === "dependencies" || articleId === "preflight") return getEndpointDocsArticle(articleId === "repository" ? "repo" : articleId);
+
+  const articles: Record<Exclude<DocsArticleId, "package" | "repository" | "dependencies" | "preflight">, DocsArticle> = {
+    overview: {
+      label: "OMNI Docs",
+      title: "Check before an agent acts.",
+      intro: "OMNI gives an agent source-backed risk evidence before it installs a package, uses a repository, checks dependencies, or pays an x402 endpoint.",
+      actions: <><InternalLink className="button button--dark" href="/docs/quickstart">Start the quickstart <span>↗</span></InternalLink><a className="button button--text" href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">Read llms.txt <span>↗</span></a></>,
+      sections: [
+        { id: "what-omni-checks", title: "Choose the decision you need to make.", content: <div className="docs-resource-list"><InternalLink href="/docs/package-risk"><strong>Before an install</strong><span>Check one exact package version.</span><i>↗</i></InternalLink><InternalLink href="/docs/repository-risk"><strong>Before using a repository</strong><span>Check the repository behind the agent’s next step.</span><i>↗</i></InternalLink><InternalLink href="/docs/dependency-risk"><strong>Before an update</strong><span>Check the dependency set together.</span><i>↗</i></InternalLink><InternalLink href="/docs/x402-preflight"><strong>Before a paid call</strong><span>Check a service and its observed x402 terms.</span><i>↗</i></InternalLink></div> },
+        { id: "advisory-boundary", title: "Evidence is not permission.", content: <div className="docs-reader__note"><strong>OMNI advises. Your policy decides.</strong><p>A result is a timestamped record from named sources. It does not approve a payment, execute code, or make a subject safe.</p></div> },
+      ],
+    },
+    quickstart: {
+      label: "Start here",
+      title: "Make one check before you act.",
+      intro: "The quickest way to use OMNI is to take the exact thing an agent is about to use, request the matching assessment, then read the evidence before the next action.",
+      actions: <a className="button button--dark" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Open OpenAPI contract <span>↗</span></a>,
+      sections: [
+        { id: "choose", title: "1. Choose the exact subject.", content: <p>Use a package version, GitHub repository, dependency list, or x402 endpoint URL. The check is only as specific as the subject you send.</p> },
+        { id: "request", title: "2. Send the matching request.", content: <p>Open the endpoint article in this Docs section. It shows the request shape, terminal command, and the fields you should read after payment succeeds.</p> },
+        { id: "review", title: "3. Review evidence before the next action.", content: <p>Read the risk, recommendation, coverage, sources, errors, and freshness. Then let your caller policy choose whether to continue, stop, retry, or ask a person.</p> },
+      ],
+    },
+    results: {
+      label: "Understand a result",
+      title: "Read the result, not just the score.",
+      intro: "OMNI separates observed evidence from the caller’s decision. A low score does not make a subject safe, and missing evidence stays visible.",
+      sections: [
+        { id: "assessment-fields", title: "The assessment fields.", content: <dl className="docs-field-list"><div><dt><code>riskScore</code></dt><dd>0 to 100. Higher means more observed decision risk; source failures can increase it.</dd></div><div><dt><code>recommendation</code></dt><dd>Advisory next action from OMNI’s deterministic policy. Your caller policy remains in control.</dd></div><div><dt><code>evidenceCoverage</code></dt><dd>0 to 1. It shows how much subject-specific evidence was available, not the probability that a recommendation is correct.</dd></div><div><dt><code>freshness</code></dt><dd>When an expiry is present, obtain new evidence before you act after that time.</dd></div></dl> },
+        { id: "caller-policy", title: "Let your policy make the call.", content: <p>Use the same fields consistently in your runtime. For example, require minimum evidence coverage for a paid action or stop whenever a source error blocks a critical check.</p> },
+      ],
+    },
+    evidence: {
+      label: "Understand a result",
+      title: "Keep every fact traceable.",
+      intro: "Evidence is a timestamped fact from a named source. OMNI keeps its source and any source failure visible so the caller can apply the right policy.",
+      sections: [
+        { id: "source-and-time", title: "Read the source and timestamp.", content: <p>Check where a fact came from and when OMNI observed it. Fresh evidence helps a caller see the current state; it does not predict every future change.</p> },
+        { id: "source-errors", title: "Treat failures as part of the result.", content: <p>When a source cannot be read, OMNI shows the source error instead of pretending the check succeeded. Your policy can then stop, retry later, or continue with explicit limits.</p> },
+        { id: "response-formats", title: "Use the format your client needs.", content: <div className="docs-reader__note"><strong>JSON is the default response.</strong><p>Successful requests also expose a deterministic Markdown artifact. Send <code>Accept: text/markdown</code> when you need only the human-readable version. Errors remain JSON.</p></div> },
+      ],
+    },
+    payment: {
+      label: "Payment and safety",
+      title: "Check the live challenge before payment.",
+      intro: "x402 preflight helps you inspect a service first. The live HTTP 402 challenge is still the payment request your caller must compare against policy before it signs or retries.",
+      sections: [
+        { id: "preflight", title: "1. Preflight the endpoint.", content: <p>Use <InternalLink href="/docs/x402-preflight">x402 preflight</InternalLink> to record the service identity and observed payment options before the paid call.</p> },
+        { id: "challenge", title: "2. Read the exact 402 challenge.", content: <p>Ask the protected resource without paying. Compare the resource, USDC amount, network, and scheme in <code>PAYMENT-REQUIRED</code> with the preflight and your own policy.</p> },
+        { id: "retry", title: "3. Retry once with a stable key.", content: <p>Reuse one UUID v4 <code>Idempotency-Key</code> for the same logical paid retry. If payment state is unclear, stop and reconcile instead of making a second charge.</p> },
+      ],
+    },
+    security: {
+      label: "Payment and safety",
+      title: "Keep the trust boundary clear.",
+      intro: "OMNI provides evidence before action. Your caller owns the authorization, the final policy, and the response to missing or stale evidence.",
+      sections: [
+        { id: "caller-controls", title: "The caller controls action.", content: <p>Do not treat an advisory recommendation as execution permission. The caller must decide whether it can install, clone, call, or pay after it reads the assessment.</p> },
+        { id: "endpoint-safety", title: "Protect the request path.", content: <p>Only inspect valid public endpoints. Reject loopback, private-network, and otherwise unsafe probe targets before an outbound check can reach them.</p> },
+        { id: "failure-mode", title: "Stop on an unclear paid state.", content: <p>Payment verification and settlement are separate from OMNI’s advisory result. If a paid retry has an unclear outcome, reconcile it rather than assuming success or attempting another charge.</p> },
+      ],
+    },
+    architecture: {
+      label: "Project reference",
+      title: "See how the pieces fit together.",
+      intro: "OMNI is designed to keep risk computation, payment handling, and caller-side enforcement separate so each part has a clear responsibility.",
+      sections: [
+        { id: "request-lifecycle", title: "A request has three stages.", content: <ol className="docs-steps docs-steps--compact"><li><span>1</span><div><strong>Inspect</strong><p>OMNI gathers deterministic evidence from named sources.</p></div></li><li><span>2</span><div><strong>Return</strong><p>The API returns an advisory assessment and traceable evidence.</p></div></li><li><span>3</span><div><strong>Enforce</strong><p>The caller applies its own policy before it takes an action.</p></div></li></ol> },
+        { id: "further-reading", title: "Read the implementation details.", content: <div className="docs-resource-list"><a href="https://github.com/riyannode/omni/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noreferrer"><strong>Architecture</strong><span>Risk engine, durable paid requests, and caller-side enforcement.</span><i>↗</i></a><a href="https://github.com/riyannode/omni/tree/main/docs/adr" target="_blank" rel="noreferrer"><strong>Architecture decisions</strong><span>Runtime, Circle Gateway, and risk-model design choices.</span><i>↗</i></a></div> },
+      ],
+    },
+    wallet: {
+      label: "Project reference",
+      title: "Set up a buyer wallet for OMNI.",
+      intro: "This guide is for testing OMNI’s paid endpoints with Circle CLI. OMNI’s seller process belongs to the project and is not part of this setup.",
+      sections: [
+        { id: "wallet-boundary", title: "This wallet is only for buyer tests.", content: <><p>Circle CLI signs the payment from your Agent Wallet when you test an OMNI endpoint. The OMNI seller process is already part of the project. You do not configure, replace, or manage it from this guide.</p><div className="docs-reader__note"><strong>Only prepare the buyer wallet.</strong><p>The project handles the seller side. Your wallet is used to inspect, estimate, and authorize a test payment.</p></div></> },
+        { id: "install-cli", title: "Install and check Circle CLI.", content: <><p>Install Circle CLI on the machine that will run the buyer test. Circle’s current CLI documentation requires Node.js v20.18.2 or later.</p><DocsCodeBlock label="shell" code={"npm install -g @circle-fin/cli@latest\ncircle --version"} /></> },
+        { id: "login-testnet", title: "Log in to the testnet wallet.", content: <><p>Use a testnet session for OMNI buyer tests. Testnet and mainnet sessions are separate. An interactive login asks for the email and any verification input required by Circle.</p><DocsCodeBlock label="shell" code={"circle wallet login <email> --testnet\n\n# Inspect the wallet that login provisions\ncircle wallet list --chain ARC-TESTNET --type agent --output json"} /><p>For an agent that cannot answer an interactive prompt, use the two-step flow. Never put the email, OTP, or session data in the repository.</p><DocsCodeBlock label="shell" code={"circle wallet login <email> --testnet --init\ncircle wallet login --testnet --request <REQUEST_ID> --otp <OTP>"} /></> },
+        { id: "fund-wallet", title: "Fund only the wallet you will test.", content: <><p>After checking the wallet address, fund that Agent Wallet on Arc Testnet. Do not search other chains for a replacement wallet when this guide is testing Arc.</p><DocsCodeBlock label="shell" code={"circle wallet fund --address <AGENT_WALLET> --chain ARC-TESTNET"} /></> },
+        { id: "inspect-and-pay", title: "Inspect, estimate, then pay.", content: <><p>First inspect the exact OMNI URL. Then ask Circle CLI for an estimate. The estimate lets you check the chain and amount before a real payment is authorized.</p><DocsCodeBlock label="shell" code={"circle services inspect \\\n  \"https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1\" --output json\n\ncircle services pay \\\n  \"https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1\" \\\n  -X GET --address <AGENT_WALLET> --chain <CHAIN-FROM-INSPECT> \\\n  --max-amount 0.005 --estimate --output json"} /><p>Review the estimate. For a paid end-to-end test, run the same command again without <code>--estimate</code>. Keep the URL and request method unchanged.</p></> },
+        { id: "wallet-safety", title: "Stop when the payment state is unclear.", content: <><p>Read the live HTTP 402 challenge before paying. Compare the resource, asset, amount, network, and scheme with your policy. Authorize at most one payment for the same request and stop if the result is uncertain.</p><p>Never commit OTPs, Circle session files, private keys, mnemonics, API keys, or wallet credentials. If Circle shows Terms of Use, read them yourself and decide whether to accept them. The agent must not accept terms on your behalf.</p></> },
+      ],
+    },
+  };
+
+  return articles[articleId];
+}
+
+function DocsPage({ pathname }: { pathname: string }) {
+  const [theme, setTheme] = useState<Theme>(readThemePreference);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const article = getDocsArticle(DOCS_ARTICLE_PATHS[pathname] ?? "overview");
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    persistThemePreference(theme);
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#0b0d10" : "#f2f3f1");
+  }, [theme]);
+
+  useGSAP(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    gsap.fromTo(".docs-sidebar, .docs-reader, .docs-on-page", { y: 18, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.08, duration: 0.6, ease: "power3.out" });
+  }, { scope: rootRef });
+
+  return (
+    <div ref={rootRef} className="site-shell docs-page">
+      <OrbitField className="orbit-field--page" />
+      <header className="nav-shell">
+        <InternalLink className="nav-logo" href="/" aria-label="OMNI home"><Logo /></InternalLink>
+        <nav className="nav-links" aria-label="Primary navigation">
+          <InternalLink href="/#top">Home</InternalLink>
+          <InternalLink href="/api">API</InternalLink>
+          <InternalLink className="is-current" href="/docs" aria-current="page">Docs</InternalLink>
+        </nav>
+        <div className="nav-actions"><ThemeToggle theme={theme} onChange={() => setTheme((current) => current === "light" ? "dark" : "light")} /><Magnetic strength={0.18}><a className="nav-cta" href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">Source repository <span>↗</span></a></Magnetic></div>
+      </header>
+
+      <main className="page-shell docs-layout-page" id="top">
+        <div className="docs-layout">
+          <aside className="docs-sidebar" aria-label="Documentation navigation">
+            <InternalLink className="docs-sidebar__home" href="/docs"><span>OMNI</span><strong>Documentation</strong></InternalLink>
+            <nav className="docs-sidebar__nav" aria-label="Documentation sections">
+              {DOCS_NAV_GROUPS.map((group) => (
+                <section className="docs-sidebar__group" key={group.label}>
+                  <h2>{group.label}</h2>
+                  {group.items.map((item) => <InternalLink key={`${group.label}-${item.label}`} href={item.href} aria-current={item.href === pathname ? "page" : undefined}>{item.label}</InternalLink>)}
+                </section>
+              ))}
+            </nav>
+            <a className="docs-sidebar__github" href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">Browse OMNI on GitHub <span>↗</span></a>
+          </aside>
+
+          <article className="docs-reader" aria-labelledby="docs-page-title">
+            <header className="docs-reader__intro">
+              <p className="docs-reader__label">{article.label}</p>
+              <h1 id="docs-page-title">{article.title}</h1>
+              <p>{article.intro}</p>
+              {article.actions ? <div className="docs-reader__actions">{article.actions}</div> : null}
+            </header>
+
+            {article.sections.map((section, index) => <section className={`docs-reader__section${index === article.sections.length - 1 ? " docs-reader__section--last" : ""}`} id={section.id} aria-labelledby={`${section.id}-title`} key={section.id}><h2 id={`${section.id}-title`}>{section.title}</h2>{section.content}</section>)}
+          </article>
+
+          <aside className="docs-on-page" aria-label="On this page">
+            <p>On this page</p>{article.sections.map((section) => <a href={`#${section.id}`} key={section.id}>{section.title.replace(/^\d\. /, "")}</a>)}
+          </aside>
+        </div>
       </main>
 
       <Footer />
@@ -667,8 +1145,6 @@ function LandingPage() {
 
     gsap.to(".hero-copy", { yPercent: -6, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
     gsap.to(".hero-visual", { yPercent: 13, rotate: -2, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
-    gsap.fromTo(".reveal-card", { y: 52, opacity: 0, scale: 0.96 }, { y: 0, opacity: 1, scale: 1, stagger: 0.12, ease: "power3.out", scrollTrigger: { trigger: ".evidence-section", start: "top 70%", end: "top 25%", scrub: 1 } });
-
     gsap.to(".scrub-word", { opacity: 1, stagger: 0.06, ease: "none", scrollTrigger: { trigger: ".thesis-section", start: "top 70%", end: "bottom 65%", scrub: true } });
   }, { scope: rootRef });
 
@@ -694,9 +1170,9 @@ function LandingPage() {
       <header className="nav-shell">
         <InternalLink className="nav-logo" href="#top" aria-label="OMNI home"><Logo /></InternalLink>
         <nav className="nav-links" aria-label="Primary navigation">
-          <InternalLink href="#thesis">Thesis</InternalLink>
-          <InternalLink href="#evidence">Evidence</InternalLink>
+          <InternalLink href="/#top">Home</InternalLink>
           <InternalLink href="/api">API</InternalLink>
+          <InternalLink href="/docs">Docs</InternalLink>
         </nav>
         <div className="nav-actions"><ThemeToggle theme={theme} onChange={toggleTheme} /><Magnetic strength={0.18}><InternalLink className="nav-cta" href="/api">Integrate OMNI <span>↗</span></InternalLink></Magnetic></div>
       </header>
@@ -721,8 +1197,8 @@ function LandingPage() {
         </section>
 
         <section className="evidence-section section-space" id="evidence" aria-labelledby="evidence-title">
-          <div className="section-heading"><div><h2 id="evidence-title">One action. Three checks.</h2></div><p>These checks produce one deterministic result. If a data source fails, the result says so.</p></div>
-          <EvidenceBento />
+          <div className="evidence-intro"><h2 id="evidence-title">One action. Three checks.</h2><p>Before an agent installs or pays, OMNI checks the request. A failed source stays visible in the result.</p></div>
+          <EvidenceShowcase />
         </section>
 
         <EcosystemMarquee />
@@ -737,21 +1213,37 @@ function LandingPage() {
 
 function App() {
   const [routeLocation, setRouteLocation] = useState<RouteLocation>(readRouteLocation);
+  const routeLocationRef = useRef(routeLocation);
 
   useEffect(() => {
-    const onPopState = () => updateRouteLocation(setRouteLocation);
+    const onPopState = () => {
+      const nextLocation = readRouteLocation();
+      const previousLocation = routeLocationRef.current;
+      routeLocationRef.current = nextLocation;
+      const shouldTransition = nextLocation.pathname !== previousLocation.pathname || nextLocation.hash !== previousLocation.hash;
+      updateRouteLocation(setRouteLocation, shouldTransition);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      scrollToRouteTarget(routeLocation.hash.slice(1));
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [routeLocation.pathname, routeLocation.search, routeLocation.hash]);
+    const targetId = routeLocation.hash.slice(1);
+    const frame = window.requestAnimationFrame(() => scrollToRouteTarget(targetId));
+    const settleTimer = window.setTimeout(() => scrollToRouteTarget(targetId), 80);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+    };
+  }, [routeLocation.pathname, routeLocation.hash]);
 
-  return routeLocation.pathname === "/api" ? <ApiPage /> : <LandingPage />;
+  useEffect(() => {
+    if (routeLocation.pathname !== "/docs") return;
+    const legacyPath = DOCS_LEGACY_HASH_PATHS[routeLocation.hash.slice(1)];
+    if (legacyPath) navigateInternal(legacyPath);
+  }, [routeLocation.hash, routeLocation.pathname]);
+
+  return routeLocation.pathname.startsWith("/docs") ? <DocsPage pathname={routeLocation.pathname} /> : routeLocation.pathname === "/api" ? <ApiPage search={routeLocation.search} /> : <LandingPage />;
 }
 
 export default App;

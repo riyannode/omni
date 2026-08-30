@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { Evidence } from "../domain/risk.ts";
+import { observePaymentOptions, type ObservedPaymentRequirement } from "../domain/x402-preflight-consistency.ts";
 import { UpstreamHttp } from "./http.ts";
 
 function privateIpv4(ip: string): boolean {
@@ -19,12 +20,11 @@ function privateIpv6(ip: string): boolean {
 }
 
 export class X402Probe {
-  constructor(private readonly http: UpstreamHttp, private readonly allowedHosts: Set<string>) {}
+  constructor(private readonly http: UpstreamHttp) {}
 
-  private async assertPublic(url: URL, circleListed: boolean): Promise<void> {
+  private async assertPublic(url: URL): Promise<void> {
     if (url.protocol !== "https:") throw new Error("endpoint probe requires https");
     const host = url.hostname.toLowerCase();
-    if (!circleListed && !this.allowedHosts.has(host)) throw new Error("unlisted endpoint host not allowlisted");
 
     if (isIP(host)) {
       if (privateIpv4(host) || privateIpv6(host)) throw new Error("private endpoint address rejected");
@@ -38,22 +38,22 @@ export class X402Probe {
     }
   }
 
-  async unpaidGet(resource: string, circleListed: boolean): Promise<{ status: number; paymentOptions: number; evidence: Evidence }> {
+  async unpaidGet(resource: string): Promise<{ status: number; paymentOptions: ObservedPaymentRequirement[]; evidence: Evidence }> {
     const url = new URL(resource);
-    await this.assertPublic(url, circleListed);
+    await this.assertPublic(url);
     const response = await this.http.request(url, {
       method: "GET",
       redirect: "manual",
       headers: { "user-agent": "OMNI/0.2 x402-preflight" }
     });
     const raw = response.headers.get("payment-required") ?? response.headers.get("PAYMENT-REQUIRED");
-    let paymentOptions = 0;
+    let paymentOptions: ObservedPaymentRequirement[] = [];
     if (raw) {
       try {
-        const parsed = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as { accepts?: unknown[] };
-        paymentOptions = parsed.accepts?.length ?? 0;
+        const parsed = JSON.parse(Buffer.from(raw, "base64").toString("utf8")) as { accepts?: unknown };
+        paymentOptions = observePaymentOptions(parsed.accepts);
       } catch {
-        paymentOptions = 0;
+        paymentOptions = [];
       }
     }
     await response.body?.cancel();
@@ -64,7 +64,7 @@ export class X402Probe {
         source: "OMNI active probe",
         kind: "unpaid_x402_handshake",
         observedAt: new Date().toISOString(),
-        detail: { resource, status: response.status, paymentOptions }
+        detail: { resource, status: response.status, paymentOptions: paymentOptions.length }
       }
     };
   }

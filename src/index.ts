@@ -30,7 +30,7 @@ const circle = new CircleDiscoveryProvider(cache, history, http);
 const omni = new OmniIntelligence(
   new RiskEngine(), cache,
   new OsvProvider(http), new CisaKevProvider(cache, http, config.kevFeedUrls.length > 0 ? config.kevFeedUrls : undefined), new ScorecardProvider(http, cache), new NpmRegistryProvider(http),
-  circle, new X402Probe(http, config.allowedEndpointHosts), history, threatIntel, assessmentJournal, github, depsDev
+  circle, new X402Probe(http), history, threatIntel, assessmentJournal, github, depsDev
 );
 const gateway = createCircleGateway(config.SELLER_ADDRESS as `0x${string}`, config.CIRCLE_FACILITATOR_URL);
 const paidRequests = createPaidRequestStore(config.DATABASE_URL);

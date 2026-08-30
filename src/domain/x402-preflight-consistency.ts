@@ -23,6 +23,38 @@ export type X402EndpointPreflight = RiskAssessment & {
   };
 };
 
+function observedGatewayExtra(extra: unknown): ObservedPaymentRequirement["extra"] {
+  if (typeof extra !== "object" || extra === null || Array.isArray(extra)) return undefined;
+  const value = extra as Record<string, unknown>;
+  const name = typeof value.name === "string" ? value.name : undefined;
+  const version = typeof value.version === "string" ? value.version : undefined;
+  const verifyingContract = typeof value.verifyingContract === "string" ? value.verifyingContract : undefined;
+  if (name === undefined && version === undefined && verifyingContract === undefined) return undefined;
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(version === undefined ? {} : { version }),
+    ...(verifyingContract === undefined ? {} : { verifyingContract })
+  };
+}
+
+export function observePaymentOptions(rawAccepts: unknown): ObservedPaymentRequirement[] {
+  if (!Array.isArray(rawAccepts)) return [];
+  return rawAccepts.flatMap(rawAccept => {
+    if (typeof rawAccept !== "object" || rawAccept === null || Array.isArray(rawAccept)) return [];
+    const accept = rawAccept as Record<string, unknown>;
+    const observed: ObservedPaymentRequirement = {};
+    if (typeof accept.scheme === "string") observed.scheme = accept.scheme as NonNullable<ObservedPaymentRequirement["scheme"]>;
+    if (typeof accept.network === "string") observed.network = accept.network as NonNullable<ObservedPaymentRequirement["network"]>;
+    if (typeof accept.amount === "string") observed.amount = accept.amount as NonNullable<ObservedPaymentRequirement["amount"]>;
+    if (typeof accept.asset === "string") observed.asset = accept.asset as NonNullable<ObservedPaymentRequirement["asset"]>;
+    if (typeof accept.payTo === "string") observed.payTo = accept.payTo as NonNullable<ObservedPaymentRequirement["payTo"]>;
+    if (typeof accept.maxTimeoutSeconds === "number" && Number.isInteger(accept.maxTimeoutSeconds)) observed.maxTimeoutSeconds = accept.maxTimeoutSeconds;
+    const extra = observedGatewayExtra(accept.extra);
+    if (extra !== undefined) observed.extra = extra;
+    return Object.keys(observed).length > 0 ? [observed] : [];
+  });
+}
+
 export type ChallengeConsistencyStatus = "match" | "repreflight_required" | "insufficient_context";
 
 /**
