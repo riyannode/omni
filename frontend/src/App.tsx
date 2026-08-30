@@ -491,23 +491,7 @@ function InterceptorCard() {
 function EvidenceShowcase() {
   return (
     <div className="evidence-showcase">
-      <div className="evidence-video-layout">
-        <figure className="evidence-video" id="supply-chain-evidence">
-          <video
-            key="omni-orbit-video-blurry"
-            src="/omni-how-it-works-25s.mp4?v=omni-orbit-blurry"
-            autoPlay
-            loop
-            muted
-            playsInline
-            preload="metadata"
-            onCanPlay={(event) => { void event.currentTarget.play(); }}
-            aria-label="OMNI checks supply chain, service identity, and payment configuration before an agent acts"
-          />
-        </figure>
-      </div>
-
-      <div className="evidence-guide">
+      <div className="evidence-guide" id="supply-chain-evidence">
         <div className="evidence-guide__intro">
           <span className="evidence-guide__label">How to use it</span>
           <h3>Check before you act.</h3>
