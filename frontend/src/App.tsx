@@ -55,13 +55,7 @@ function updateRouteLocation(setLocation: (location: RouteLocation) => void, sho
 
 function scrollToRouteTarget(targetId: string): void {
   const target = targetId ? document.getElementById(targetId) : null;
-  let top = 0;
-  let current = target;
-  while (current) {
-    top += current.offsetTop;
-    current = current.offsetParent as HTMLElement | null;
-  }
-  top = target ? Math.max(0, top - 96) : 0;
+  const top = target ? Math.max(0, window.scrollY + target.getBoundingClientRect().top - 112) : 0;
   window.scrollTo({ top, left: 0, behavior: target && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" });
 }
 
@@ -86,33 +80,6 @@ function InternalLink({ href, onClick, ...props }: AnchorHTMLAttributes<HTMLAnch
   };
   return <a {...props} href={href} onClick={handleClick} />;
 }
-
-const evidencePlanes = [
-  {
-    key: "supply-chain",
-    index: "01",
-    title: "Supply-chain evidence",
-    sources: "OSV · CISA KEV · npm · OpenSSF",
-    copy: "OMNI checks a package or repository before an agent installs the package or uses the repository.",
-    route: "GET /v1/package/risk",
-  },
-  {
-    key: "identity",
-    index: "02",
-    title: "Service identity",
-    sources: "Circle Discovery · x402 probe",
-    copy: "OMNI checks who provides the endpoint, its history, and the limits of its x402 handshake.",
-    route: "GET /v1/x402/endpoint/preflight",
-  },
-  {
-    key: "payment",
-    index: "03",
-    title: "Payment configuration",
-    sources: "payTo · network · price · history",
-    copy: "OMNI captures payment terms during preflight so callers can compare them against the actual challenge before payment.",
-    route: "preflightContext.paymentOptions",
-  },
-];
 
 const ecosystemLogos = [
   { key: "circle", label: "CIRCLE", src: "/circle-gradient.png", kind: "image" as const },
@@ -145,6 +112,44 @@ const API_PREVIEW_TEXT_LENGTH = API_PREVIEW_BLOCKS.reduce((total, block) => tota
 const API_PREVIEW_TYPE_DELAY_MS = 28;
 const API_PREVIEW_HOLD_MS = 3000;
 const API_PREVIEW_BLANK_MS = 450;
+
+type DocsArticleId = "overview" | "quickstart" | "package" | "repository" | "dependencies" | "preflight" | "results" | "evidence" | "payment" | "security" | "architecture" | "wallet";
+type DocsNavGroup = { label: string; items: readonly { href: string; label: string }[] };
+type DocsSection = { id: string; title: string; content: ReactNode };
+type DocsArticle = { label: string; title: string; intro: string; actions?: ReactNode; sections: readonly DocsSection[] };
+
+const DOCS_NAV_GROUPS: readonly DocsNavGroup[] = [
+  { label: "Start here", items: [{ href: "/docs", label: "What OMNI does" }, { href: "/docs/quickstart", label: "Quickstart" }] },
+  { label: "API reference", items: [{ href: "/docs/package-risk", label: "Package risk" }, { href: "/docs/repository-risk", label: "Repository risk" }, { href: "/docs/dependency-risk", label: "Dependency risk" }, { href: "/docs/x402-preflight", label: "x402 preflight" }] },
+  { label: "Understand a result", items: [{ href: "/docs/results", label: "Assessment fields" }, { href: "/docs/evidence", label: "Evidence and source errors" }] },
+  { label: "Payment and safety", items: [{ href: "/docs/x402-payment", label: "The x402 flow" }, { href: "/docs/security", label: "Safety and failures" }] },
+  { label: "Project reference", items: [{ href: "/docs/architecture", label: "Architecture" }, { href: "/docs/agent-wallet", label: "Agent wallet guide" }] },
+];
+
+const DOCS_ARTICLE_PATHS: Readonly<Record<string, DocsArticleId>> = {
+  "/docs": "overview",
+  "/docs/quickstart": "quickstart",
+  "/docs/package-risk": "package",
+  "/docs/repository-risk": "repository",
+  "/docs/dependency-risk": "dependencies",
+  "/docs/x402-preflight": "preflight",
+  "/docs/results": "results",
+  "/docs/evidence": "evidence",
+  "/docs/x402-payment": "payment",
+  "/docs/security": "security",
+  "/docs/architecture": "architecture",
+  "/docs/agent-wallet": "wallet",
+};
+
+const DOCS_LEGACY_HASH_PATHS: Readonly<Record<string, string>> = {
+  "docs-overview": "/docs",
+  "docs-quickstart": "/docs/quickstart",
+  "docs-endpoints": "/docs/package-risk",
+  "docs-results": "/docs/results",
+  "docs-evidence": "/docs/evidence",
+  "docs-payment": "/docs/x402-payment",
+  "docs-reference": "/docs/architecture",
+};
 
 function ApiPreview() {
   const [typedChars, setTypedChars] = useState(0);
@@ -483,56 +488,37 @@ function InterceptorCard() {
   );
 }
 
-function EvidenceBento() {
-  const [activePlane, setActivePlane] = useState(0);
-  const active = evidencePlanes[activePlane];
-  useEffect(() => {
-    const interval = window.setInterval(() => setActivePlane((current) => (current + 1) % evidencePlanes.length), 4300);
-    return () => window.clearInterval(interval);
-  }, []);
-
+function EvidenceShowcase() {
   return (
-    <div className="evidence-grid">
-      <article id="supply-chain-evidence" className="evidence-card evidence-card--supply reveal-card">
-        <div className="card-header"><span>Supply chain</span><span className="card-index">{evidencePlanes[0].index}</span></div>
-        <div className="evidence-card__visual supply-visual"><div className="supply-node supply-node--a" /><div className="supply-node supply-node--b" /><div className="supply-node supply-node--c" /><span className="supply-line" /></div>
-        <h3>See what the agent will install.</h3>
-        <p>{evidencePlanes[0].copy}</p>
-        <span className="route-code">{evidencePlanes[0].route}</span>
-      </article>
-      <article className="evidence-card evidence-card--identity reveal-card">
-        <div className="card-header"><span>Service identity</span><span className="card-index">{evidencePlanes[1].index}</span></div>
-        <div className="identity-visual"><span className="identity-crosshair" /><span className="identity-ring" /><span className="identity-label">CIRCLE / DISCOVERY</span></div>
-        <h3>See the service clearly.</h3>
-        <p>{evidencePlanes[1].copy}</p>
-        <span className="route-code">{evidencePlanes[1].route}</span>
-      </article>
-      <article className="evidence-card evidence-card--payment reveal-card">
-        <div className="card-header"><span>Payment config</span><span className="card-index">{evidencePlanes[2].index}</span></div>
-        <div className="payment-visual"><span className="payment-pill">payTo</span><span className="payment-pill">network</span><span className="payment-pill">atomic price</span><span className="payment-arrow">↗</span></div>
-        <h3>Check payment before the wallet pays.</h3>
-        <p>{evidencePlanes[2].copy}</p>
-        <span className="route-code">{evidencePlanes[2].route}</span>
-      </article>
-      <article className="evidence-card evidence-card--coverage reveal-card">
-        <div className="card-header"><span>Assessment contract</span><span className="status-chip"><i /> deterministic</span></div>
-        <div className="coverage-row"><span>riskScore</span><span>0 to 100</span></div>
-        <div className="coverage-row"><span>recommendation</span><span>advisory</span></div>
-        <div className="coverage-row"><span>evidenceCoverage</span><span>0 to 1</span></div>
-        <div className="coverage-row"><span>sourceErrors</span><span>explicit</span></div>
-        <p>Evidence is a timestamped fact from a named source. It is not a verdict, probability, or payment approval.</p>
-      </article>
-      <div className="evidence-rail" aria-label="Evidence plane selector">
-        <div className="evidence-rail__buttons">
-          {evidencePlanes.map((plane, index) => (
-            <Magnetic key={plane.key} strength={0.14}>
-              <button className={index === activePlane ? "is-active" : ""} type="button" onClick={() => setActivePlane(index)} onFocus={() => setActivePlane(index)} aria-pressed={index === activePlane}>
-                <span>{plane.index}</span>{plane.title}
-              </button>
-            </Magnetic>
-          ))}
+    <div className="evidence-showcase">
+      <div className="evidence-video-layout">
+        <figure className="evidence-video" id="supply-chain-evidence">
+          <video
+            key="omni-orbit-video-blurry"
+            src="/omni-how-it-works-25s.mp4?v=omni-orbit-blurry"
+            autoPlay
+            loop
+            muted
+            playsInline
+            preload="metadata"
+            onCanPlay={(event) => { void event.currentTarget.play(); }}
+            aria-label="OMNI checks supply chain, service identity, and payment configuration before an agent acts"
+          />
+        </figure>
+      </div>
+
+      <div className="evidence-guide">
+        <div className="evidence-guide__intro">
+          <span className="evidence-guide__label">How to use it</span>
+          <h3>Check before you act.</h3>
+          <p>Choose what to check, send it to OMNI, then review the result.</p>
+          <InternalLink className="button button--dark evidence-guide__cta" href="/api">Open the API <span>↗</span></InternalLink>
         </div>
-        <p className="evidence-rail__copy">{active.sources}</p>
+        <ol className="evidence-guide__steps">
+          <li><div className="evidence-guide__step-top"><span>01</span><strong>Choose</strong></div><p>Pick a package, repository, or endpoint.</p></li>
+          <li><div className="evidence-guide__step-top"><span>02</span><strong>Check</strong></div><p>Send it to OMNI.</p></li>
+          <li><div className="evidence-guide__step-top"><span>03</span><strong>Review</strong></div><p>Read the result before you install or pay.</p></li>
+        </ol>
       </div>
     </div>
   );
@@ -793,8 +779,7 @@ function ApiPage({ search }: { search: string }) {
       <header className="nav-shell">
         <InternalLink className="nav-logo" href="/" aria-label="OMNI home"><Logo /></InternalLink>
         <nav className="nav-links" aria-label="Primary navigation">
-          <InternalLink href="/#thesis">Thesis</InternalLink>
-          <InternalLink href="/#evidence">Evidence</InternalLink>
+          <InternalLink href="/#top">Home</InternalLink>
           <InternalLink className="is-current" href="/api" aria-current="page">API</InternalLink>
           <InternalLink href="/docs">Docs</InternalLink>
         </nav>
@@ -845,9 +830,233 @@ function ApiPage({ search }: { search: string }) {
   );
 }
 
-function DocsPage() {
+function highlightShellTokens(line: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|https?:\/\/[^\s'"\\]+|<[^>\n]+>|\$\{[^}\n]+\}|\$[A-Z_][A-Z0-9_]*|--?[A-Za-z][A-Za-z0-9-]*|#.*$|\b\d+(?:\.\d+)?\b)/g;
+  let lastIndex = 0;
+  let tokenIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(line)) !== null) {
+    const start = match.index;
+    const value = match[0];
+    if (start > lastIndex) nodes.push(line.slice(lastIndex, start));
+    const className = value.startsWith("#")
+      ? "docs-token-comment"
+      : value.startsWith("--") || (value.startsWith("-") && value.length > 1)
+        ? "docs-token-flag"
+        : value.startsWith("<")
+          ? "docs-token-placeholder"
+          : value.startsWith("$")
+            ? "docs-token-variable"
+            : value.startsWith('"') || value.startsWith("'") || value.startsWith("http")
+              ? "docs-token-string"
+              : "docs-token-number";
+    nodes.push(<span className={className} key={`token-${tokenIndex}`}>{value}</span>);
+    tokenIndex += 1;
+    lastIndex = start + value.length;
+  }
+  if (lastIndex < line.length) nodes.push(line.slice(lastIndex));
+  return nodes;
+}
+
+function highlightShell(code: string): ReactNode {
+  return code.split("\n").map((line, lineIndex) => {
+    const commandMatch = line.match(/^(\s*)(curl|circle|npm)(?=\s|$)/);
+    const highlightedLine = commandMatch
+      ? <>{commandMatch[1]}<span className="docs-token-command">{commandMatch[2]}</span>{highlightShellTokens(line.slice(commandMatch[0].length))}</>
+      : highlightShellTokens(line);
+    return <span className="docs-code-line" key={`line-${lineIndex}`}>{highlightedLine}</span>;
+  });
+}
+
+function DocsCodeBlock({ label, code }: { label: string; code: string }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const copyCode = async () => {
+    try {
+      await copyText(code);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+  };
+
+  return <div className="docs-code-block">
+    <div className="docs-code-block__bar"><span>{label}</span><button className={`docs-code-block__copy${copyState === "copied" ? " is-copied" : ""}`} type="button" onClick={() => void copyCode()} aria-label={`${copyState === "copied" ? "Copied" : copyState === "error" ? "Retry copy" : "Copy"} ${label} code`} title={`${copyState === "copied" ? "Copied" : copyState === "error" ? "Retry copy" : "Copy code"}`}><CopyIcon checked={copyState === "copied"} /></button></div>
+    <pre><code>{highlightShell(code)}</code></pre>
+  </div>;
+}
+
+function getEndpointDocsArticle(endpointId: EndpointId): DocsArticle {
+  const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === endpointId);
+  if (!endpoint) throw new Error(`Missing documentation endpoint: ${endpointId}`);
+
+  const details: Record<EndpointId, { title: string; intro: string; subject: string; result: string; decision: string }> = {
+    package: {
+      title: "Check a package before install.",
+      intro: "Use package risk when an agent is about to install one exact package version. OMNI returns source-backed evidence for the caller to apply to its own policy.",
+      subject: "Send the ecosystem, package name, and exact version. A versionless package name leaves too much room for the subject to change between the check and install.",
+      result: "The assessment combines the risk score, advisory recommendation, coverage, evidence, source errors, and freshness information for that version.",
+      decision: "Read the evidence before running the install. If coverage is low or a source failed, decide whether your policy stops, retries, or asks for review.",
+    },
+    repo: {
+      title: "Check a repository before using it.",
+      intro: "Use repository risk before an agent clones, reads, or depends on a GitHub repository. OMNI keeps the observed evidence separate from your runtime’s decision.",
+      subject: "Send the GitHub owner and repository name. Check the repository you intend to use, not a lookalike or a fork chosen later in the flow.",
+      result: "The response reports repository identity, activity, and named-source risk evidence alongside coverage and source errors.",
+      decision: "Use the result before cloning or trusting repository instructions. The result is advisory; it never authorizes code execution by itself.",
+    },
+    dependencies: {
+      title: "Check a dependency set in one request.",
+      intro: "Use dependency risk when an agent has a package list and needs one assessment before it installs or updates the set.",
+      subject: "Send the dependency coordinates as ecosystem, name, and exact version. Keep the list tied to the lockfile or planned install so the checked set is the executed set.",
+      result: "OMNI returns one deterministic assessment for the submitted dependency set, including the evidence coverage and any source failures that affect it.",
+      decision: "Review the resulting evidence before updating the environment. Treat a partial result as partial evidence, not an all-clear signal.",
+    },
+    preflight: {
+      title: "Preflight an x402 endpoint before payment.",
+      intro: "Use x402 preflight before an agent calls a paid endpoint. It records what OMNI can observe about the service and payment terms before the live request.",
+      subject: "Send the exact endpoint URL. OMNI checks the service identity, its observed history, and the available x402 payment configuration for that resource.",
+      result: "The response includes advisory evidence plus observed payment options. The execution-time HTTP 402 challenge remains the detail the caller must compare before paying.",
+      decision: "Keep the preflight close to the paid call. Compare the live resource, USDC amount, network, and scheme against your own policy before the signed retry.",
+    },
+  };
+  const detail = details[endpointId];
+  const title = endpointId === "package" ? "Package risk" : endpointId === "repo" ? "Repository risk" : endpointId === "dependencies" ? "Dependency risk" : "x402 endpoint preflight";
+  const requestExamples: Record<EndpointId, string> = {
+    package: `curl -i --get 'https://api.askomni.xyz/v1/package/risk' \\
+  --data-urlencode 'ecosystem=npm' \\
+  --data-urlencode 'name=express' \\
+  --data-urlencode 'version=5.2.1' \\
+  -H 'Accept: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>'`,
+    repo: `curl -i --get 'https://api.askomni.xyz/v1/repo/risk' \\
+  --data-urlencode 'owner=expressjs' \\
+  --data-urlencode 'repo=express' \\
+  -H 'Accept: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>'`,
+    dependencies: `curl -i -X POST 'https://api.askomni.xyz/v1/dependencies/risk' \\
+  -H 'Accept: application/json' \\
+  -H 'Content-Type: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>' \\
+  --data-raw '{
+    "packages": [
+      { "ecosystem": "npm", "name": "express", "version": "5.2.1" }
+    ]
+  }'`,
+    preflight: `curl -i --get 'https://api.askomni.xyz/v1/x402/endpoint/preflight' \\
+  --data-urlencode 'url=https://example.com/paid-resource' \\
+  -H 'Accept: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>'`,
+  };
+
+  return {
+    label: "API reference",
+    title: detail.title,
+    intro: detail.intro,
+    sections: [
+      { id: "request", title: "Send the exact subject.", content: <><p><b>{endpoint.method}</b> <code>{endpoint.path}</code></p><p>{detail.subject}</p><div className="docs-reader__note"><strong>{endpoint.price} per request.</strong><p>Use a new UUID v4 idempotency key for this logical request. Keep the same key if you make its paid retry.</p></div></> },
+      { id: "shell-example", title: "Run the request from a terminal.", content: <><p>This first request is unpaid. The protected route returns HTTP 402 until the caller sends a valid x402 payment. Keep the method, URL, headers, and body unchanged for the paid retry.</p><DocsCodeBlock label="shell" code={requestExamples[endpointId]} /></> },
+      { id: "result", title: "Read what OMNI found.", content: <p>{detail.result}</p> },
+      { id: "decision", title: "Keep the decision with your caller.", content: <p>{detail.decision}</p> },
+    ],
+  };
+}
+
+function getDocsArticle(articleId: DocsArticleId): DocsArticle {
+  if (articleId === "package" || articleId === "repository" || articleId === "dependencies" || articleId === "preflight") return getEndpointDocsArticle(articleId === "repository" ? "repo" : articleId);
+
+  const articles: Record<Exclude<DocsArticleId, "package" | "repository" | "dependencies" | "preflight">, DocsArticle> = {
+    overview: {
+      label: "OMNI Docs",
+      title: "Check before an agent acts.",
+      intro: "OMNI gives an agent source-backed risk evidence before it installs a package, uses a repository, checks dependencies, or pays an x402 endpoint.",
+      actions: <><InternalLink className="button button--dark" href="/docs/quickstart">Start the quickstart <span>↗</span></InternalLink><a className="button button--text" href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">Read llms.txt <span>↗</span></a></>,
+      sections: [
+        { id: "what-omni-checks", title: "Choose the decision you need to make.", content: <div className="docs-resource-list"><InternalLink href="/docs/package-risk"><strong>Before an install</strong><span>Check one exact package version.</span><i>↗</i></InternalLink><InternalLink href="/docs/repository-risk"><strong>Before using a repository</strong><span>Check the repository behind the agent’s next step.</span><i>↗</i></InternalLink><InternalLink href="/docs/dependency-risk"><strong>Before an update</strong><span>Check the dependency set together.</span><i>↗</i></InternalLink><InternalLink href="/docs/x402-preflight"><strong>Before a paid call</strong><span>Check a service and its observed x402 terms.</span><i>↗</i></InternalLink></div> },
+        { id: "advisory-boundary", title: "Evidence is not permission.", content: <div className="docs-reader__note"><strong>OMNI advises. Your policy decides.</strong><p>A result is a timestamped record from named sources. It does not approve a payment, execute code, or make a subject safe.</p></div> },
+      ],
+    },
+    quickstart: {
+      label: "Start here",
+      title: "Make one check before you act.",
+      intro: "The quickest way to use OMNI is to take the exact thing an agent is about to use, request the matching assessment, then read the evidence before the next action.",
+      actions: <a className="button button--dark" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Open OpenAPI contract <span>↗</span></a>,
+      sections: [
+        { id: "choose", title: "1. Choose the exact subject.", content: <p>Use a package version, GitHub repository, dependency list, or x402 endpoint URL. The check is only as specific as the subject you send.</p> },
+        { id: "request", title: "2. Send the matching request.", content: <p>Open the endpoint article in this Docs section. It shows the request shape, terminal command, and the fields you should read after payment succeeds.</p> },
+        { id: "review", title: "3. Review evidence before the next action.", content: <p>Read the risk, recommendation, coverage, sources, errors, and freshness. Then let your caller policy choose whether to continue, stop, retry, or ask a person.</p> },
+      ],
+    },
+    results: {
+      label: "Understand a result",
+      title: "Read the result, not just the score.",
+      intro: "OMNI separates observed evidence from the caller’s decision. A low score does not make a subject safe, and missing evidence stays visible.",
+      sections: [
+        { id: "assessment-fields", title: "The assessment fields.", content: <dl className="docs-field-list"><div><dt><code>riskScore</code></dt><dd>0 to 100. Higher means more observed decision risk; source failures can increase it.</dd></div><div><dt><code>recommendation</code></dt><dd>Advisory next action from OMNI’s deterministic policy. Your caller policy remains in control.</dd></div><div><dt><code>evidenceCoverage</code></dt><dd>0 to 1. It shows how much subject-specific evidence was available, not the probability that a recommendation is correct.</dd></div><div><dt><code>freshness</code></dt><dd>When an expiry is present, obtain new evidence before you act after that time.</dd></div></dl> },
+        { id: "caller-policy", title: "Let your policy make the call.", content: <p>Use the same fields consistently in your runtime. For example, require minimum evidence coverage for a paid action or stop whenever a source error blocks a critical check.</p> },
+      ],
+    },
+    evidence: {
+      label: "Understand a result",
+      title: "Keep every fact traceable.",
+      intro: "Evidence is a timestamped fact from a named source. OMNI keeps its source and any source failure visible so the caller can apply the right policy.",
+      sections: [
+        { id: "source-and-time", title: "Read the source and timestamp.", content: <p>Check where a fact came from and when OMNI observed it. Fresh evidence helps a caller see the current state; it does not predict every future change.</p> },
+        { id: "source-errors", title: "Treat failures as part of the result.", content: <p>When a source cannot be read, OMNI shows the source error instead of pretending the check succeeded. Your policy can then stop, retry later, or continue with explicit limits.</p> },
+        { id: "response-formats", title: "Use the format your client needs.", content: <div className="docs-reader__note"><strong>JSON is the default response.</strong><p>Successful requests also expose a deterministic Markdown artifact. Send <code>Accept: text/markdown</code> when you need only the human-readable version. Errors remain JSON.</p></div> },
+      ],
+    },
+    payment: {
+      label: "Payment and safety",
+      title: "Check the live challenge before payment.",
+      intro: "x402 preflight helps you inspect a service first. The live HTTP 402 challenge is still the payment request your caller must compare against policy before it signs or retries.",
+      sections: [
+        { id: "preflight", title: "1. Preflight the endpoint.", content: <p>Use <InternalLink href="/docs/x402-preflight">x402 preflight</InternalLink> to record the service identity and observed payment options before the paid call.</p> },
+        { id: "challenge", title: "2. Read the exact 402 challenge.", content: <p>Ask the protected resource without paying. Compare the resource, USDC amount, network, and scheme in <code>PAYMENT-REQUIRED</code> with the preflight and your own policy.</p> },
+        { id: "retry", title: "3. Retry once with a stable key.", content: <p>Reuse one UUID v4 <code>Idempotency-Key</code> for the same logical paid retry. If payment state is unclear, stop and reconcile instead of making a second charge.</p> },
+      ],
+    },
+    security: {
+      label: "Payment and safety",
+      title: "Keep the trust boundary clear.",
+      intro: "OMNI provides evidence before action. Your caller owns the authorization, the final policy, and the response to missing or stale evidence.",
+      sections: [
+        { id: "caller-controls", title: "The caller controls action.", content: <p>Do not treat an advisory recommendation as execution permission. The caller must decide whether it can install, clone, call, or pay after it reads the assessment.</p> },
+        { id: "endpoint-safety", title: "Protect the request path.", content: <p>Only inspect valid public endpoints. Reject loopback, private-network, and otherwise unsafe probe targets before an outbound check can reach them.</p> },
+        { id: "failure-mode", title: "Stop on an unclear paid state.", content: <p>Payment verification and settlement are separate from OMNI’s advisory result. If a paid retry has an unclear outcome, reconcile it rather than assuming success or attempting another charge.</p> },
+      ],
+    },
+    architecture: {
+      label: "Project reference",
+      title: "See how the pieces fit together.",
+      intro: "OMNI is designed to keep risk computation, payment handling, and caller-side enforcement separate so each part has a clear responsibility.",
+      sections: [
+        { id: "request-lifecycle", title: "A request has three stages.", content: <ol className="docs-steps docs-steps--compact"><li><span>1</span><div><strong>Inspect</strong><p>OMNI gathers deterministic evidence from named sources.</p></div></li><li><span>2</span><div><strong>Return</strong><p>The API returns an advisory assessment and traceable evidence.</p></div></li><li><span>3</span><div><strong>Enforce</strong><p>The caller applies its own policy before it takes an action.</p></div></li></ol> },
+        { id: "further-reading", title: "Read the implementation details.", content: <div className="docs-resource-list"><a href="https://github.com/riyannode/omni/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noreferrer"><strong>Architecture</strong><span>Risk engine, durable paid requests, and caller-side enforcement.</span><i>↗</i></a><a href="https://github.com/riyannode/omni/tree/main/docs/adr" target="_blank" rel="noreferrer"><strong>Architecture decisions</strong><span>Runtime, Circle Gateway, and risk-model design choices.</span><i>↗</i></a></div> },
+      ],
+    },
+    wallet: {
+      label: "Project reference",
+      title: "Set up a buyer wallet for OMNI.",
+      intro: "This guide is for testing OMNI’s paid endpoints with Circle CLI. OMNI’s seller process belongs to the project and is not part of this setup.",
+      sections: [
+        { id: "wallet-boundary", title: "This wallet is only for buyer tests.", content: <><p>Circle CLI signs the payment from your Agent Wallet when you test an OMNI endpoint. The OMNI seller process is already part of the project. You do not configure, replace, or manage it from this guide.</p><div className="docs-reader__note"><strong>Only prepare the buyer wallet.</strong><p>The project handles the seller side. Your wallet is used to inspect, estimate, and authorize a test payment.</p></div></> },
+        { id: "install-cli", title: "Install and check Circle CLI.", content: <><p>Install Circle CLI on the machine that will run the buyer test. Circle’s current CLI documentation requires Node.js v20.18.2 or later.</p><DocsCodeBlock label="shell" code={"npm install -g @circle-fin/cli@latest\ncircle --version"} /></> },
+        { id: "login-testnet", title: "Log in to the testnet wallet.", content: <><p>Use a testnet session for OMNI buyer tests. Testnet and mainnet sessions are separate. An interactive login asks for the email and any verification input required by Circle.</p><DocsCodeBlock label="shell" code={"circle wallet login <email> --testnet\n\n# Inspect the wallet that login provisions\ncircle wallet list --chain ARC-TESTNET --type agent --output json"} /><p>For an agent that cannot answer an interactive prompt, use the two-step flow. Never put the email, OTP, or session data in the repository.</p><DocsCodeBlock label="shell" code={"circle wallet login <email> --testnet --init\ncircle wallet login --testnet --request <REQUEST_ID> --otp <OTP>"} /></> },
+        { id: "fund-wallet", title: "Fund only the wallet you will test.", content: <><p>After checking the wallet address, fund that Agent Wallet on Arc Testnet. Do not search other chains for a replacement wallet when this guide is testing Arc.</p><DocsCodeBlock label="shell" code={"circle wallet fund --address <AGENT_WALLET> --chain ARC-TESTNET"} /></> },
+        { id: "inspect-and-pay", title: "Inspect, estimate, then pay.", content: <><p>First inspect the exact OMNI URL. Then ask Circle CLI for an estimate. The estimate lets you check the chain and amount before a real payment is authorized.</p><DocsCodeBlock label="shell" code={"circle services inspect \\\n  \"https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1\" --output json\n\ncircle services pay \\\n  \"https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1\" \\\n  -X GET --address <AGENT_WALLET> --chain <CHAIN-FROM-INSPECT> \\\n  --max-amount 0.005 --estimate --output json"} /><p>Review the estimate. For a paid end-to-end test, run the same command again without <code>--estimate</code>. Keep the URL and request method unchanged.</p></> },
+        { id: "wallet-safety", title: "Stop when the payment state is unclear.", content: <><p>Read the live HTTP 402 challenge before paying. Compare the resource, asset, amount, network, and scheme with your policy. Authorize at most one payment for the same request and stop if the result is uncertain.</p><p>Never commit OTPs, Circle session files, private keys, mnemonics, API keys, or wallet credentials. If Circle shows Terms of Use, read them yourself and decide whether to accept them. The agent must not accept terms on your behalf.</p></> },
+      ],
+    },
+  };
+
+  return articles[articleId];
+}
+
+function DocsPage({ pathname }: { pathname: string }) {
   const [theme, setTheme] = useState<Theme>(readThemePreference);
   const rootRef = useRef<HTMLDivElement>(null);
+  const article = getDocsArticle(DOCS_ARTICLE_PATHS[pathname] ?? "overview");
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -857,7 +1066,7 @@ function DocsPage() {
 
   useGSAP(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    gsap.fromTo(".docs-page__hero, .docs-card", { y: 24, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.06, duration: 0.75, ease: "power3.out" });
+    gsap.fromTo(".docs-sidebar, .docs-reader, .docs-on-page", { y: 18, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.08, duration: 0.6, ease: "power3.out" });
   }, { scope: rootRef });
 
   return (
@@ -866,42 +1075,43 @@ function DocsPage() {
       <header className="nav-shell">
         <InternalLink className="nav-logo" href="/" aria-label="OMNI home"><Logo /></InternalLink>
         <nav className="nav-links" aria-label="Primary navigation">
-          <InternalLink href="/#thesis">Thesis</InternalLink>
-          <InternalLink href="/#evidence">Evidence</InternalLink>
+          <InternalLink href="/#top">Home</InternalLink>
           <InternalLink href="/api">API</InternalLink>
           <InternalLink className="is-current" href="/docs" aria-current="page">Docs</InternalLink>
         </nav>
-        <div className="nav-actions"><ThemeToggle theme={theme} onChange={() => setTheme((current) => current === "light" ? "dark" : "light")} /><Magnetic strength={0.18}><InternalLink className="nav-cta" href="/#top">Back to OMNI <span>↗</span></InternalLink></Magnetic></div>
+        <div className="nav-actions"><ThemeToggle theme={theme} onChange={() => setTheme((current) => current === "light" ? "dark" : "light")} /><Magnetic strength={0.18}><a className="nav-cta" href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">Source repository <span>↗</span></a></Magnetic></div>
       </header>
 
-      <main className="page-shell" id="top">
-        <section className="docs-page__hero section-space" aria-labelledby="docs-page-title">
-          <p className="eyebrow">OMNI / Docs</p>
-          <h1 id="docs-page-title">How OMNI checks a request.</h1>
-          <p>OMNI returns a deterministic risk check with its sources before an agent installs software, trusts a repository, checks dependencies, or pays an x402 endpoint.</p>
-          <div className="hero-actions"><Magnetic><InternalLink className="button button--dark" href="/#top">Try OMNI <span>↗</span></InternalLink></Magnetic><Magnetic strength={0.18}><a className="button button--text" href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">Read llms.txt <span>↗</span></a></Magnetic></div>
-        </section>
+      <main className="page-shell docs-layout-page" id="top">
+        <div className="docs-layout">
+          <aside className="docs-sidebar" aria-label="Documentation navigation">
+            <InternalLink className="docs-sidebar__home" href="/docs"><span>OMNI</span><strong>Documentation</strong></InternalLink>
+            <nav className="docs-sidebar__nav" aria-label="Documentation sections">
+              {DOCS_NAV_GROUPS.map((group) => (
+                <section className="docs-sidebar__group" key={group.label}>
+                  <h2>{group.label}</h2>
+                  {group.items.map((item) => <InternalLink key={`${group.label}-${item.label}`} href={item.href} aria-current={item.href === pathname ? "page" : undefined}>{item.label}</InternalLink>)}
+                </section>
+              ))}
+            </nav>
+            <a className="docs-sidebar__github" href="https://github.com/riyannode/omni" target="_blank" rel="noreferrer">Browse OMNI on GitHub <span>↗</span></a>
+          </aside>
 
-        <section className="docs-section section-space" aria-labelledby="docs-getting-started">
-          <div className="section-heading"><div><p className="eyebrow">Getting started</p><h2 id="docs-getting-started">Start with the contract.</h2></div><p>OMNI returns evidence and advice. Your policy and wallet rules decide what happens next.</p></div>
-          <div className="docs-card docs-card--wide"><strong>GETTING STARTED</strong><p>Read the machine-readable <a href="https://api.askomni.xyz/llms.txt" target="_blank" rel="noreferrer">llms.txt</a>, pick an endpoint, then use the API builder to create the exact request and a safe prompt for your agent.</p><InternalLink className="docs-action" href="/api">Open API builder <span>↗</span></InternalLink></div>
-        </section>
+          <article className="docs-reader" aria-labelledby="docs-page-title">
+            <header className="docs-reader__intro">
+              <p className="docs-reader__label">{article.label}</p>
+              <h1 id="docs-page-title">{article.title}</h1>
+              <p>{article.intro}</p>
+              {article.actions ? <div className="docs-reader__actions">{article.actions}</div> : null}
+            </header>
 
-        <section className="docs-section section-space" aria-labelledby="docs-api-reference">
-          <div className="section-heading"><div><p className="eyebrow">API reference</p><h2 id="docs-api-reference">Four routes to inspect.</h2></div><p>Prices and inputs match the OpenAPI contract. The builder only creates requests.</p></div>
-          <div className="docs-reference-grid">{API_ENDPOINTS.map((endpoint) => <article className="docs-card" key={endpoint.id}><div className="docs-card__route"><b>{endpoint.method}</b><code>{endpoint.path}</code></div><h3>{endpoint.id === "package" ? "Package risk" : endpoint.id === "repo" ? "Repository risk" : endpoint.id === "dependencies" ? "Dependency risk" : "x402 endpoint preflight"}</h3><p>{endpoint.copy}</p><span className="docs-card__price">{endpoint.price} · {endpoint.atomicAmount} atomic</span><InternalLink className="docs-action" href={`/api?endpoint=${endpoint.id}`}>Open in API builder <span>↗</span></InternalLink></article>)}</div>
-          <a className="docs-contract-link" href="https://api.askomni.xyz/openapi.yaml" target="_blank" rel="noreferrer">Open the canonical OpenAPI spec <span>↗</span></a>
-        </section>
+            {article.sections.map((section, index) => <section className={`docs-reader__section${index === article.sections.length - 1 ? " docs-reader__section--last" : ""}`} id={section.id} aria-labelledby={`${section.id}-title`} key={section.id}><h2 id={`${section.id}-title`}>{section.title}</h2>{section.content}</section>)}
+          </article>
 
-        <section className="docs-section section-space" aria-labelledby="docs-payments">
-          <div className="section-heading"><div><p className="eyebrow">Payments</p><h2 id="docs-payments">Check the payment first.</h2></div><p>The live x402 challenge provides the payment details.</p></div>
-          <div className="docs-detail-grid"><article className="docs-card"><strong>HTTP 402 CHALLENGE</strong><p>Request the exact OMNI resource without paying. Read `PAYMENT-REQUIRED`, then send `PAYMENT-SIGNATURE` only if the resource, USDC, amount, network, and scheme match your policy.</p></article><article className="docs-card"><strong>IDEMPOTENCY KEY</strong><p>Use one UUID v4 `Idempotency-Key` for each logical request. Reuse it on the paid retry. A completed result can be replayed without another payment.</p></article><article className="docs-card"><strong>SETTLEMENT RECEIPT</strong><p>The `PAYMENT-RESPONSE` includes a settlement receipt when available. If payment state is unclear, stop and do not retry automatically.</p></article></div>
-        </section>
-
-        <section className="docs-section section-space" aria-labelledby="docs-responses">
-          <div className="section-heading"><div><p className="eyebrow">Responses</p><h2 id="docs-responses">JSON and Markdown.</h2></div><p>JSON is the canonical machine-readable format. The deterministic Markdown artifact is for people and reports.</p></div>
-          <div className="docs-detail-grid"><article className="docs-card"><strong>JSON RESULT</strong><p>A successful JSON response includes the assessment, source-attributed evidence, source errors, freshness, and an additive artifact object.</p></article><article className="docs-card"><strong>MARKDOWN RESULT</strong><p>`artifact.content` is the deterministic Markdown version of the same result. OMNI returns a fixed filename and the `text/markdown` media type.</p></article><article className="docs-card"><strong>HTTP ERRORS</strong><p>`400`: invalid input. `402`: payment required. `406`: unsupported representation. `409`: idempotency conflict. `503`: paid-request capacity unavailable.</p></article></div>
-        </section>
+          <aside className="docs-on-page" aria-label="On this page">
+            <p>On this page</p>{article.sections.map((section) => <a href={`#${section.id}`} key={section.id}>{section.title.replace(/^\d\. /, "")}</a>)}
+          </aside>
+        </div>
       </main>
 
       <Footer />
@@ -935,8 +1145,6 @@ function LandingPage() {
 
     gsap.to(".hero-copy", { yPercent: -6, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
     gsap.to(".hero-visual", { yPercent: 13, rotate: -2, ease: "none", scrollTrigger: { trigger: ".hero", start: "top top", end: "bottom top", scrub: true } });
-    gsap.fromTo(".reveal-card", { y: 52, opacity: 0, scale: 0.96 }, { y: 0, opacity: 1, scale: 1, stagger: 0.12, ease: "power3.out", scrollTrigger: { trigger: ".evidence-section", start: "top 70%", end: "top 25%", scrub: 1 } });
-
     gsap.to(".scrub-word", { opacity: 1, stagger: 0.06, ease: "none", scrollTrigger: { trigger: ".thesis-section", start: "top 70%", end: "bottom 65%", scrub: true } });
   }, { scope: rootRef });
 
@@ -962,8 +1170,7 @@ function LandingPage() {
       <header className="nav-shell">
         <InternalLink className="nav-logo" href="#top" aria-label="OMNI home"><Logo /></InternalLink>
         <nav className="nav-links" aria-label="Primary navigation">
-          <InternalLink href="#thesis">Thesis</InternalLink>
-          <InternalLink href="#evidence">Evidence</InternalLink>
+          <InternalLink href="/#top">Home</InternalLink>
           <InternalLink href="/api">API</InternalLink>
           <InternalLink href="/docs">Docs</InternalLink>
         </nav>
@@ -990,8 +1197,8 @@ function LandingPage() {
         </section>
 
         <section className="evidence-section section-space" id="evidence" aria-labelledby="evidence-title">
-          <div className="section-heading"><div><h2 id="evidence-title">One action. Three checks.</h2></div><p>These checks produce one deterministic result. If a data source fails, the result says so.</p></div>
-          <EvidenceBento />
+          <div className="evidence-intro"><h2 id="evidence-title">One action. Three checks.</h2><p>Before an agent installs or pays, OMNI checks the request. A failed source stays visible in the result.</p></div>
+          <EvidenceShowcase />
         </section>
 
         <EcosystemMarquee />
@@ -1021,13 +1228,22 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      scrollToRouteTarget(routeLocation.hash.slice(1));
-    });
-    return () => window.cancelAnimationFrame(frame);
+    const targetId = routeLocation.hash.slice(1);
+    const frame = window.requestAnimationFrame(() => scrollToRouteTarget(targetId));
+    const settleTimer = window.setTimeout(() => scrollToRouteTarget(targetId), 80);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+    };
   }, [routeLocation.pathname, routeLocation.hash]);
 
-  return routeLocation.pathname === "/docs" ? <DocsPage /> : routeLocation.pathname === "/api" ? <ApiPage search={routeLocation.search} /> : <LandingPage />;
+  useEffect(() => {
+    if (routeLocation.pathname !== "/docs") return;
+    const legacyPath = DOCS_LEGACY_HASH_PATHS[routeLocation.hash.slice(1)];
+    if (legacyPath) navigateInternal(legacyPath);
+  }, [routeLocation.hash, routeLocation.pathname]);
+
+  return routeLocation.pathname.startsWith("/docs") ? <DocsPage pathname={routeLocation.pathname} /> : routeLocation.pathname === "/api" ? <ApiPage search={routeLocation.search} /> : <LandingPage />;
 }
 
 export default App;
