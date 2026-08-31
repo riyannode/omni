@@ -14,8 +14,8 @@ type ColumnContract = { dataType: string; nullable: "YES" | "NO"; defaultKind: "
 
 function checksum(sql: string): string { return createHash("sha256").update(sql).digest("hex"); }
 export function canonicalMigrationVersion(version: string): string {
+  if (!/^\d+$/.test(version)) throw new Error(`invalid migration version: ${version}`);
   const numeric = BigInt(version);
-  if (numeric < 0n || numeric > 999n) throw new Error(`migration version out of range: ${version}`);
   return numeric.toString().padStart(3, "0");
 }
 export function validateMigrationFilenames(filenames: readonly string[]): void {
@@ -164,10 +164,12 @@ export async function migrate(databaseUrl: string): Promise<{ applied: string[];
     const skipped: string[] = [];
     for (const migration of migrations) {
       const result = await transaction(connection, async tx => {
-        const rows = await tx<MigrationRow[]>`SELECT version, checksum FROM schema_migrations WHERE version = ${migration.version}`;
+        const rows = await tx<MigrationRow[]>`SELECT version, checksum FROM schema_migrations WHERE version ~ '^[0-9]+$' AND version::numeric = ${migration.version}::numeric`;
+        if (rows.length > 1) throw new Error(`duplicate migration version: ${migration.version}`);
         const existing = rows[0];
         if (existing) {
           if (existing.checksum !== migration.checksum) throw new Error(`migration checksum mismatch: ${migration.version}`);
+          if (existing.version !== migration.version) await tx`UPDATE schema_migrations SET version = ${migration.version} WHERE version = ${existing.version}`;
           if (migration.version === "002") await verifyLifecycleSchema(tx);
           return "skipped" as const;
         }

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { migrate, validateMigrationFilenames } from "../db/migrate.ts";
 
@@ -79,5 +80,18 @@ describe("native migrations (requires MIGRATION_TEST_DATABASE_URL)", () => {
     let lifecycleRejected = false;
     try { await migrate(databaseUrl); } catch (error) { lifecycleRejected = error instanceof Error && error.message.includes("lifecycle schema invalid"); }
     expect(lifecycleRejected).toBe(true);
+  });
+
+  postgresTest("canonicalizes a persisted numeric migration version alias", async () => {
+    if (!databaseUrl || !db) throw new Error("MIGRATION_TEST_DATABASE_URL missing");
+    await db.unsafe("DROP TABLE IF EXISTS assessment_labels, paid_requests, assessment_records, threat_indicators, endpoint_observations, endpoint_state, schema_migrations CASCADE");
+    await db.unsafe(baselineSql);
+    const baselineChecksum = createHash("sha256").update(baselineSql).digest("hex");
+    await db`CREATE TABLE schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`;
+    await db`INSERT INTO schema_migrations (version, checksum) VALUES ('1', ${baselineChecksum})`;
+    const result = await migrate(databaseUrl);
+    expect(result).toEqual({ applied: ["002"], skipped: ["001"] });
+    const records = await db<{ version: string }[]>`SELECT version FROM schema_migrations ORDER BY version`;
+    expect(records.map(row => row.version)).toEqual(["001", "002"]);
   });
 });
