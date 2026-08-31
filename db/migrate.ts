@@ -29,7 +29,11 @@ const BASELINE_INDEXES = ["endpoint_observations_resource_time", "endpoint_obser
 
 async function loadMigrations(): Promise<Migration[]> {
   const directory = new URL("./migrations/", import.meta.url);
-  const filenames = (await readdir(directory)).filter(filename => /^\d+_[a-z0-9_-]+\.sql$/.test(filename)).sort((left, right) => left.localeCompare(right));
+  const filenames = (await readdir(directory)).filter(filename => /^\d+_[a-z0-9_-]+\.sql$/.test(filename)).sort((left, right) => {
+    const leftVersion = BigInt(left.match(/^(\d+)_/)![1]!);
+    const rightVersion = BigInt(right.match(/^(\d+)_/)![1]!);
+    return leftVersion < rightVersion ? -1 : leftVersion > rightVersion ? 1 : left.localeCompare(right);
+  });
   const migrations = await Promise.all(filenames.map(async filename => {
     const version = filename.match(/^(\d+)_/)?.[1];
     if (!version) throw new Error(`invalid migration filename: ${filename}`);
@@ -103,6 +107,25 @@ async function hasKnownBaselineTables(tx: SQL): Promise<boolean> {
   return rows.length > 0;
 }
 
+async function verifyLifecycleSchema(tx: SQL): Promise<void> {
+  const columns = await tx<{ data_type: string; is_nullable: "YES" | "NO"; column_default: string | null }[]>`
+    SELECT data_type, is_nullable, column_default
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'threat_indicators' AND column_name = 'lifecycle'
+  `;
+  const column = columns[0];
+  if (columns.length !== 1 || !column || column.data_type !== "text" || column.is_nullable !== "NO" || column.column_default?.trim() !== "'active'::text") throw new Error("threat_indicators lifecycle schema invalid");
+  const constraints = await tx<{ definition: string }[]>`
+    SELECT pg_get_constraintdef(pg_constraint.oid) AS definition
+    FROM pg_constraint
+    JOIN pg_class ON pg_class.oid = pg_constraint.conrelid
+    JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace
+    WHERE pg_namespace.nspname = 'public' AND pg_class.relname = 'threat_indicators' AND pg_constraint.conname = 'threat_indicators_lifecycle_check'
+  `;
+  const definition = constraints[0]?.definition.toLowerCase() ?? "";
+  if (!definition.includes("lifecycle") || !definition.includes("'active'") || !definition.includes("'retracted'")) throw new Error("threat_indicators lifecycle constraint invalid");
+}
+
 async function transaction<T>(connection: SQL, operation: (tx: SQL) => Promise<T>): Promise<T> {
   await connection`BEGIN`;
   try {
@@ -134,10 +157,12 @@ export async function migrate(databaseUrl: string): Promise<{ applied: string[];
         const existing = rows[0];
         if (existing) {
           if (existing.checksum !== migration.checksum) throw new Error(`migration checksum mismatch: ${migration.version}`);
+          if (migration.version === "002") await verifyLifecycleSchema(tx);
           return "skipped" as const;
         }
         if (migration.version === BASELINE_VERSION && await hasKnownBaselineTables(tx)) await verifyLegacyBaseline(tx);
         else await tx.unsafe(migration.sql);
+        if (migration.version === "002") await verifyLifecycleSchema(tx);
         await tx`INSERT INTO schema_migrations (version, checksum) VALUES (${migration.version}, ${migration.checksum})`;
         return "applied" as const;
       });

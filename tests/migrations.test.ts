@@ -71,5 +71,9 @@ describe("native migrations (requires MIGRATION_TEST_DATABASE_URL)", () => {
     await db`CREATE TABLE unrelated_fixture (id integer)`;
     const fresh = await migrate(databaseUrl);
     expect(fresh).toEqual({ applied: ["001", "002"], skipped: [] });
+    await db`ALTER TABLE threat_indicators ALTER COLUMN lifecycle DROP DEFAULT`;
+    let lifecycleRejected = false;
+    try { await migrate(databaseUrl); } catch (error) { lifecycleRejected = error instanceof Error && error.message.includes("lifecycle schema invalid"); }
+    expect(lifecycleRejected).toBe(true);
   });
 });

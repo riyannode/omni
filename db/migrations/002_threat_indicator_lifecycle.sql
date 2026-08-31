@@ -1,5 +1,5 @@
 ALTER TABLE threat_indicators
-  ADD COLUMN IF NOT EXISTS lifecycle text NOT NULL DEFAULT 'active';
+  ADD COLUMN lifecycle text NOT NULL DEFAULT 'active';
 
 ALTER TABLE threat_indicators
   DROP CONSTRAINT IF EXISTS threat_indicators_lifecycle_check;
