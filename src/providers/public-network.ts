@@ -10,6 +10,7 @@ type Cidr = { family: 4 | 6; network: number | bigint; bits: number; classificat
 
 const IANA_IPV4_REGISTRY_URL = "https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry-1.csv";
 const IANA_IPV6_REGISTRY_URL = "https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry-1.csv";
+const IANA_IPV6_GLOBAL_UNICAST_URL = "https://www.iana.org/assignments/ipv6-unicast-address-assignments/ipv6-unicast-address-assignments.csv";
 const IANA_REGISTRY_REVIEW_DATE = "2026-08-31";
 
 function ipv4Number(address: string): number {
@@ -44,9 +45,18 @@ function matches(address: string, entry: Cidr): boolean {
   return (BigInt(value) & mask) === (BigInt(entry.network) & mask);
 }
 
+const IPV6_GLOBAL_UNICAST_SPACE = cidr("2000::/3", "reserved");
+const NAT64_WELL_KNOWN_PREFIX = cidr("64:ff9b::/96", "reserved");
+
+export function embeddedIpv4FromNat64Wkp(address: string): string | undefined {
+  if (isIP(address) !== 6 || !matches(address, NAT64_WELL_KNOWN_PREFIX)) return undefined;
+  const value = ipv6Number(address) & 0xffffffffn;
+  return [24n, 16n, 8n, 0n].map(shift => Number((value >> shift) & 0xffn)).join(".");
+}
+
 // Only prefixes whose IANA registry row is not globally reachable are denied.
-// IANA rows marked globally reachable TRUE (for example 192.31.196.0/24,
-// 192.52.193.0/24, and 64:ff9b::/96) remain usable public addresses.
+// IANA rows marked globally reachable TRUE (for example 192.31.196.0/24 and
+// 192.52.193.0/24) remain usable; NAT64 is allowed only with public embedded IPv4.
 const SPECIAL_PURPOSE_PREFIXES: Cidr[] = [
   cidr("0.0.0.0/8", "unspecified"), cidr("10.0.0.0/8", "private"), cidr("100.64.0.0/10", "private"), cidr("127.0.0.0/8", "loopback"), cidr("169.254.0.0/16", "link_local"), cidr("172.16.0.0/12", "private"),
   cidr("192.0.0.0/24", "reserved"), cidr("192.0.2.0/24", "reserved"), cidr("192.88.99.0/24", "reserved"), cidr("192.168.0.0/16", "private"), cidr("198.18.0.0/15", "reserved"), cidr("198.51.100.0/24", "reserved"), cidr("203.0.113.0/24", "reserved"), cidr("224.0.0.0/4", "multicast"), cidr("240.0.0.0/4", "reserved"), cidr("255.255.255.255/32", "reserved"),
@@ -56,7 +66,12 @@ const SPECIAL_PURPOSE_EXCEPTIONS: Cidr[] = [cidr("192.0.0.9/32", "reserved"), ci
 
 function disallowedClassification(address: string): NetworkClassification | undefined {
   if (SPECIAL_PURPOSE_EXCEPTIONS.some(entry => matches(address, entry))) return undefined;
-  return SPECIAL_PURPOSE_PREFIXES.find(entry => matches(address, entry))?.classification;
+  const embeddedIpv4 = embeddedIpv4FromNat64Wkp(address);
+  if (embeddedIpv4) return disallowedClassification(embeddedIpv4);
+  const specialPurpose = SPECIAL_PURPOSE_PREFIXES.find(entry => matches(address, entry))?.classification;
+  if (specialPurpose) return specialPurpose;
+  if (isIP(address) === 6 && !matches(address, IPV6_GLOBAL_UNICAST_SPACE)) return "reserved";
+  return undefined;
 }
 export function isDisallowedAddress(address: string): boolean { return isIP(address) === 0 || disallowedClassification(address) !== undefined; }
 export function isDisallowedHostname(hostname: string): boolean {
@@ -91,4 +106,4 @@ export class PublicNetworkPolicy {
   }
 }
 
-export const PUBLIC_NETWORK_POLICY_SOURCE = { ipv4: IANA_IPV4_REGISTRY_URL, ipv6: IANA_IPV6_REGISTRY_URL, reviewedAt: IANA_REGISTRY_REVIEW_DATE } as const;
+export const PUBLIC_NETWORK_POLICY_SOURCE = { ipv4: IANA_IPV4_REGISTRY_URL, ipv6: IANA_IPV6_REGISTRY_URL, ipv6GlobalUnicast: IANA_IPV6_GLOBAL_UNICAST_URL, reviewedAt: IANA_REGISTRY_REVIEW_DATE } as const;

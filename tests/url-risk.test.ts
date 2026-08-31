@@ -68,10 +68,23 @@ describe("PublicNetworkPolicy", () => {
   });
 
   test("keeps IANA globally reachable special-purpose ranges usable", async () => {
-    for (const [address, family] of [["192.0.0.9", 4], ["192.0.0.10", 4], ["192.31.196.1", 4], ["192.52.193.1", 4], ["192.175.48.1", 4], ["64:ff9b::1", 6], ["2001:1::1", 6], ["2001:1::2", 6], ["2001:1::3", 6], ["2001:3::1", 6], ["2001:4:112::1", 6], ["2001:20::1", 6], ["2001:30::1", 6]] as const) {
+    for (const [address, family] of [["192.0.0.9", 4], ["192.0.0.10", 4], ["192.31.196.1", 4], ["192.52.193.1", 4], ["192.175.48.1", 4], ["64:ff9b::0808:0808", 6], ["2001:1::1", 6], ["2001:1::2", 6], ["2001:1::3", 6], ["2001:3::1", 6], ["2001:4:112::1", 6], ["2001:20::1", 6], ["2001:30::1", 6]] as const) {
       const policy = new PublicNetworkPolicy(async () => [{ address, family }]);
       await expect(policy.resolveAndValidate("example.com")).resolves.toEqual([{ address, family }]);
     }
+  });
+
+  test("fails closed for reserved IPv6 space and non-public NAT64 destinations", async () => {
+    const rejected = [
+      "400::1", "800::1", "1000::1", "::1", "fc00::1", "fe80::1", "fec0::1", "ff02::1", "::", "2001:db8::1",
+      "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe", "64:ff9b::0a00:1"
+    ];
+    for (const address of rejected) {
+      const policy = new PublicNetworkPolicy(async () => [{ address, family: 6 }]);
+      await expect(policy.resolveAndValidate("example.com")).rejects.toThrow("disallowed");
+    }
+    const publicGua = new PublicNetworkPolicy(async () => [{ address: "2606:4700:4700::1111", family: 6 }]);
+    await expect(publicGua.resolveAndValidate("example.com")).resolves.toEqual([{ address: "2606:4700:4700::1111", family: 6 }]);
   });
 
   test("denies non-exception addresses within IANA 2001::/23", async () => {

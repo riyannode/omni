@@ -1,12 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { readFile } from "node:fs/promises";
-import { migrate } from "../db/migrate.ts";
+import { migrate, validateMigrationFilenames } from "../db/migrate.ts";
 
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const postgresTest = test.if(Boolean(databaseUrl));
 let db: SQL | undefined;
 let baselineSql = "";
+
+test("rejects numeric-equivalent duplicate migration versions", () => {
+  expect(() => validateMigrationFilenames(["001_first.sql", "1_second.sql"])).toThrow("duplicate migration version: 001");
+});
 
 beforeAll(async () => {
   if (!databaseUrl) return;

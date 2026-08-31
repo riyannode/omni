@@ -13,6 +13,21 @@ type ConstraintRow = { table_name: string; constraint_type: string; definition: 
 type ColumnContract = { dataType: string; nullable: "YES" | "NO"; defaultKind: "none" | "now" | "identity" | "waiting_payment" | "200" };
 
 function checksum(sql: string): string { return createHash("sha256").update(sql).digest("hex"); }
+export function canonicalMigrationVersion(version: string): string {
+  const numeric = BigInt(version);
+  if (numeric < 0n || numeric > 999n) throw new Error(`migration version out of range: ${version}`);
+  return numeric.toString().padStart(3, "0");
+}
+export function validateMigrationFilenames(filenames: readonly string[]): void {
+  const versions = new Set<string>();
+  for (const filename of filenames) {
+    const version = filename.match(/^(\d+)_/)?.[1];
+    if (!version) throw new Error(`invalid migration filename: ${filename}`);
+    const canonical = canonicalMigrationVersion(version);
+    if (versions.has(canonical)) throw new Error(`duplicate migration version: ${canonical}`);
+    versions.add(canonical);
+  }
+}
 function sqlList(values: readonly string[]): string { return values.map(value => `'${value}'`).join(", "); }
 function columnContracts(dataType: string, nullable: ColumnContract["nullable"], names: readonly string[], defaultKind: ColumnContract["defaultKind"] = "none"): Record<string, ColumnContract> {
   return Object.fromEntries(names.map(name => [name, { dataType, nullable, defaultKind }])) as Record<string, ColumnContract>;
@@ -34,17 +49,13 @@ async function loadMigrations(): Promise<Migration[]> {
     const rightVersion = BigInt(right.match(/^(\d+)_/)![1]!);
     return leftVersion < rightVersion ? -1 : leftVersion > rightVersion ? 1 : left.localeCompare(right);
   });
+  validateMigrationFilenames(filenames);
   const migrations = await Promise.all(filenames.map(async filename => {
     const version = filename.match(/^(\d+)_/)?.[1];
     if (!version) throw new Error(`invalid migration filename: ${filename}`);
     const sql = await readFile(new URL(filename, directory), "utf8");
-    return { version, filename, sql, checksum: checksum(sql) };
+    return { version: canonicalMigrationVersion(version), filename, sql, checksum: checksum(sql) };
   }));
-  const versions = new Set<string>();
-  for (const migration of migrations) {
-    if (versions.has(migration.version)) throw new Error(`duplicate migration version: ${migration.version}`);
-    versions.add(migration.version);
-  }
   return migrations;
 }
 
