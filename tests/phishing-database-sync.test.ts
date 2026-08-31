@@ -16,6 +16,8 @@ test("rejects malformed, wrong-file, non-official, and mismatched checksums", ()
   expect(() => parseSha256Checksum(new TextEncoder().encode("not-a-checksum"), "phishing-links-ACTIVE.txt", source, "url")).toThrow("format invalid");
   expect(() => parseSha256Checksum(new TextEncoder().encode(`${digest} *phishing-domains-ACTIVE.txt`), "phishing-links-ACTIVE.txt", source, "url")).toThrow("format invalid");
   expect(() => parseSha256Checksum(new TextEncoder().encode(`${digest} *phishing-links-ACTIVE.txt`), "phishing-links-ACTIVE.txt", "https://raw.githubusercontent.com/other/checksums/master/phishing-links-ACTIVE.txt.sha256", "url")).toThrow("not official");
+  expect(() => parseSha256Checksum(new TextEncoder().encode(`${digest} *phishing-links-ACTIVE.txt`), "phishing-links-ACTIVE.txt", `${source}?cache=1`, "url")).toThrow("not official");
+  expect(() => parseSha256Checksum(new TextEncoder().encode(`${digest} *phishing-links-ACTIVE.txt`), "phishing-links-ACTIVE.txt", "https://user:pass@raw.githubusercontent.com/Phishing-Database/checksums/master/phishing-links-ACTIVE.txt.sha256", "url")).toThrow("not official");
   expect(() => verifySha256(new TextEncoder().encode("different\n"), new TextEncoder().encode(`${digest} *phishing-links-ACTIVE.txt`), "phishing-links-ACTIVE.txt", source, "url")).toThrow("checksum mismatch");
 });
 

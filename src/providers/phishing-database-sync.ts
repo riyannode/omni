@@ -2,8 +2,6 @@ import { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { parsePhishingDatabaseSnapshot, PHISHING_DATABASE_HOSTNAME_SOURCE, PHISHING_DATABASE_URL_SOURCE, type PhishingDatabaseIndicator, type PhishingSnapshotScope } from "./phishing-database.ts";
 
-const CHECKSUM_HOST = "raw.githubusercontent.com";
-const CHECKSUM_REPOSITORY_PREFIX = "/Phishing-Database/checksums/master/";
 const MAX_FEED_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_PHISHING_DATABASE_MAX_AGE_HOURS = 6;
 export const PHISHING_DATABASE_CHECKSUM_SOURCES = {
@@ -22,9 +20,7 @@ export function validatePhishingMaxAgeHours(value: number): number {
 function sha256(bytes: Uint8Array): string { return createHash("sha256").update(bytes).digest("hex"); }
 function text(bytes: Uint8Array): string { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
 function approvedChecksumSource(url: string, scope: PhishingSnapshotScope): boolean {
-  const expected = new URL(PHISHING_DATABASE_CHECKSUM_SOURCES[scope]);
-  const actual = new URL(url);
-  return actual.protocol === "https:" && actual.hostname === CHECKSUM_HOST && actual.pathname === expected.pathname && actual.pathname.startsWith(CHECKSUM_REPOSITORY_PREFIX);
+  return url === PHISHING_DATABASE_CHECKSUM_SOURCES[scope];
 }
 export function parseSha256Checksum(content: Uint8Array, expectedFilename: string, sourceReference: string, scope: PhishingSnapshotScope): string {
   if (!approvedChecksumSource(sourceReference, scope)) throw new Error("phishing database checksum source is not official");

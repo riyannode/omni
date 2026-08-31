@@ -6,12 +6,14 @@ import { migrate } from "../db/migrate.ts";
 const databaseUrl = process.env.MIGRATION_TEST_DATABASE_URL;
 const postgresTest = test.if(Boolean(databaseUrl));
 let db: SQL | undefined;
+let baselineSql = "";
 
 beforeAll(async () => {
   if (!databaseUrl) return;
   db = new SQL(databaseUrl);
   await db.unsafe("DROP TABLE IF EXISTS assessment_labels, paid_requests, assessment_records, threat_indicators, endpoint_observations, endpoint_state, schema_migrations CASCADE");
-  await db.unsafe(await readFile(new URL("../db/migrations/001_baseline.sql", import.meta.url), "utf8"));
+  baselineSql = await readFile(new URL("../db/migrations/001_baseline.sql", import.meta.url), "utf8");
+  await db.unsafe(baselineSql);
   await db`INSERT INTO paid_requests (idempotency_key, request_fingerprint, route) VALUES ('11111111-1111-4111-8111-111111111111', 'fixture-paid', 'package')`;
   await db`INSERT INTO endpoint_state (resource, fingerprint) VALUES ('https://fixture.example/', 'fixture-endpoint')`;
   await db`INSERT INTO endpoint_observations (resource, fingerprint) VALUES ('https://fixture.example/', 'fixture-observation')`;
@@ -59,12 +61,14 @@ describe("native migrations (requires MIGRATION_TEST_DATABASE_URL)", () => {
     try { await migrate(databaseUrl); } catch (error) { checksumRejected = error instanceof Error && error.message.includes("checksum mismatch"); }
     expect(checksumRejected).toBe(true);
     await db`UPDATE schema_migrations SET checksum = ${original[0]!.checksum} WHERE version = '001'`;
-    await db`DELETE FROM schema_migrations`;
-    await db`ALTER TABLE paid_requests DROP COLUMN asset`;
+    await db.unsafe("DROP TABLE IF EXISTS assessment_labels, paid_requests, assessment_records, threat_indicators, endpoint_observations, endpoint_state, schema_migrations CASCADE");
+    await db.unsafe(baselineSql);
+    await db`ALTER TABLE paid_requests ALTER COLUMN route TYPE varchar(32)`;
     let driftRejected = false;
-    try { await migrate(databaseUrl); } catch (error) { driftRejected = error instanceof Error && error.message.includes("baseline column: paid_requests.asset"); }
+    try { await migrate(databaseUrl); } catch (error) { driftRejected = error instanceof Error && error.message.includes("baseline column shape mismatch: paid_requests.route"); }
     expect(driftRejected).toBe(true);
     await db.unsafe("DROP TABLE IF EXISTS assessment_labels, paid_requests, assessment_records, threat_indicators, endpoint_observations, endpoint_state, schema_migrations CASCADE");
+    await db`CREATE TABLE unrelated_fixture (id integer)`;
     const fresh = await migrate(databaseUrl);
     expect(fresh).toEqual({ applied: ["001", "002"], skipped: [] });
   });

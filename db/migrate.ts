@@ -5,22 +5,27 @@ import { readdir, readFile } from "node:fs/promises";
 const ADVISORY_LOCK_KEY = "omni:schema-migrations";
 const BASELINE_VERSION = "001";
 const BASELINE_TABLES = ["endpoint_state", "endpoint_observations", "threat_indicators", "assessment_records", "paid_requests", "assessment_labels"] as const;
-const BASELINE_COLUMNS: Record<typeof BASELINE_TABLES[number], readonly string[]> = {
-  endpoint_state: ["resource", "fingerprint", "first_seen_at", "last_seen_at"],
-  endpoint_observations: ["id", "resource", "fingerprint", "provider_name", "pay_to", "method", "price_atomic", "network", "schema_hash", "supports_gateway", "supports_vanilla", "observed_at"],
-  threat_indicators: ["id", "indicator_type", "indicator", "threat_type", "severity", "source", "source_reference", "first_seen_at", "last_seen_at", "expires_at"],
-  assessment_records: ["assessment_id", "subject_type", "subject_id", "snapshot_schema_version", "feature_schema_version", "policy_version", "snapshot", "features", "assessment", "assessed_at"],
-  paid_requests: ["idempotency_key", "request_fingerprint", "route", "state", "payment_nonce", "circle_transfer_id", "payer", "network", "pay_to", "asset", "amount_atomic", "final_result", "final_status", "created_at", "updated_at", "execution_lease_at", "execution_lease_id"],
-  assessment_labels: ["assessment_id", "label", "source", "source_reference", "notes", "labeled_at", "updated_at"]
-};
 
 type Migration = { version: string; filename: string; sql: string; checksum: string };
 type MigrationRow = { version: string; checksum: string };
-type TableColumnRow = { table_name: string; column_name: string };
+type TableColumnRow = { table_name: string; column_name: string; data_type: string; is_nullable: "YES" | "NO"; column_default: string | null; is_identity: "YES" | "NO" };
 type ConstraintRow = { table_name: string; constraint_type: string; definition: string };
+type ColumnContract = { dataType: string; nullable: "YES" | "NO"; defaultKind: "none" | "now" | "identity" | "waiting_payment" | "200" };
 
 function checksum(sql: string): string { return createHash("sha256").update(sql).digest("hex"); }
 function sqlList(values: readonly string[]): string { return values.map(value => `'${value}'`).join(", "); }
+function columnContracts(dataType: string, nullable: ColumnContract["nullable"], names: readonly string[], defaultKind: ColumnContract["defaultKind"] = "none"): Record<string, ColumnContract> {
+  return Object.fromEntries(names.map(name => [name, { dataType, nullable, defaultKind }])) as Record<string, ColumnContract>;
+}
+const BASELINE_COLUMN_CONTRACT: Record<typeof BASELINE_TABLES[number], Record<string, ColumnContract>> = {
+  endpoint_state: { ...columnContracts("text", "NO", ["resource", "fingerprint"]), ...columnContracts("timestamp with time zone", "NO", ["first_seen_at", "last_seen_at"], "now") },
+  endpoint_observations: { id: { dataType: "bigint", nullable: "NO", defaultKind: "identity" }, ...columnContracts("text", "NO", ["resource", "fingerprint"]), ...columnContracts("text", "YES", ["provider_name", "pay_to", "method", "price_atomic", "network", "schema_hash"]), ...columnContracts("boolean", "YES", ["supports_gateway", "supports_vanilla"]), ...columnContracts("timestamp with time zone", "NO", ["observed_at"], "now") },
+  threat_indicators: { id: { dataType: "bigint", nullable: "NO", defaultKind: "identity" }, ...columnContracts("text", "NO", ["indicator_type", "indicator", "threat_type", "severity", "source"]), ...columnContracts("text", "YES", ["source_reference"]), ...columnContracts("timestamp with time zone", "NO", ["first_seen_at", "last_seen_at"], "now"), ...columnContracts("timestamp with time zone", "YES", ["expires_at"]) },
+  assessment_records: { assessment_id: { dataType: "uuid", nullable: "NO", defaultKind: "none" }, ...columnContracts("text", "NO", ["subject_type", "subject_id", "policy_version"]), ...columnContracts("integer", "NO", ["snapshot_schema_version", "feature_schema_version"]), ...columnContracts("jsonb", "NO", ["snapshot", "features", "assessment"]), ...columnContracts("timestamp with time zone", "NO", ["assessed_at"]) },
+  paid_requests: { idempotency_key: { dataType: "uuid", nullable: "NO", defaultKind: "none" }, ...columnContracts("text", "NO", ["request_fingerprint", "route"]), state: { dataType: "text", nullable: "NO", defaultKind: "waiting_payment" }, ...columnContracts("text", "YES", ["payment_nonce", "circle_transfer_id", "payer", "network", "pay_to", "asset", "amount_atomic"]), ...columnContracts("jsonb", "YES", ["final_result"]), final_status: { dataType: "integer", nullable: "NO", defaultKind: "200" }, ...columnContracts("timestamp with time zone", "NO", ["created_at", "updated_at"], "now"), ...columnContracts("timestamp with time zone", "YES", ["execution_lease_at"]), execution_lease_id: { dataType: "uuid", nullable: "YES", defaultKind: "none" } },
+  assessment_labels: { assessment_id: { dataType: "uuid", nullable: "NO", defaultKind: "none" }, ...columnContracts("text", "NO", ["label", "source"]), ...columnContracts("text", "YES", ["source_reference", "notes"]), ...columnContracts("timestamp with time zone", "NO", ["labeled_at", "updated_at"], "now") }
+};
+const BASELINE_INDEXES = ["endpoint_observations_resource_time", "endpoint_observations_pay_to_time", "threat_indicators_lookup", "threat_indicators_expiry", "assessment_records_subject_time", "assessment_records_policy", "assessment_records_assessed_at", "paid_requests_state_updated", "paid_requests_nonce"] as const;
 
 async function loadMigrations(): Promise<Migration[]> {
   const directory = new URL("./migrations/", import.meta.url);
@@ -41,20 +46,25 @@ async function loadMigrations(): Promise<Migration[]> {
 
 async function verifyLegacyBaseline(tx: SQL): Promise<void> {
   const tableRows = await tx.unsafe<TableColumnRow[]>(`
-    SELECT table_name, column_name
+    SELECT table_name, column_name, data_type, is_nullable, column_default, is_identity
     FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name IN (${sqlList(BASELINE_TABLES)})
   `);
-  const columnsByTable = new Map<string, Set<string>>();
-  for (const row of tableRows) {
-    const columns = columnsByTable.get(row.table_name) ?? new Set<string>();
-    columns.add(row.column_name);
-    columnsByTable.set(row.table_name, columns);
-  }
   for (const table of BASELINE_TABLES) {
-    const columns = columnsByTable.get(table);
-    if (!columns) throw new Error(`legacy database is missing baseline table: ${table}`);
-    for (const column of BASELINE_COLUMNS[table]) if (!columns.has(column)) throw new Error(`legacy database is missing baseline column: ${table}.${column}`);
+    const actual = tableRows.filter(row => row.table_name === table);
+    const expected = BASELINE_COLUMN_CONTRACT[table];
+    if (actual.length !== Object.keys(expected).length) throw new Error(`legacy database baseline column set mismatch: ${table}`);
+    for (const [column, contract] of Object.entries(expected)) {
+      const row = actual.find(item => item.column_name === column);
+      if (!row) throw new Error(`legacy database is missing baseline column: ${table}.${column}`);
+      if (row.data_type !== contract.dataType || row.is_nullable !== contract.nullable) throw new Error(`legacy database baseline column shape mismatch: ${table}.${column}`);
+      if (contract.defaultKind === "identity" && row.is_identity !== "YES") throw new Error(`legacy database baseline identity missing: ${table}.${column}`);
+      if (contract.defaultKind !== "identity" && row.is_identity === "YES") throw new Error(`legacy database baseline identity unexpected: ${table}.${column}`);
+      if (contract.defaultKind === "none" && row.column_default !== null) throw new Error(`legacy database baseline default unexpected: ${table}.${column}`);
+      if (contract.defaultKind === "now" && !row.column_default?.includes("now()")) throw new Error(`legacy database baseline default missing: ${table}.${column}`);
+      if (contract.defaultKind === "waiting_payment" && !row.column_default?.includes("waiting_payment")) throw new Error(`legacy database baseline default mismatch: ${table}.${column}`);
+      if (contract.defaultKind === "200" && !row.column_default?.includes("200")) throw new Error(`legacy database baseline default mismatch: ${table}.${column}`);
+    }
   }
 
   const constraints = await tx.unsafe<ConstraintRow[]>(`
@@ -80,14 +90,16 @@ async function verifyLegacyBaseline(tx: SQL): Promise<void> {
     ["assessment_labels", "foreign_key", "foreign key (assessment_id) references assessment_records"]
   ];
   for (const [table, type, fragment] of requiredConstraints) if (!has(table, type, fragment)) throw new Error(`legacy database baseline constraint missing: ${table} ${type} ${fragment}`);
+  const indexes = await tx.unsafe<{ indexname: string }[]>(`SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (${sqlList(BASELINE_INDEXES)})`);
+  for (const index of BASELINE_INDEXES) if (!indexes.some(row => row.indexname === index)) throw new Error(`legacy database baseline index missing: ${index}`);
 }
 
-async function hasUserTables(tx: SQL): Promise<boolean> {
-  const rows = await tx<{ table_name: string }[]>`
+async function hasKnownBaselineTables(tx: SQL): Promise<boolean> {
+  const rows = await tx.unsafe<{ table_name: string }[]>(`
     SELECT table_name FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name <> 'schema_migrations'
+    WHERE table_schema = 'public' AND table_type = 'BASE TABLE' AND table_name IN (${sqlList(BASELINE_TABLES)})
     LIMIT 1
-  `;
+  `);
   return rows.length > 0;
 }
 
@@ -124,7 +136,7 @@ export async function migrate(databaseUrl: string): Promise<{ applied: string[];
           if (existing.checksum !== migration.checksum) throw new Error(`migration checksum mismatch: ${migration.version}`);
           return "skipped" as const;
         }
-        if (migration.version === BASELINE_VERSION && await hasUserTables(tx)) await verifyLegacyBaseline(tx);
+        if (migration.version === BASELINE_VERSION && await hasKnownBaselineTables(tx)) await verifyLegacyBaseline(tx);
         else await tx.unsafe(migration.sql);
         await tx`INSERT INTO schema_migrations (version, checksum) VALUES (${migration.version}, ${migration.checksum})`;
         return "applied" as const;
