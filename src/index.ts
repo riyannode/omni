@@ -17,6 +17,8 @@ import { createCircleGateway } from "./payments/circle.ts";
 import { CircleTransferLookup } from "./payments/circle-transfers.ts";
 import { createPaidRequestStore } from "./data/paid-requests.ts";
 import { OmniIntelligence } from "./services.ts";
+import { UrlRiskService } from "./services/url-risk.ts";
+import type { UrlThreatIntelStore } from "./data/threat-intel.ts";
 import { createApp } from "./http/app.ts";
 
 const cache = new CachedLoader(createCache(config.REDIS_URL));
@@ -32,10 +34,11 @@ const omni = new OmniIntelligence(
   new OsvProvider(http), new CisaKevProvider(cache, http, config.kevFeedUrls.length > 0 ? config.kevFeedUrls : undefined), new ScorecardProvider(http, cache), new NpmRegistryProvider(http),
   circle, new X402Probe(http), history, threatIntel, assessmentJournal, github, depsDev
 );
+const urlRisk = new UrlRiskService(threatIntel as UrlThreatIntelStore, http);
 const gateway = createCircleGateway(config.SELLER_ADDRESS as `0x${string}`, config.CIRCLE_FACILITATOR_URL);
 const paidRequests = createPaidRequestStore(config.DATABASE_URL);
 const circleTransfers = new CircleTransferLookup(config.CIRCLE_FACILITATOR_URL, config.UPSTREAM_TIMEOUT_MS);
-const app = createApp({ omni, history, threatIntel, gateway, paidRequests, circleTransfers, maxInFlight: config.MAX_IN_FLIGHT, publicBaseUrl: config.PUBLIC_BASE_URL });
+const app = createApp({ omni, urlRisk, history, threatIntel, gateway, paidRequests, circleTransfers, maxInFlight: config.MAX_IN_FLIGHT, publicBaseUrl: config.PUBLIC_BASE_URL });
 
 const server = app.listen(config.PORT, () => console.log(JSON.stringify({ level: "info", service: "OMNI", port: config.PORT })));
 server.keepAliveTimeout = 65_000;

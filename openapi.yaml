@@ -226,6 +226,38 @@ paths:
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
         '406': { $ref: '#/components/responses/NotAcceptable' }
+  /v1/url/risk:
+    get:
+      operationId: getUrlRisk
+      summary: Assess URL trust and network risk before an agent opens it.
+      description: "Price: $0.01 USDC per request. Uses Phishing.Database URL/hostname indicators plus RDAP, DNS, TLS, and bounded HTTPS metadata observations. OMNI does not crawl, execute JavaScript, or authorize/block the caller's action."
+      x-payment-info:
+        price:
+          mode: fixed
+          currency: USDC
+          amount: "0.010000"
+        protocols:
+          - x402: {}
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/Accept' }
+        - { in: query, name: url, required: true, schema: { type: string, format: uri, minLength: 1, maxLength: 2048, pattern: '^https://' }, example: https://example.com/ }
+      responses:
+        '200':
+          description: URL risk assessment with URL-specific dimensions and source-attributed evidence.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: '#/components/headers/PaymentResponse'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UrlRiskAssessmentResponse' }
+            text/markdown:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
 components:
   headers:
     PaymentResponse:
@@ -293,7 +325,7 @@ components:
       type: object
       required: [type, id]
       properties:
-        type: { type: string, enum: [package, repository, dependency_set, x402_endpoint] }
+        type: { type: string, enum: [package, repository, dependency_set, x402_endpoint, url] }
         id: { type: string }
     Evidence:
       type: object
@@ -525,6 +557,23 @@ components:
           properties:
             artifact: { $ref: '#/components/schemas/MarkdownArtifact' }
       description: Top-level successful JSON risk response. The canonical assessment fields remain inline and artifact is an additive delivery payload.
+    UrlRiskDimensions:
+      type: object
+      additionalProperties: false
+      required: [threatReputation, domainIdentity, transportSecurity, networkBehavior]
+      properties:
+        threatReputation: { $ref: '#/components/schemas/RiskLevel' }
+        domainIdentity: { $ref: '#/components/schemas/RiskLevel' }
+        transportSecurity: { $ref: '#/components/schemas/RiskLevel' }
+        networkBehavior: { $ref: '#/components/schemas/RiskLevel' }
+    UrlRiskAssessmentResponse:
+      allOf:
+        - $ref: '#/components/schemas/RiskAssessmentResponse'
+        - type: object
+          required: [urlDimensions]
+          properties:
+            urlDimensions: { $ref: '#/components/schemas/UrlRiskDimensions' }
+      description: Top-level successful JSON URL risk response. URL-specific dimensions are additive and do not change legacy endpoint scoring.
     ObservedPaymentRequirement:
       type: object
       additionalProperties: false

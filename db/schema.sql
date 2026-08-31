@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS threat_indicators (
   severity text NOT NULL CHECK (severity IN ('low', 'medium', 'high', 'critical')),
   source text NOT NULL,
   source_reference text,
+  lifecycle text NOT NULL DEFAULT 'active' CHECK (lifecycle IN ('active', 'retracted')),
   first_seen_at timestamptz NOT NULL DEFAULT now(),
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz,

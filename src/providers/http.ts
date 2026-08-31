@@ -77,6 +77,8 @@ export class UpstreamHttp {
     }
   }
 
+  getTimeoutMs(): number { return this.timeoutMs; }
+
   private async acquire(): Promise<void> {
     if (this.active < this.maxInFlight) {
       this.active += 1;
