@@ -19,6 +19,10 @@ describe("Phishing.Database snapshot parser", () => {
     ]);
   });
 
+  test("hostname scope preserves URL hostname canonical form for IPv6 literals", () => {
+    expect(parsePhishingDatabaseSnapshot("[2001:1::1]\n", HOSTNAME_SOURCE, "hostname")[0]?.indicator).toBe("[2001:1::1]");
+  });
+
   test("rejects mixed rows and mismatched source scope", () => {
     expect(() => parsePhishingDatabaseSnapshot("phish.example\n", URL_SOURCE, "url")).toThrow("scope");
     expect(() => parsePhishingDatabaseSnapshot("https://phish.example/\n", HOSTNAME_SOURCE, "hostname")).toThrow("scope");

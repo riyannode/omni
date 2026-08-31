@@ -84,7 +84,7 @@ describe("PublicNetworkPolicy", () => {
   test("normalizes bracketed IPv6 literals before classification", async () => {
     await expect(new PublicNetworkPolicy().resolveAndValidate("[2001:db8::1]")).rejects.toThrow("disallowed");
     await expect(new PublicNetworkPolicy().resolveAndValidate("[2001:1::1]")).resolves.toEqual([{ address: "2001:1::1", family: 6 }]);
-    expect(normalizeUrlRiskTarget("https://[2001:1::1]/").hostname).toBe("2001:1::1");
+    expect(normalizeUrlRiskTarget("https://[2001:1::1]/").hostname).toBe("[2001:1::1]");
   });
 });
 
