@@ -12,6 +12,7 @@ const envSchema = z.object({
   UPSTREAM_MAX_IN_FLIGHT: z.coerce.number().int().min(8).max(4096).default(256),
   UPSTREAM_MAX_QUEUE: z.coerce.number().int().min(0).max(50_000).default(2048),
   OMNI_KEV_FEED_URLS: z.string().default(""),
+  PHISHING_DATABASE_MAX_AGE_HOURS: z.coerce.number().int().min(1).max(720).default(6),
   GITHUB_TOKEN: z.string().min(1).optional()
 });
 

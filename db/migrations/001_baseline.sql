@@ -1,6 +1,3 @@
--- Latest-schema reference snapshot. Executable schema history lives in db/migrations/.
--- db/init.ts delegates to db/migrate.ts; do not execute this file as a second bootstrap path.
-
 CREATE TABLE IF NOT EXISTS endpoint_state (
   resource text PRIMARY KEY,
   fingerprint text NOT NULL,
@@ -34,7 +31,6 @@ CREATE TABLE IF NOT EXISTS threat_indicators (
   severity text NOT NULL CHECK (severity IN ('low', 'medium', 'high', 'critical')),
   source text NOT NULL,
   source_reference text,
-  lifecycle text NOT NULL DEFAULT 'active' CHECK (lifecycle IN ('active', 'retracted')),
   first_seen_at timestamptz NOT NULL DEFAULT now(),
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz,

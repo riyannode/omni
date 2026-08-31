@@ -37,6 +37,7 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 | `GET /v1/repo/risk` | `$0.01` | Repository security-practice evidence |
 | `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
 | `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
+| `GET /v1/url/risk` | `$0.01` | URL, DNS, RDAP, TLS, HTTP, and URL/hostname threat evidence |
 
 Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
@@ -59,6 +60,10 @@ Each NDJSON row:
 ```
 
 If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant assessments cannot claim full evidence coverage. Repository dependency threat intelligence is an observation-only evidence path under `omni-risk-v1`; it does not directly change the repository score or recommendation.
+
+Phishing.Database refreshes are an explicit dual-feed operation, not a request-path fetch. `bun run threats:phishing:sync` verifies both official active feeds and their SHA-256 checksums before atomically reconciling URL and hostname scopes. See `docs/THREAT-INTEL.md` and `THIRD_PARTY_NOTICES.md`.
+
+Database bootstrap uses the versioned migration history: `db/init.ts` delegates to `db/migrate.ts`, `db/migrations/` is authoritative executable history, and `db/schema.sql` is a latest-schema reference snapshot only. Existing legacy databases are shape-checked before baseline `001` is recorded.
 
 OSV `MAL-*` records are returned separately as `maliciousPackageObservations`. They are not normal vulnerability findings, OMNI does not invent a severity for them, and they remain observation-only under `omni-risk-v1`; explicitly withdrawn MAL records are not returned as active observations.
 

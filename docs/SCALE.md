@@ -7,7 +7,7 @@ The capacity objective is 100k simultaneous client requests across the **service
 1. Admission control runs before payment middleware, so an overloaded replica does not intentionally accept more paid work.
 2. No LLM inference in the synchronous paid request path.
 3. Cache frequently requested evidence in Valkey; duplicate cache misses inside one replica reuse one in-flight loader per cache key.
-4. One `UpstreamHttp` deep module enforces configured maxima for concurrent upstream requests and queued work; requests beyond that queue limit are rejected. Dependency batches are also evaluated in waves of 16.
+4. One `UpstreamHttp` deep module owns the shared `UpstreamAdmission` primitive. Existing HTTP calls, URL-risk DNS/CNAME resolution, and pinned HTTPS/TLS operations acquire that same configured capacity; requests beyond the queue limit are rejected. Dependency batches are also evaluated in waves of 16.
 5. PostgreSQL stores historical observations and is not required on every paid response. `/ready` remains HTTP 200 when only history storage is unavailable because core paid assessments can still run; the response reports `dependencies.historyStore: degraded` so operators can alert on the loss of history persistence without removing an otherwise serving replica.
 6. Circle marketplace crawling runs in a separate worker.
 7. Upstream calls have strict timeouts and produce explicit source errors rather than unbounded waits.

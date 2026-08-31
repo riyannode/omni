@@ -1,51 +1,22 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import type { Evidence } from "../domain/risk.ts";
 import { observePaymentOptions, type ObservedPaymentRequirement } from "../domain/x402-preflight-consistency.ts";
 import { UpstreamHttp } from "./http.ts";
+import { PublicNetworkPolicy } from "./public-network.ts";
+import { PinnedHttpsTransport, type PinnedRequestPolicy } from "./pinned-https.ts";
 
-function privateIpv4(ip: string): boolean {
-  const [a, b] = ip.split(".").map(Number);
-  if (a === 10 || a === 127 || a === 0) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b !== undefined && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 100 && b !== undefined && b >= 64 && b <= 127) return true;
-  return false;
-}
-
-function privateIpv6(ip: string): boolean {
-  const value = ip.toLowerCase();
-  return value === "::1" || value === "::" || value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe8") || value.startsWith("fe9") || value.startsWith("fea") || value.startsWith("feb");
-}
+export const X402_REQUEST_POLICY: PinnedRequestPolicy = { method: "GET", tlsMode: "strict", responseBodyMode: "discard", maximumBodyBytes: 8192, headers: { "user-agent": "OMNI/0.2 x402-preflight", accept: "application/json" } };
 
 export class X402Probe {
-  constructor(private readonly http: UpstreamHttp) {}
-
-  private async assertPublic(url: URL): Promise<void> {
-    if (url.protocol !== "https:") throw new Error("endpoint probe requires https");
-    const host = url.hostname.toLowerCase();
-
-    if (isIP(host)) {
-      if (privateIpv4(host) || privateIpv6(host)) throw new Error("private endpoint address rejected");
-      return;
-    }
-
-    const addresses = await lookup(host, { all: true });
-    if (addresses.length === 0) throw new Error("endpoint host did not resolve");
-    for (const { address } of addresses) {
-      if (privateIpv4(address) || privateIpv6(address)) throw new Error("endpoint resolves to private address");
-    }
-  }
+  private readonly transport: PinnedHttpsTransport;
+  constructor(http: UpstreamHttp, private readonly network = new PublicNetworkPolicy(undefined, http.getAdmission()), transport?: PinnedHttpsTransport) { this.transport = transport ?? new PinnedHttpsTransport(http.getTimeoutMs(), undefined, http.getAdmission()); }
 
   async unpaidGet(resource: string): Promise<{ status: number; paymentOptions: ObservedPaymentRequirement[]; evidence: Evidence }> {
     const url = new URL(resource);
-    await this.assertPublic(url);
-    const response = await this.http.request(url, {
-      method: "GET",
-      redirect: "manual",
-      headers: { "user-agent": "OMNI/0.2 x402-preflight" }
-    });
+    if (url.protocol !== "https:") throw new Error("https_required");
+    const addresses = await this.network.resolveAndValidate(url.hostname);
+    const address = addresses[0];
+    if (!address) throw new Error("endpoint host did not resolve");
+    const response = await this.transport.request(url, address, X402_REQUEST_POLICY);
     const raw = response.headers.get("payment-required") ?? response.headers.get("PAYMENT-REQUIRED");
     let paymentOptions: ObservedPaymentRequirement[] = [];
     if (raw) {
@@ -56,15 +27,14 @@ export class X402Probe {
         paymentOptions = [];
       }
     }
-    await response.body?.cancel();
     return {
-      status: response.status,
+      status: response.statusCode,
       paymentOptions,
       evidence: {
         source: "OMNI active probe",
         kind: "unpaid_x402_handshake",
         observedAt: new Date().toISOString(),
-        detail: { resource, status: response.status, paymentOptions: paymentOptions.length }
+        detail: { resource, status: response.statusCode, paymentOptions: paymentOptions.length }
       }
     };
   }

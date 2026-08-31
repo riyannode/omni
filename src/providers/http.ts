@@ -9,69 +9,18 @@ export class UpstreamHttpError extends Error {
   }
 }
 
-function withIdentity(init: RequestInit): RequestInit {
-  const headers = new Headers(init.headers);
-  if (!headers.has("user-agent")) headers.set("user-agent", USER_AGENT);
-  if (!headers.has("accept")) headers.set("accept", "application/json");
-  return { ...init, headers };
-}
-
-export class UpstreamHttp {
+export class UpstreamAdmission {
   private active = 0;
   private readonly waiters: Waiter[] = [];
 
-  constructor(
-    private readonly timeoutMs: number,
-    private readonly maxInFlight: number,
-    private readonly maxQueue: number
-  ) {}
-
-  async json<T>(url: string, init: RequestInit = {}): Promise<T> {
-    await this.acquire();
-    try {
-      const response = await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) });
-      if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
-      return await response.json() as T;
-    } finally {
-      this.release();
-    }
+  constructor(private readonly maxInFlight: number, private readonly maxQueue: number) {
+    if (!Number.isSafeInteger(maxInFlight) || maxInFlight < 1 || !Number.isSafeInteger(maxQueue) || maxQueue < 0) throw new Error("upstream admission configuration invalid");
   }
 
-  async boundedJson<T>(url: string, maximumBytes: number, init: RequestInit = {}): Promise<T> {
-    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new Error("upstream_response_limit_invalid");
+  async run<T>(operation: () => Promise<T>): Promise<T> {
     await this.acquire();
     try {
-      const response = await fetch(url, { ...withIdentity(init), redirect: "error", signal: AbortSignal.timeout(this.timeoutMs) });
-      if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
-      const length = response.headers.get("content-length");
-      if (length !== null && Number(length) > maximumBytes) throw new Error("upstream_response_oversized");
-      if (!response.body) throw new Error("upstream_response_missing_body");
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        bytes += chunk.value.byteLength;
-        if (bytes > maximumBytes) {
-          await reader.cancel();
-          throw new Error("upstream_response_oversized");
-        }
-        chunks.push(chunk.value);
-      }
-      const body = new Uint8Array(bytes);
-      let offset = 0;
-      for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as T;
-    } finally {
-      this.release();
-    }
-  }
-
-  async request(url: string | URL, init: RequestInit = {}): Promise<Response> {
-    await this.acquire();
-    try {
-      return await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) });
+      return await operation();
     } finally {
       this.release();
     }
@@ -94,4 +43,65 @@ export class UpstreamHttp {
     }
     this.active -= 1;
   }
+}
+
+function withIdentity(init: RequestInit): RequestInit {
+  const headers = new Headers(init.headers);
+  if (!headers.has("user-agent")) headers.set("user-agent", USER_AGENT);
+  if (!headers.has("accept")) headers.set("accept", "application/json");
+  return { ...init, headers };
+}
+
+export class UpstreamHttp {
+  private readonly admission: UpstreamAdmission;
+
+  constructor(
+    private readonly timeoutMs: number,
+    maxInFlight: number,
+    maxQueue: number,
+    admission = new UpstreamAdmission(maxInFlight, maxQueue)
+  ) { this.admission = admission; }
+
+  async json<T>(url: string, init: RequestInit = {}): Promise<T> {
+    return await this.admission.run(async () => {
+      const response = await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) });
+      if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
+      return await response.json() as T;
+    });
+  }
+
+  async boundedJson<T>(url: string, maximumBytes: number, init: RequestInit = {}): Promise<T> {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new Error("upstream_response_limit_invalid");
+    return await this.admission.run(async () => {
+      const response = await fetch(url, { ...withIdentity(init), redirect: "error", signal: AbortSignal.timeout(this.timeoutMs) });
+      if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
+      const length = response.headers.get("content-length");
+      if (length !== null && Number(length) > maximumBytes) throw new Error("upstream_response_oversized");
+      if (!response.body) throw new Error("upstream_response_missing_body");
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > maximumBytes) {
+          await reader.cancel();
+          throw new Error("upstream_response_oversized");
+        }
+        chunks.push(chunk.value);
+      }
+      const body = new Uint8Array(bytes);
+      let offset = 0;
+      for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as T;
+    });
+  }
+
+  async request(url: string | URL, init: RequestInit = {}): Promise<Response> {
+    return await this.admission.run(async () => await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) }));
+  }
+
+  getTimeoutMs(): number { return this.timeoutMs; }
+  getAdmission(): UpstreamAdmission { return this.admission; }
 }

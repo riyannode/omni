@@ -7,3 +7,9 @@ dist/
 .DS_Store
 *.log
 .local-tests/
+.tmp/
+.local/
+playwright-report/
+test-results/
+*.har
+*.trace.zip

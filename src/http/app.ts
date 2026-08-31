@@ -3,11 +3,12 @@ import { readFile } from "node:fs/promises";
 import type { HistoryStore } from "../data/history.ts";
 import type { ThreatIntelStore } from "../data/threat-intel.ts";
 import type { OmniIntelligence } from "../services.ts";
+import type { UrlRiskService } from "../services/url-risk.ts";
 import type { PaidRequestStore } from "../data/paid-requests.ts";
 import { CircleTransferLookup } from "../payments/circle-transfers.ts";
 import { concurrencyGate } from "./concurrency-gate.ts";
 import { PaidRouteIntegration, type GatewayWithHooks } from "./paid-route.ts";
-import { dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./validation.ts";
+import { dependenciesBody, endpointQuery, packageQuery, repoQuery, urlRiskQuery } from "./validation.ts";
 
 function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => void fn(req, res).catch(next);
@@ -41,8 +42,14 @@ const validateEndpoint: RequestHandler = (req, res, next) => {
   next();
 };
 
+const validateUrlRisk: RequestHandler = (req, res, next) => {
+  if (!urlRiskQuery.safeParse(req.query).success) return void res.status(400).json({ error: "invalid_request" });
+  next();
+};
+
 export function createApp(options: {
   omni: OmniIntelligence;
+  urlRisk?: UrlRiskService;
   history: HistoryStore;
   threatIntel: ThreatIntelStore;
   gateway: GatewayWithHooks;
@@ -119,6 +126,13 @@ export function createApp(options: {
     price: "$0.01",
     parse: req => endpointQuery.parse(req.query),
     execute: input => options.omni.endpointPreflight(input.url)
+  }));
+
+  app.get("/v1/url/risk", validateUrlRisk, gate, paid.route({
+    route: "url_risk",
+    price: "$0.01",
+    parse: req => urlRiskQuery.parse(req.query),
+    execute: input => options.urlRisk ? options.urlRisk.assess(input.url) : Promise.reject(new Error("url risk service unavailable"))
   }));
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

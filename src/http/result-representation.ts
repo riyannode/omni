@@ -12,7 +12,8 @@ const ARTIFACT_FILENAME_BY_ROUTE = {
   package: "package.risk.md",
   repository: "repo.risk.md",
   dependencies: "dependencies.risk.md",
-  endpoint_preflight: "x402.endpoint.preflight.md"
+  endpoint_preflight: "x402.endpoint.preflight.md",
+  url_risk: "url.risk.md"
 } as const;
 
 export function artifactFilenameForRoute(route: string): string | undefined {

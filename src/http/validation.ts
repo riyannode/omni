@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { normalizeUrlRiskTarget } from "../domain/url-risk.ts";
+import { isDisallowedHostname } from "../providers/public-network.ts";
 
 export const packageQuery = z.object({
   ecosystem: z.string().min(1).max(32),
@@ -18,3 +20,10 @@ export const dependenciesBody = z.object({
 export const endpointQuery = z.object({
   url: z.string().url().max(2048)
 });
+
+export const urlRiskQuery = z.object({
+  url: z.string().min(1).max(2048)
+}).transform(({ url }, context) => {
+  try { return normalizeUrlRiskTarget(url); }
+  catch { context.addIssue({ code: "custom", message: "invalid_url" }); return z.NEVER; }
+}).refine(target => !isDisallowedHostname(target.hostname));

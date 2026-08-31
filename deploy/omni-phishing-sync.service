@@ -1,0 +1,9 @@
+[Unit]
+Description=OMNI Phishing.Database dual-feed refresh
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/omni-runtime
+ExecStart=/usr/bin/docker compose --project-name omni-runtime --file /opt/omni-runtime/compose.yml run --rm --no-deps api bun scripts/import-phishing-database.ts
