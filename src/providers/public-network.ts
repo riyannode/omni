@@ -83,7 +83,7 @@ export class PublicNetworkPolicy {
   }
 
   async resolveAndClassify(hostname: string): Promise<ClassifiedNetworkAddress[]> {
-    const normalized = hostname.toLowerCase().replace(/\.$/, "");
+    const normalized = hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
     if (isDisallowedHostname(normalized) && isIP(normalized) === 0) throw new Error("disallowed network target");
     const directFamily = isIP(normalized);
     const addresses = directFamily === 0 ? await this.resolveHost(normalized) : [{ address: normalized, family: directFamily as 4 | 6 }];

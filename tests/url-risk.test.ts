@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { UrlRiskEngine } from "../src/domain/url-risk-engine.ts";
-import type { UrlRiskSnapshot } from "../src/domain/url-risk.ts";
+import { normalizeUrlRiskTarget, type UrlRiskSnapshot } from "../src/domain/url-risk.ts";
 import { UpstreamAdmission, UpstreamHttp } from "../src/providers/http.ts";
 import { PinnedHttpsTransport } from "../src/providers/pinned-https.ts";
 import { PublicNetworkPolicy } from "../src/providers/public-network.ts";
@@ -79,6 +79,12 @@ describe("PublicNetworkPolicy", () => {
       const policy = new PublicNetworkPolicy(async () => [{ address, family: 6 }]);
       await expect(policy.resolveAndValidate("example.com")).rejects.toThrow("disallowed");
     }
+  });
+
+  test("normalizes bracketed IPv6 literals before classification", async () => {
+    await expect(new PublicNetworkPolicy().resolveAndValidate("[2001:db8::1]")).rejects.toThrow("disallowed");
+    await expect(new PublicNetworkPolicy().resolveAndValidate("[2001:1::1]")).resolves.toEqual([{ address: "2001:1::1", family: 6 }]);
+    expect(normalizeUrlRiskTarget("https://[2001:1::1]/").hostname).toBe("2001:1::1");
   });
 });
 

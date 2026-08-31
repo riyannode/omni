@@ -87,7 +87,8 @@ export function normalizeUrlRiskTarget(raw: string): UrlRiskTarget {
   if (parsed.username || parsed.password) throw new Error("url_credentials_rejected");
   parsed.hash = "";
   if (!parsed.hostname) throw new Error("invalid_url");
-  return { url: parsed.toString(), hostname: parsed.hostname.toLowerCase() };
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  return { url: parsed.toString(), hostname };
 }
 
 function severityRank(value: import("./risk.ts").RiskLevel): number {
