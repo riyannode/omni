@@ -1,4 +1,5 @@
-# OMNI
+# OMNI 
+[![Accepts Agent Payments](https://agents.circle.com/sell/score/badge?url=api.askomni.xyz)](https://agents.circle.com/sell/score?url=api.askomni.xyz)
 
 OMNI is a **pre-execution trust and risk layer for autonomous agents**. OMNI independently verifies what an autonomous agent is about to trust before execution or payment, returning deterministic, source-attributed risk evidence.
 
