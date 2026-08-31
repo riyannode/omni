@@ -37,5 +37,7 @@ export function parsePhishingDatabaseSnapshot(content: string, sourceReference: 
     indicators.set(`${indicatorType}:${indicator}`, finding);
     if (indicatorType === "url") indicators.set(`hostname:${new URL(indicator).hostname.toLowerCase()}`, { ...finding, indicatorType: "hostname", indicator: new URL(indicator).hostname.toLowerCase() });
   }
-  return [...indicators.values()].sort((left, right) => left.indicatorType.localeCompare(right.indicatorType) || left.indicator.localeCompare(right.indicator));
+  const result = [...indicators.values()].sort((left, right) => left.indicatorType.localeCompare(right.indicatorType) || left.indicator.localeCompare(right.indicator));
+  if (result.length === 0) throw new Error("phishing_database_snapshot_empty");
+  return result;
 }

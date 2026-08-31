@@ -14,4 +14,8 @@ describe("Phishing.Database snapshot parser", () => {
     expect(() => parsePhishingDatabaseSnapshot("phish.example\n", "https://attacker.example/feed.txt")).toThrow("not official");
     expect(() => parsePhishingDatabaseSnapshot("https://user:pass@phish.example/\n", "https://phish.co.za/latest/feed.txt")).toThrow("credentials");
   });
+
+  test("rejects an empty authoritative snapshot before reconciliation", () => {
+    expect(() => parsePhishingDatabaseSnapshot("# only a comment\n", "https://phish.co.za/latest/phishing-domains-ACTIVE.txt")).toThrow("snapshot_empty");
+  });
 });

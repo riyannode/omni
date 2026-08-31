@@ -40,7 +40,7 @@ export class RdapProvider {
       if (current.protocol !== "https:" || current.username || current.password) throw new Error("invalid RDAP redirect target");
       const address = (await this.policy.resolveAndValidate(current.hostname))[0];
       if (!address) throw new Error("RDAP host did not resolve");
-      const response = await this.transport.request(current, address, 64 * 1024);
+      const response = await this.transport.request(current, address, { method: "GET", tlsMode: "strict", maximumBodyBytes: 64 * 1024, headers: { "user-agent": "OMNI/0.2 rdap", accept: "application/rdap+json,application/json;q=0.8" } });
       const location = response.headers.get("location");
       if (response.statusCode >= 300 && response.statusCode < 400 && location !== null) {
         if (hop === 2) throw new Error("RDAP redirect limit exceeded");
@@ -65,7 +65,7 @@ export class TlsProvider {
   async observe(url: URL, addresses: ResolvedPublicAddress[]): Promise<UrlTlsObservation> {
     const address = addresses[0];
     if (!address) throw new Error("TLS requires a validated public address");
-    const response = await this.transport.request(url, address, 1024, "HEAD");
+    const response = await this.transport.request(url, address, { method: "HEAD", tlsMode: "observe", maximumBodyBytes: 1024, headers: { "user-agent": "OMNI/0.2 url-risk-tls", accept: "*/*" } });
     return { status: response.tls.authorized && response.tls.hostnameMatch ? "valid" : "invalid", authorized: response.tls.authorized, hostnameMatch: response.tls.hostnameMatch, ...(response.tls.validFrom ? { validFrom: response.tls.validFrom } : {}), ...(response.tls.validTo ? { validTo: response.tls.validTo } : {}), ...(response.tls.issuer ? { issuer: response.tls.issuer } : {}) };
   }
 }

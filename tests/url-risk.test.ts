@@ -4,6 +4,8 @@ import type { UrlRiskSnapshot } from "../src/domain/url-risk.ts";
 import { PinnedHttpsTransport } from "../src/providers/pinned-https.ts";
 import { PublicNetworkPolicy } from "../src/providers/public-network.ts";
 import { UrlHttpProbe } from "../src/providers/url-http-probe.ts";
+import { X402_REQUEST_POLICY } from "../src/providers/x402-probe.ts";
+import { DEFAULT_URL_RISK_POLICY } from "../src/domain/url-risk-policy.ts";
 import type { ResolvedPublicAddress } from "../src/providers/public-network.ts";
 import type { PinnedHttpsResponse } from "../src/providers/pinned-https.ts";
 
@@ -63,8 +65,38 @@ test("PinnedHttpsTransport connects to the validated address with original hostn
     calls.push({ hostname: options.hostname, servername: options.servername, address: options.address, host: options.headers.host! });
     return { statusCode: 200, headers: new Headers({ "content-type": "text/plain" }), body: new Uint8Array(), tls: { authorized: true, hostnameMatch: true } };
   });
-  await transport.request(new URL("https://example.com/path"), { address: "93.184.216.34", family: 4 }, 1024);
+  await transport.request(new URL("https://example.com/path"), { address: "93.184.216.34", family: 4 }, { method: "GET", tlsMode: "strict", maximumBodyBytes: 1024, headers: { accept: "application/json" } });
   expect(calls).toEqual([{ hostname: "example.com", servername: "example.com", address: "93.184.216.34", host: "example.com" }]);
+});
+
+test("x402 probe keeps a strict TLS and JSON request profile", () => {
+  expect(X402_REQUEST_POLICY).toEqual({ method: "GET", tlsMode: "strict", maximumBodyBytes: 8192, headers: { "user-agent": "OMNI/0.2 x402-preflight", accept: "application/json" } });
+});
+
+test("PinnedHttpsTransport enforces an absolute deadline around a stalled executor", async () => {
+  const transport = new PinnedHttpsTransport(20, async () => await new Promise(() => {}));
+  await expect(transport.request(new URL("https://example.com/"), { address: "93.184.216.34", family: 4 }, { method: "GET", tlsMode: "strict", maximumBodyBytes: 1024, headers: {} })).rejects.toThrow("deadline");
+});
+
+test("URL transport uses the stronger TLS downgrade score when both transport signals exist", () => {
+  const result = new UrlRiskEngine().assess(snapshot({
+    tls: { status: "invalid" },
+    http: { status: "blocked", httpsDowngradeBlocked: true, redirects: [], securityHeaders: {} }
+  }));
+  expect(result.riskScore).toBe(60);
+});
+
+test("preserves the existing URL v1 policy values after extraction", () => {
+  expect(DEFAULT_URL_RISK_POLICY).toEqual({
+    version: "omni-url-risk-v1",
+    severityWeights: { unknown: 0, low: 35, medium: 60, high: 85, critical: 100 },
+    scoreLevelThresholds: { medium: 25, high: 50, critical: 80 },
+    recommendationThresholds: { caution: 25, manualReview: 50, doNotProceed: 80 },
+    transport: { tlsInvalid: 35, httpsDowngrade: 60 },
+    network: { serverError: 15, multipleRedirects: 10 },
+    sourceError: { perError: 5, cap: 20 },
+    score: { maximum: 100, zeroCoverageFloor: 50 }
+  });
 });
 
 function response(statusCode: number, location?: string): PinnedHttpsResponse { return { statusCode, headers: new Headers(location ? { location } : {}), body: new Uint8Array(), tls: { authorized: true, hostnameMatch: true } }; }

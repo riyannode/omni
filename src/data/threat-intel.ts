@@ -33,7 +33,10 @@ class PostgresThreatIntelStore implements ThreatIntelStore {
   constructor(url: string) { this.db = new SQL(url, { max: 20, idleTimeout: 30, connectionTimeout: 5 }); }
 
   private async configured(types: ThreatFinding["indicatorType"][]): Promise<boolean> {
-    const rows = await this.db`SELECT 1 FROM threat_indicators WHERE indicator_type = ANY(${this.db.array(types)}) AND lifecycle = 'active' AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`;
+    const first = types[0] ?? "package";
+    const second = types[1] ?? first;
+    const third = types[2] ?? second;
+    const rows = await this.db`SELECT 1 FROM threat_indicators WHERE (indicator_type = ${first} OR indicator_type = ${second} OR indicator_type = ${third}) AND lifecycle = 'active' AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`;
     return rows.length > 0;
   }
 

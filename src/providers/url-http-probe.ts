@@ -4,6 +4,7 @@ import type { PinnedHttpsResponse, PinnedHttpsTransport } from "./pinned-https.t
 
 export const URL_HTTP_MAX_REDIRECTS = 5;
 export const URL_HTTP_MAX_BODY_BYTES = 8192;
+const URL_HTTP_REQUEST_POLICY = { method: "GET", tlsMode: "strict", maximumBodyBytes: URL_HTTP_MAX_BODY_BYTES, headers: { "user-agent": "OMNI/0.2 url-risk", accept: "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.1", range: `bytes=0-${URL_HTTP_MAX_BODY_BYTES - 1}` } } as const;
 
 type NetworkPolicy = Pick<PublicNetworkPolicy, "resolveAndValidate">;
 type Transport = Pick<PinnedHttpsTransport, "request">;
@@ -23,7 +24,7 @@ export class UrlHttpProbe {
       const addresses = await this.policy.resolveAndValidate(current.hostname);
       const address = addresses[0];
       if (!address) throw new Error("disallowed network target");
-      const response = await this.transport.request(current, address, URL_HTTP_MAX_BODY_BYTES);
+      const response = await this.transport.request(current, address, URL_HTTP_REQUEST_POLICY);
       const location = response.headers.get("location");
       if (isRedirect(response.statusCode) && location !== null) {
         const next = new URL(location, current);

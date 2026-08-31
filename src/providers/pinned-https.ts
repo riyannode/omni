@@ -3,18 +3,22 @@ import type { LookupFunction } from "node:net";
 import tls, { checkServerIdentity, type PeerCertificate, type TLSSocket } from "node:tls";
 import type { ResolvedPublicAddress } from "./public-network.ts";
 
-export type PinnedRequestOptions = {
+export type PinnedTlsMode = "strict" | "observe";
+export type PinnedRequestPolicy = {
+  method: "GET" | "HEAD";
+  tlsMode: PinnedTlsMode;
+  maximumBodyBytes: number;
+  headers: Record<string, string>;
+};
+export type PinnedRequestOptions = PinnedRequestPolicy & {
   hostname: string;
   servername: string;
   address: string;
   port: number;
   path: string;
-  method: "GET" | "HEAD";
   timeoutMs: number;
-  maximumBodyBytes: number;
-  headers: Record<string, string>;
+  deadlineAt: number;
 };
-
 export type PinnedHttpsResponse = {
   statusCode: number;
   headers: Headers;
@@ -22,15 +26,14 @@ export type PinnedHttpsResponse = {
   tls: { authorized: boolean; hostnameMatch: boolean; validFrom?: string; validTo?: string; issuer?: string };
 };
 export type PinnedRequestExecutor = (options: PinnedRequestOptions) => Promise<PinnedHttpsResponse>;
-function hostForTls(hostname: string): string { return hostname.replace(/^\[/, "").replace(/\]$/, ""); }
 
+function hostForTls(hostname: string): string { return hostname.replace(/^\[/, "").replace(/\]$/, ""); }
 function certificateInfo(socket: TLSSocket, hostname: string): PinnedHttpsResponse["tls"] {
   const certificate = socket.getPeerCertificate() as PeerCertificate;
   const identityError = checkServerIdentity(hostForTls(hostname), certificate);
   const issuer = typeof certificate.issuer === "object" && certificate.issuer !== null ? String(certificate.issuer.CN ?? certificate.issuer.O ?? "") : undefined;
   return { authorized: socket.authorized, hostnameMatch: identityError === undefined, ...(certificate.valid_from ? { validFrom: certificate.valid_from } : {}), ...(certificate.valid_to ? { validTo: certificate.valid_to } : {}), ...(issuer ? { issuer } : {}) };
 }
-
 function pinnedLookup(address: string): LookupFunction {
   return (_hostname, lookupOptions, callback) => {
     const family = address.includes(":") ? 6 : 4;
@@ -38,21 +41,40 @@ function pinnedLookup(address: string): LookupFunction {
     else callback(null, address, family);
   };
 }
+function deadlineError(): Error { return new Error("url_probe_deadline_exceeded"); }
 
 async function inspectTls(options: PinnedRequestOptions): Promise<PinnedHttpsResponse["tls"]> {
   return await new Promise((resolve, reject) => {
-    const socket = tls.connect({ host: options.hostname, servername: options.servername, port: options.port, lookup: pinnedLookup(options.address), rejectUnauthorized: false });
-    socket.setTimeout(options.timeoutMs, () => socket.destroy(new Error("url probe timeout")));
-    socket.once("secureConnect", () => { resolve(certificateInfo(socket, options.hostname)); socket.end(); });
-    socket.once("error", reject);
+    const remaining = options.deadlineAt - Date.now();
+    if (remaining <= 0) { reject(deadlineError()); return; }
+    let settled = false;
+    const socket = tls.connect({ host: options.hostname, servername: options.servername, port: options.port, lookup: pinnedLookup(options.address), rejectUnauthorized: options.tlsMode === "strict" });
+    const absolute = setTimeout(() => socket.destroy(deadlineError()), remaining);
+    const finishResolve = (value: PinnedHttpsResponse["tls"]) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(absolute);
+      resolve(value);
+    };
+    const finishReject = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(absolute);
+      reject(error);
+    };
+    socket.setTimeout(Math.min(options.timeoutMs, remaining), () => socket.destroy(new Error("url probe timeout")));
+    socket.once("secureConnect", () => { finishResolve(certificateInfo(socket, options.hostname)); socket.end(); });
+    socket.once("error", error => finishReject(error));
   });
 }
 
 const defaultExecutor: PinnedRequestExecutor = async options => {
   const tlsInfo = await inspectTls(options);
   return await new Promise((resolve, reject) => {
+    const remaining = options.deadlineAt - Date.now();
+    if (remaining <= 0) { reject(deadlineError()); return; }
     let settled = false;
-    const request = https.request({ protocol: "https:", hostname: options.hostname, servername: options.servername, port: options.port, path: options.path, method: options.method, rejectUnauthorized: false, headers: options.headers, lookup: pinnedLookup(options.address) }, response => {
+    const request = https.request({ protocol: "https:", hostname: options.hostname, servername: options.servername, port: options.port, path: options.path, method: options.method, rejectUnauthorized: options.tlsMode === "strict", headers: options.headers, lookup: pinnedLookup(options.address) }, response => {
       const chunks: Uint8Array[] = [];
       let bytes = 0;
       response.on("data", chunk => {
@@ -61,18 +83,20 @@ const defaultExecutor: PinnedRequestExecutor = async options => {
         if (bytes > options.maximumBodyBytes) { response.destroy(new Error("url_response_oversized")); return; }
         chunks.push(value);
       });
-      response.once("error", error => { if (!settled) { settled = true; reject(error); } });
+      response.once("error", error => { if (!settled) { settled = true; clearTimeout(absolute); reject(error); } });
       response.on("end", () => {
         if (settled) return;
         settled = true;
+        clearTimeout(absolute);
         const body = new Uint8Array(bytes);
         let offset = 0;
         for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
         resolve({ statusCode: response.statusCode ?? 0, headers: new Headers(Object.entries(response.headers).flatMap(([key, value]) => typeof value === "string" ? [[key, value] as const] : Array.isArray(value) ? [[key, value.join(", ")] as const] : [])), body, tls: tlsInfo });
       });
     });
-    request.setTimeout(options.timeoutMs, () => request.destroy(new Error("url probe timeout")));
-    request.once("error", error => { if (!settled) { settled = true; reject(error); } });
+    const absolute = setTimeout(() => request.destroy(deadlineError()), remaining);
+    request.setTimeout(Math.min(options.timeoutMs, remaining), () => request.destroy(new Error("url probe timeout")));
+    request.once("error", error => { if (!settled) { settled = true; clearTimeout(absolute); reject(error); } });
     request.end();
   });
 };
@@ -80,10 +104,27 @@ const defaultExecutor: PinnedRequestExecutor = async options => {
 export class PinnedHttpsTransport {
   constructor(private readonly timeoutMs: number, private readonly executor: PinnedRequestExecutor = defaultExecutor) {}
 
-  async request(url: URL, address: ResolvedPublicAddress, maximumBodyBytes: number, method: "GET" | "HEAD" = "GET"): Promise<PinnedHttpsResponse> {
-    if (!Number.isSafeInteger(maximumBodyBytes) || maximumBodyBytes < 1) throw new Error("url_response_limit_invalid");
-    const result = await this.executor({ hostname: hostForTls(url.hostname), servername: hostForTls(url.hostname), address: address.address, port: Number(url.port || 443), path: `${url.pathname}${url.search}` || "/", method, timeoutMs: this.timeoutMs, maximumBodyBytes, headers: { host: url.host, "user-agent": "OMNI/0.2 url-risk", accept: "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.1", range: `bytes=0-${maximumBodyBytes - 1}` } });
-    if (result.body.byteLength > maximumBodyBytes) throw new Error("url_response_oversized");
-    return result;
+  async request(url: URL, address: ResolvedPublicAddress, policy: PinnedRequestPolicy): Promise<PinnedHttpsResponse> {
+    if (!Number.isSafeInteger(policy.maximumBodyBytes) || policy.maximumBodyBytes < 1) throw new Error("url_response_limit_invalid");
+    const options: PinnedRequestOptions = {
+      ...policy,
+      hostname: hostForTls(url.hostname),
+      servername: hostForTls(url.hostname),
+      address: address.address,
+      port: Number(url.port || 443),
+      path: `${url.pathname}${url.search}` || "/",
+      timeoutMs: this.timeoutMs,
+      deadlineAt: Date.now() + this.timeoutMs,
+      headers: { ...policy.headers, host: url.host }
+    };
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => { deadlineTimer = setTimeout(() => reject(deadlineError()), this.timeoutMs); });
+    try {
+      const result = await Promise.race([this.executor(options), deadline]);
+      if (result.body.byteLength > policy.maximumBodyBytes) throw new Error("url_response_oversized");
+      return result;
+    } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+    }
   }
 }

@@ -2,7 +2,9 @@ import type { Evidence } from "../domain/risk.ts";
 import { observePaymentOptions, type ObservedPaymentRequirement } from "../domain/x402-preflight-consistency.ts";
 import { UpstreamHttp } from "./http.ts";
 import { PublicNetworkPolicy } from "./public-network.ts";
-import { PinnedHttpsTransport } from "./pinned-https.ts";
+import { PinnedHttpsTransport, type PinnedRequestPolicy } from "./pinned-https.ts";
+
+export const X402_REQUEST_POLICY: PinnedRequestPolicy = { method: "GET", tlsMode: "strict", maximumBodyBytes: 8192, headers: { "user-agent": "OMNI/0.2 x402-preflight", accept: "application/json" } };
 
 export class X402Probe {
   private readonly transport: PinnedHttpsTransport;
@@ -13,7 +15,7 @@ export class X402Probe {
     const addresses = await this.network.resolveAndValidate(url.hostname);
     const address = addresses[0];
     if (!address) throw new Error("endpoint host did not resolve");
-    const response = await this.transport.request(url, address, 8192);
+    const response = await this.transport.request(url, address, X402_REQUEST_POLICY);
     const raw = response.headers.get("payment-required") ?? response.headers.get("PAYMENT-REQUIRED");
     let paymentOptions: ObservedPaymentRequirement[] = [];
     if (raw) {
