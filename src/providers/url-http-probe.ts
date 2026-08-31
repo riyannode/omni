@@ -4,7 +4,7 @@ import type { PinnedHttpsResponse, PinnedHttpsTransport } from "./pinned-https.t
 
 export const URL_HTTP_MAX_REDIRECTS = 5;
 export const URL_HTTP_MAX_BODY_BYTES = 8192;
-const URL_HTTP_REQUEST_POLICY = { method: "GET", tlsMode: "strict", maximumBodyBytes: URL_HTTP_MAX_BODY_BYTES, headers: { "user-agent": "OMNI/0.2 url-risk", accept: "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.1", range: `bytes=0-${URL_HTTP_MAX_BODY_BYTES - 1}` } } as const;
+const URL_HTTP_REQUEST_POLICY = { method: "GET", tlsMode: "strict", responseBodyMode: "bounded", maximumBodyBytes: URL_HTTP_MAX_BODY_BYTES, headers: { "user-agent": "OMNI/0.2 url-risk", accept: "text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.1", range: `bytes=0-${URL_HTTP_MAX_BODY_BYTES - 1}` } } as const;
 
 type NetworkPolicy = Pick<PublicNetworkPolicy, "resolveAndValidate">;
 type Transport = Pick<PinnedHttpsTransport, "request">;

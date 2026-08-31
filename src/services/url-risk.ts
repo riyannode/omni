@@ -17,7 +17,7 @@ export class UrlRiskService {
   constructor(
     threatIntel: UrlThreatIntelStore,
     http: UpstreamHttp,
-    network = new PublicNetworkPolicy(),
+    network = new PublicNetworkPolicy(undefined, http.getAdmission()),
     engine = new UrlRiskEngine(),
     adapters?: UrlRiskEvidenceAdapters
   ) {
@@ -45,9 +45,12 @@ export class UrlRiskService {
     if (threatResult.status === "fulfilled") {
       snapshot.threatIntelChecked = threatResult.value.checked;
       snapshot.threatFindings = threatResult.value.findings;
-      if (!threatResult.value.checked) snapshot.sourceErrors.push("Phishing.Database: no active URL/hostname snapshot configured");
-      else snapshot.evidence.push(evidence("Phishing.Database", "threat_lookup", { url: target.url, hostname: target.hostname, matches: snapshot.threatFindings.length }));
-    } else snapshot.sourceErrors.push(`Phishing.Database: ${message(threatResult.reason)}`);
+      if (!threatResult.value.checked) snapshot.sourceErrors.push("Threat intelligence: no active URL/hostname feed configured");
+      else {
+        const findingSources = [...new Set(snapshot.threatFindings.map(finding => finding.source))].sort();
+        snapshot.evidence.push(evidence("OMNI threat intelligence", "url_ioc_lookup", { configuredCapability: "url_and_hostname", url: target.url, hostname: target.hostname, matches: snapshot.threatFindings.length, findingSources }));
+      }
+    } else snapshot.sourceErrors.push(`Threat intelligence: ${message(threatResult.reason)}`);
     if (rdapResult.status === "fulfilled") {
       snapshot.rdap = rdapResult.value;
       snapshot.evidence.push(evidence("RDAP", "registration", rdapResult.value as unknown as Record<string, unknown>));

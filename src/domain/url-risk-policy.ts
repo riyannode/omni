@@ -1,4 +1,5 @@
 import type { RiskLevel } from "./risk.ts";
+import { deepFreeze, type DeepReadonly } from "./risk-policy.ts";
 
 export type UrlRiskPolicy = {
   version: "omni-url-risk-v1";
@@ -11,7 +12,7 @@ export type UrlRiskPolicy = {
   score: { maximum: number; zeroCoverageFloor: number };
 };
 
-export const DEFAULT_URL_RISK_POLICY: Readonly<UrlRiskPolicy> = Object.freeze({
+export const DEFAULT_URL_RISK_POLICY: DeepReadonly<UrlRiskPolicy> = deepFreeze({
   version: "omni-url-risk-v1",
   severityWeights: { unknown: 0, low: 35, medium: 60, high: 85, critical: 100 },
   scoreLevelThresholds: { medium: 25, high: 50, critical: 80 },

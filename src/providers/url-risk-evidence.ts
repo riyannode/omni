@@ -15,11 +15,11 @@ export type UrlRiskEvidenceAdapters = {
 };
 
 export class UrlDnsProvider {
-  constructor(private readonly policy: PublicNetworkPolicy) {}
+  constructor(private readonly policy: PublicNetworkPolicy, private readonly admission: import("./http.ts").UpstreamAdmission) {}
   async observe(hostname: string): Promise<UrlDnsObservation> {
     const addresses: ClassifiedNetworkAddress[] = await this.policy.resolveAndClassify(hostname);
     let cname: string[] = [];
-    try { cname = (await resolveCname(hostname)).map(item => item.toLowerCase()).sort(); } catch {}
+    try { cname = (await this.admission.run(() => resolveCname(hostname))).map(item => item.toLowerCase()).sort(); } catch {}
     return { addresses, cname };
   }
 }
@@ -40,7 +40,7 @@ export class RdapProvider {
       if (current.protocol !== "https:" || current.username || current.password) throw new Error("invalid RDAP redirect target");
       const address = (await this.policy.resolveAndValidate(current.hostname))[0];
       if (!address) throw new Error("RDAP host did not resolve");
-      const response = await this.transport.request(current, address, { method: "GET", tlsMode: "strict", maximumBodyBytes: 64 * 1024, headers: { "user-agent": "OMNI/0.2 rdap", accept: "application/rdap+json,application/json;q=0.8" } });
+      const response = await this.transport.request(current, address, { method: "GET", tlsMode: "strict", responseBodyMode: "bounded", maximumBodyBytes: 64 * 1024, headers: { "user-agent": "OMNI/0.2 rdap", accept: "application/rdap+json,application/json;q=0.8" } });
       const location = response.headers.get("location");
       if (response.statusCode >= 300 && response.statusCode < 400 && location !== null) {
         if (hop === 2) throw new Error("RDAP redirect limit exceeded");
@@ -65,12 +65,13 @@ export class TlsProvider {
   async observe(url: URL, addresses: ResolvedPublicAddress[]): Promise<UrlTlsObservation> {
     const address = addresses[0];
     if (!address) throw new Error("TLS requires a validated public address");
-    const response = await this.transport.request(url, address, { method: "HEAD", tlsMode: "observe", maximumBodyBytes: 1024, headers: { "user-agent": "OMNI/0.2 url-risk-tls", accept: "*/*" } });
+    const response = await this.transport.request(url, address, { method: "HEAD", tlsMode: "observe", responseBodyMode: "bounded", maximumBodyBytes: 1024, headers: { "user-agent": "OMNI/0.2 url-risk-tls", accept: "*/*" } });
     return { status: response.tls.authorized && response.tls.hostnameMatch ? "valid" : "invalid", authorized: response.tls.authorized, hostnameMatch: response.tls.hostnameMatch, ...(response.tls.validFrom ? { validFrom: response.tls.validFrom } : {}), ...(response.tls.validTo ? { validTo: response.tls.validTo } : {}), ...(response.tls.issuer ? { issuer: response.tls.issuer } : {}) };
   }
 }
 
-export function createUrlRiskAdapters(http: UpstreamHttp, policy = new PublicNetworkPolicy(), threatIntel: UrlThreatIntelStore): UrlRiskEvidenceAdapters {
-  const transport = new PinnedHttpsTransport(http.getTimeoutMs());
-  return { threatIntel, dns: new UrlDnsProvider(policy), rdap: new RdapProvider(transport, policy), tls: new TlsProvider(transport), http: new UrlHttpProbe(policy, transport) };
+export function createUrlRiskAdapters(http: UpstreamHttp, policy: PublicNetworkPolicy | undefined, threatIntel: UrlThreatIntelStore): UrlRiskEvidenceAdapters {
+  const network = policy ?? new PublicNetworkPolicy(undefined, http.getAdmission());
+  const transport = new PinnedHttpsTransport(http.getTimeoutMs(), undefined, http.getAdmission());
+  return { threatIntel, dns: new UrlDnsProvider(network, http.getAdmission()), rdap: new RdapProvider(transport, network), tls: new TlsProvider(transport), http: new UrlHttpProbe(network, transport) };
 }

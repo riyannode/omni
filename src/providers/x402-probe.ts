@@ -4,14 +4,15 @@ import { UpstreamHttp } from "./http.ts";
 import { PublicNetworkPolicy } from "./public-network.ts";
 import { PinnedHttpsTransport, type PinnedRequestPolicy } from "./pinned-https.ts";
 
-export const X402_REQUEST_POLICY: PinnedRequestPolicy = { method: "GET", tlsMode: "strict", maximumBodyBytes: 8192, headers: { "user-agent": "OMNI/0.2 x402-preflight", accept: "application/json" } };
+export const X402_REQUEST_POLICY: PinnedRequestPolicy = { method: "GET", tlsMode: "strict", responseBodyMode: "discard", maximumBodyBytes: 8192, headers: { "user-agent": "OMNI/0.2 x402-preflight", accept: "application/json" } };
 
 export class X402Probe {
   private readonly transport: PinnedHttpsTransport;
-  constructor(http: UpstreamHttp, private readonly network = new PublicNetworkPolicy()) { this.transport = new PinnedHttpsTransport(http.getTimeoutMs()); }
+  constructor(http: UpstreamHttp, private readonly network = new PublicNetworkPolicy(undefined, http.getAdmission()), transport?: PinnedHttpsTransport) { this.transport = transport ?? new PinnedHttpsTransport(http.getTimeoutMs(), undefined, http.getAdmission()); }
 
   async unpaidGet(resource: string): Promise<{ status: number; paymentOptions: ObservedPaymentRequirement[]; evidence: Evidence }> {
     const url = new URL(resource);
+    if (url.protocol !== "https:") throw new Error("https_required");
     const addresses = await this.network.resolveAndValidate(url.hostname);
     const address = addresses[0];
     if (!address) throw new Error("endpoint host did not resolve");

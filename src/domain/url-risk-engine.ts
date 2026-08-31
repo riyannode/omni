@@ -55,7 +55,7 @@ export class UrlRiskEngine {
     if (features.completedSources === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
 
     const threatLevel = !snapshot.threatIntelChecked ? "unknown" : snapshot.threatFindings.length === 0 ? "low" : level(threatScore, policy);
-    const domainLevel = snapshot.rdap === undefined || snapshot.rdap.status === "unavailable" ? "unknown" : "low";
+    const domainLevel = snapshot.rdap?.status === "registered" ? "low" : "unknown";
     const transportLevel = snapshot.tls === undefined || snapshot.tls.status === "unavailable" ? "unknown" : level(transportScore, policy);
     const networkLevel = snapshot.dns === undefined || snapshot.dns.addresses.length === 0 ? "unknown" : level(networkScore, policy);
     return {

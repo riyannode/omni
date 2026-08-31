@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18.4-alpine
         env:
           POSTGRES_USER: omni_test
           POSTGRES_PASSWORD: omni_test
@@ -36,7 +36,25 @@ jobs:
           else
             bun install
           fi
+      - name: Prepare isolated PostgreSQL databases
+        env:
+          PGPASSWORD: omni_test
+        run: |
+          psql -h 127.0.0.1 -U omni_test -d omni_test -c 'CREATE DATABASE omni_migration_test'
+          psql -h 127.0.0.1 -U omni_test -d omni_test -c 'CREATE DATABASE omni_threat_test'
+      - name: Generate local TLS fixture
+        run: |
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /tmp/omni-test-key.pem -out /tmp/omni-test-cert.pem \
+            -subj '/CN=x402.test' -addext 'subjectAltName=DNS:x402.test'
+          {
+            echo "PINNED_TEST_KEY=/tmp/omni-test-key.pem"
+            echo "PINNED_TEST_CERT=/tmp/omni-test-cert.pem"
+            echo "NODE_EXTRA_CA_CERTS=/tmp/omni-test-cert.pem"
+          } >> "$GITHUB_ENV"
       - name: Verify
         env:
           TEST_DATABASE_URL: postgres://omni_test:omni_test@127.0.0.1:5432/omni_test
+          MIGRATION_TEST_DATABASE_URL: postgres://omni_test:omni_test@127.0.0.1:5432/omni_migration_test
+          THREAT_TEST_DATABASE_URL: postgres://omni_test:omni_test@127.0.0.1:5432/omni_threat_test
         run: bun run check

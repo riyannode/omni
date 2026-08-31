@@ -9,6 +9,42 @@ export class UpstreamHttpError extends Error {
   }
 }
 
+export class UpstreamAdmission {
+  private active = 0;
+  private readonly waiters: Waiter[] = [];
+
+  constructor(private readonly maxInFlight: number, private readonly maxQueue: number) {
+    if (!Number.isSafeInteger(maxInFlight) || maxInFlight < 1 || !Number.isSafeInteger(maxQueue) || maxQueue < 0) throw new Error("upstream admission configuration invalid");
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await operation();
+    } finally {
+      this.release();
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.maxInFlight) {
+      this.active += 1;
+      return;
+    }
+    if (this.waiters.length >= this.maxQueue) throw new Error("upstream capacity exhausted");
+    await new Promise<void>(resolve => this.waiters.push(resolve));
+  }
+
+  private release(): void {
+    const next = this.waiters.shift();
+    if (next) {
+      next();
+      return;
+    }
+    this.active -= 1;
+  }
+}
+
 function withIdentity(init: RequestInit): RequestInit {
   const headers = new Headers(init.headers);
   if (!headers.has("user-agent")) headers.set("user-agent", USER_AGENT);
@@ -17,30 +53,26 @@ function withIdentity(init: RequestInit): RequestInit {
 }
 
 export class UpstreamHttp {
-  private active = 0;
-  private readonly waiters: Waiter[] = [];
+  private readonly admission: UpstreamAdmission;
 
   constructor(
     private readonly timeoutMs: number,
-    private readonly maxInFlight: number,
-    private readonly maxQueue: number
-  ) {}
+    maxInFlight: number,
+    maxQueue: number,
+    admission = new UpstreamAdmission(maxInFlight, maxQueue)
+  ) { this.admission = admission; }
 
   async json<T>(url: string, init: RequestInit = {}): Promise<T> {
-    await this.acquire();
-    try {
+    return await this.admission.run(async () => {
       const response = await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) });
       if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
       return await response.json() as T;
-    } finally {
-      this.release();
-    }
+    });
   }
 
   async boundedJson<T>(url: string, maximumBytes: number, init: RequestInit = {}): Promise<T> {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new Error("upstream_response_limit_invalid");
-    await this.acquire();
-    try {
+    return await this.admission.run(async () => {
       const response = await fetch(url, { ...withIdentity(init), redirect: "error", signal: AbortSignal.timeout(this.timeoutMs) });
       if (!response.ok) throw new UpstreamHttpError(response.status, new URL(url).host);
       const length = response.headers.get("content-length");
@@ -63,37 +95,13 @@ export class UpstreamHttp {
       let offset = 0;
       for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
       return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as T;
-    } finally {
-      this.release();
-    }
+    });
   }
 
   async request(url: string | URL, init: RequestInit = {}): Promise<Response> {
-    await this.acquire();
-    try {
-      return await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) });
-    } finally {
-      this.release();
-    }
+    return await this.admission.run(async () => await fetch(url, { ...withIdentity(init), signal: AbortSignal.timeout(this.timeoutMs) }));
   }
 
   getTimeoutMs(): number { return this.timeoutMs; }
-
-  private async acquire(): Promise<void> {
-    if (this.active < this.maxInFlight) {
-      this.active += 1;
-      return;
-    }
-    if (this.waiters.length >= this.maxQueue) throw new Error("upstream capacity exhausted");
-    await new Promise<void>(resolve => this.waiters.push(resolve));
-  }
-
-  private release(): void {
-    const next = this.waiters.shift();
-    if (next) {
-      next();
-      return;
-    }
-    this.active -= 1;
-  }
+  getAdmission(): UpstreamAdmission { return this.admission; }
 }

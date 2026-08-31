@@ -20,6 +20,7 @@ const lines = (await readFile(path, "utf8")).split(/\r?\n/).filter(Boolean);
 let imported = 0;
 for (const line of lines) {
   const row = rowSchema.parse(JSON.parse(line));
+  if (row.source.toLowerCase() === "phishing_database") throw new Error("phishing_database source requires threats:phishing:sync");
   const indicator = row.indicatorType === "hostname" || row.indicatorType === "wallet" || row.indicatorType === "package"
     ? row.indicator.toLowerCase() : new URL(row.indicator).toString();
   await db`

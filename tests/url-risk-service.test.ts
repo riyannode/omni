@@ -20,14 +20,25 @@ const noOpThreatIntel: UrlThreatIntelStore = { async lookupUrl() { return { chec
 const http = new UpstreamHttp(1000, 8, 8);
 
 describe("UrlRiskService", () => {
-  test("returns normalized URL subject and source-attributed evidence", async () => {
+  test("returns normalized URL subject and vendor-neutral lookup evidence", async () => {
     const service = new UrlRiskService(noOpThreatIntel, http, undefined, undefined, adapters({
-      threatIntel: { async lookupUrl() { return { checked: true, findings: [{ indicatorType: "hostname", indicator: "example.com", threatType: "phishing", severity: "critical", source: "phishing_database" }] }; } }
+      threatIntel: { async lookupUrl() { return { checked: true, findings: [{ indicatorType: "hostname", indicator: "example.com", threatType: "phishing", severity: "critical", source: "another-licensed-feed" }] }; } }
     }));
     const result = await service.assess("HTTPS://Example.COM/#fragment");
     expect(result.subject).toEqual({ type: "url", id: "https://example.com/" });
-    expect(result.evidence.map(item => item.source)).toEqual(["Phishing.Database", "RDAP", "DNS", "TLS", "HTTP probe"]);
+    expect(result.evidence[0]).toMatchObject({ source: "OMNI threat intelligence", kind: "url_ioc_lookup" });
+    expect(result.evidence[0]?.detail).toMatchObject({ findingSources: ["another-licensed-feed"] });
+    expect(result.evidence.map(item => item.source)).toEqual(["OMNI threat intelligence", "RDAP", "DNS", "TLS", "HTTP probe"]);
     expect(result.recommendation).toBe("do_not_proceed");
+  });
+
+  test("reports an unconfigured URL threat capability without naming Phishing.Database", async () => {
+    const service = new UrlRiskService(noOpThreatIntel, http, undefined, undefined, adapters({
+      threatIntel: { async lookupUrl() { return { checked: false, findings: [] }; } }
+    }));
+    const result = await service.assess("https://example.com/");
+    expect(result.sourceErrors).toContain("Threat intelligence: no active URL/hostname feed configured");
+    expect(result.sourceErrors.some(item => item.includes("Phishing.Database"))).toBe(false);
   });
 
   test("does not connect to TLS or HTTP when DNS classifies a target as disallowed", async () => {

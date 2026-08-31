@@ -38,7 +38,8 @@ describe("Postgres assessment journal (requires TEST_DATABASE_URL)", () => {
     const assessment = new RiskEngine().assess(snapshot);
     const assessmentId = await journal.record(snapshot, features, assessment);
     await journal.labelAssessment(assessmentId, "incident", "incident-report", "https://example.test/report", "verified fixture");
-    const [row] = await journal.loadLabelled();
+    const rows = await journal.loadLabelled();
+    const row = rows.find(item => item.assessmentId === assessmentId);
     expect(row).toMatchObject({ assessmentId, subjectType: "package", subjectId: snapshot.subject.id, snapshotSchemaVersion: RISK_SNAPSHOT_SCHEMA_VERSION, featureSchemaVersion: RISK_FEATURE_SCHEMA_VERSION, policyVersion: RISK_POLICY_VERSION, snapshot: persisted(snapshot), features: persisted(features), assessment: persisted(assessment), label: "incident", source: "incident-report", sourceReference: "https://example.test/report", notes: "verified fixture" });
     expect(row?.assessedAt).toBe(assessment.assessedAt);
   });

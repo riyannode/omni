@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the OMNI Phishing.Database refresh every two hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=2h
+Unit=omni-phishing-sync.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

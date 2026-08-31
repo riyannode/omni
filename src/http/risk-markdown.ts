@@ -52,6 +52,14 @@ function renderRiskSummary(result: Record<string, unknown>, lines: string[]): vo
     for (const [name, level] of Object.entries(dimensions)) lines.push(`- ${name}: ${inline(level)}`);
   }
 
+  const urlDimensions = object(result.urlDimensions);
+  if (urlDimensions) {
+    lines.push("", "## URL Risk Dimensions", "");
+    for (const name of ["threatReputation", "domainIdentity", "transportSecurity", "networkBehavior"]) {
+      if (urlDimensions[name] !== undefined) lines.push(`- ${name}: ${inline(urlDimensions[name])}`);
+    }
+  }
+
   const signals = Array.isArray(result.signals) ? result.signals : [];
   lines.push("", "## Key Signals", "");
   if (signals.length === 0) lines.push("No risk signals were recorded.");
