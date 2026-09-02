@@ -9,7 +9,8 @@ function scoreLevel(score: number, policy: ReadonlyRiskPolicy): RiskLevel {
   return "low";
 }
 function worstSeverity(levels: RiskLevel[], policy: ReadonlyRiskPolicy): RiskLevel {
-  return levels.reduce<RiskLevel>((worst, current) => policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, "low");
+  if (levels.includes("unknown")) return "unknown";
+  return levels.reduce<RiskLevel | undefined>((worst, current) => worst === undefined || policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, undefined) ?? "unknown";
 }
 function recommendation(score: number, policy: ReadonlyRiskPolicy): Recommendation {
   if (score >= policy.recommendationThresholds.doNotProceed) return "do_not_proceed";
@@ -58,7 +59,7 @@ export class RiskEngine {
     let repoRisk: number | undefined;
     if (features.scorecard !== undefined) repoRisk = Math.round((policy.repository.scorecardMaximum - Math.max(0, Math.min(policy.repository.scorecardMaximum, features.scorecard))) * policy.repository.scorecardRiskMultiplier);
 
-    // Observation-only evidence: never feed omni-risk-v1 score, recommendation,
+    // Observation-only evidence: never feed the current policy score, recommendation,
     // generic source errors, or Scorecard-only repository coverage.
     if (features.repository.present) {
       if (features.repository.partial) push(signals, "REPOSITORY_EVIDENCE_PARTIAL", "low", "GitHub repository evidence", {});
@@ -106,7 +107,8 @@ export class RiskEngine {
     const sourcePenalty = Math.min(policy.score.sourceErrorPenaltyCap, features.sourceErrorCount * policy.score.sourceErrorPenalty);
     let score = Math.min(policy.score.maximum, Math.max(policy.score.minimum, Math.max(maxVulnScore, exploitedScore, packageRisk ?? 0, repoRisk ?? 0, maliciousInfrastructureRisk ?? 0, identityRisk ?? 0, paymentRisk ?? 0, endpointRisk ?? 0) + sourcePenalty));
     if (coverage === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
-    else if (coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
+    else if (snapshot.subject.type !== "package" && coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
+    else if (snapshot.subject.type === "package" && features.coverage.sources?.some(source => source.source === "OSV" && (source.status === "UNAVAILABLE" || source.status === "UNKNOWN"))) score = Math.max(score, policy.recommendationThresholds.manualReview);
 
     const knownVulnerabilities: RiskLevel = features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : worstSeverity(features.vulnerabilities.map(v => v.severity), policy);
     const knownExploitation: RiskLevel = features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : features.exploitationChecked ? scoreLevel(exploitedScore, policy) : "unknown";
@@ -116,6 +118,14 @@ export class RiskEngine {
       recommendation: recommendation(score, policy),
       riskScore: score,
       evidenceCoverage: Number(coverage.toFixed(2)),
+      ...(features.coverage.modelVersion && features.coverage.sources ? {
+        coverage: {
+          modelVersion: features.coverage.modelVersion,
+          resolvedWeight: features.coverage.completed,
+          applicableWeight: features.coverage.expected,
+          sources: features.coverage.sources
+        }
+      } : {}),
       dimensions: {
         knownVulnerabilities, knownExploitation,
         packageSupplyChain: packageRisk === undefined ? "unknown" : scoreLevel(packageRisk, policy),

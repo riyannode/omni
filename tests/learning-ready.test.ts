@@ -17,7 +17,7 @@ describe("learning-ready deterministic boundaries", () => {
   test("default policy and provenance are stable", () => {
     const result = new RiskEngine().assess(snapshot);
     expect(DEFAULT_RISK_POLICY.version).toBe(RISK_POLICY_VERSION);
-    expect(result.policyVersion).toBe("omni-risk-v1");
+    expect(result.policyVersion).toBe("omni-risk-v2");
   });
 
   test("default policy is deeply immutable", () => {
