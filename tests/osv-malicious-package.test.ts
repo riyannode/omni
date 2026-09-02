@@ -110,8 +110,13 @@ describe("OSV malicious-package recognition", () => {
     await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).rejects.toThrow("osv_response_malformed");
   });
 
-  test("fails closed when OSV omits the vulnerability array", async () => {
+  test("accepts OSV empty-object negative responses", async () => {
     const provider = new OsvProvider({ async json() { return {}; } } as never);
+    await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
+  });
+
+  test("fails closed when OSV omits the vulnerability array from a non-empty response", async () => {
+    const provider = new OsvProvider({ async json() { return { status: "ok" }; } } as never);
     await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).rejects.toThrow("osv_response_malformed");
   });
 

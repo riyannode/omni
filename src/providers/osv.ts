@@ -362,7 +362,12 @@ function validVulnerability(value: unknown): value is OsvVuln {
 }
 
 function responseVulnerabilities(data: OsvResponse): OsvVuln[] {
-  if (!isRecord(data) || !Array.isArray(data.vulns) || !data.vulns.every(validVulnerability)) throw new Error("osv_response_malformed");
+  if (!isRecord(data)) throw new Error("osv_response_malformed");
+  if (data.vulns === undefined) {
+    if (Object.keys(data).length === 0) return [];
+    throw new Error("osv_response_malformed");
+  }
+  if (!Array.isArray(data.vulns) || !data.vulns.every(validVulnerability)) throw new Error("osv_response_malformed");
   return data.vulns;
 }
 
