@@ -124,3 +124,41 @@ test("treats install lifecycle scripts as evidence, not proof of malware", () =>
   expect(result.signals.some(signal => signal.code === "INSTALL_LIFECYCLE_SCRIPT_PRESENT")).toBe(true);
   expect(result.recommendation).not.toBe("do_not_proceed");
 });
+
+test("keeps unknown vulnerability severity unknown in the dimension", () => {
+  const result = engine.assess({
+    subject: { type: "package", id: "npm:demo@1.0.0" },
+    vulnerabilities: [{ id: "GHSA-unknown", severity: "unknown", knownExploited: false, aliases: [] }],
+    exploitationChecked: true,
+    evidence: []
+  });
+  expect(result.dimensions.knownVulnerabilities).toBe("unknown");
+});
+
+test("unknown severity dominates a low vulnerability in the dimension", () => {
+  const result = engine.assess({
+    subject: { type: "package", id: "npm:demo@1.0.0" },
+    vulnerabilities: [
+      { id: "GHSA-low", severity: "low", knownExploited: false, aliases: [] },
+      { id: "GHSA-unknown", severity: "unknown", knownExploited: false, aliases: [] }
+    ],
+    exploitationChecked: true,
+    evidence: []
+  });
+  expect(result.dimensions.knownVulnerabilities).toBe("unknown");
+});
+
+test("does not turn partial no-signal package coverage into caution", () => {
+  const result = engine.assess({
+    subject: { type: "package", id: "npm:demo@1.0.0" },
+    vulnerabilities: [],
+    exploitationChecked: true,
+    packageSupplyChain: { registry: "npm", deprecated: false, hasInstallScript: false, integrityPresent: true, signatureCount: 1, maintainerCount: 1 },
+    threatIntelChecked: false,
+    threatFindings: [],
+    evidence: [],
+    sourceErrors: ["Threat intelligence: unavailable"]
+  });
+  expect(result.riskScore).toBe(5);
+  expect(result.recommendation).toBe("proceed");
+});

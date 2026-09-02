@@ -58,9 +58,9 @@ Each NDJSON row:
 {"indicatorType":"wallet","indicator":"0xabc...","threatType":"reported_malicious","severity":"high","source":"licensed-feed","reference":"case-123"}
 ```
 
-If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant assessments cannot claim full evidence coverage. Repository dependency threat intelligence is an observation-only evidence path under `omni-risk-v1`; it does not directly change the repository score or recommendation.
+If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant assessments report that source as `UNAVAILABLE` under the versioned `package-coverage-v2` model. Repository dependency threat intelligence is an observation-only evidence path under the current `omni-risk-v2` policy; it does not directly change the repository score or recommendation.
 
-OSV `MAL-*` records are returned separately as `maliciousPackageObservations`. They are not normal vulnerability findings, OMNI does not invent a severity for them, and they remain observation-only under `omni-risk-v1`; explicitly withdrawn MAL records are not returned as active observations.
+OSV `MAL-*` records are returned separately as `maliciousPackageObservations`. They are not normal vulnerability findings, OMNI does not invent a severity for them, and they remain observation-only under the current `omni-risk-v2` policy; explicitly withdrawn MAL records are not returned as active observations.
 
 `RepositoryEvidence` is an internal typed evidence foundation used by the assessment implementation and journal. It is not a top-level field on the public `RiskAssessment` response.
 

@@ -408,7 +408,7 @@ describe("repository evidence foundation", () => {
     expect(observation.status).toBe("UNAVAILABLE");
   });
 
-  test("keeps omni-risk-v1 unchanged for empty, critical, oversized, and failed observations", async () => {
+  test("keeps repository risk unchanged for empty, critical, oversized, and failed observations", async () => {
     const baseline = new RiskEngine().assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "Scorecard", kind: "score", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] });
     const coordinate = exactCoordinate("invariant", "1.0.0");
     const critical: ThreatFinding = { indicatorType: "package", indicator: "npm:invariant@1.0.0", threatType: "malicious", severity: "critical", source: "fixture", reference: "https://intel.example/invariant" };
@@ -425,7 +425,7 @@ describe("repository evidence foundation", () => {
     }
   });
 
-  test("preserves omni-risk-v1 score/recommendation with available or unavailable new evidence", () => {
+  test("preserves repository score/recommendation with available or unavailable new evidence", () => {
     const base: RiskSnapshot = { subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "OpenSSF Scorecard", kind: "repository_security_practices", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] };
     const evidence: RepositoryEvidence = { target: { repository: "github.com/acme/demo", requestedRef: "main", resolvedCommitSha: commitSha }, securityFiles: [{ path: "package.json", category: "manifest" as const, status: "inspected" as const, findings: ["INSTALL_LIFECYCLE_SCRIPT"] }], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: "complete" as const, treeEntriesInspected: 1, filesInspected: 1, bytesInspected: 10, limitations: [] }, sourceErrors: [] };
     const unavailable = { ...evidence, coverage: { ...evidence.coverage, status: "partial" as const, limitations: ["github_rate_limited"] }, sourceErrors: ["GitHub: github_rate_limited"] };
@@ -437,7 +437,7 @@ describe("repository evidence foundation", () => {
     expect({ riskScore: partial.riskScore, recommendation: partial.recommendation }).toEqual({ riskScore: before.riskScore, recommendation: before.recommendation });
     expect(available.signals.map(signal => signal.code)).toContain("INSTALL_LIFECYCLE_SCRIPT_OBSERVED");
     expect(partial.signals.map(signal => signal.code)).toContain("REPOSITORY_EVIDENCE_PARTIAL");
-    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(2);
+    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(3);
     expect(extractRiskFeatures({ ...base, repositoryEvidence: evidence }).schemaVersion).toBe(RISK_FEATURE_SCHEMA_VERSION);
   });
 
@@ -446,12 +446,12 @@ describe("repository evidence foundation", () => {
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "package" as const, id: "old-package" },
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "x402_endpoint" as const, id: "old-endpoint" },
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "repository" as const, id: "old-repository" },
-      { snapshotSchemaVersion: 2, featureSchemaVersion: 2, subjectType: "repository" as const, id: "current-repository" }
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "current-repository" }
     ];
     expect(partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION)).toEqual({
       compatible: [rows[0]!, rows[1]!, rows[3]!],
       incompatible: [rows[2]!],
-      schemaVersionsPresent: { snapshot: [1, 2], feature: [1, 2] }
+      schemaVersionsPresent: { snapshot: [1, 3], feature: [1, 3] }
     });
   });
 
@@ -697,7 +697,7 @@ describe("repository evidence foundation", () => {
     const other = new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, staticScorecard as never, {} as never, {} as never, {} as never, {} as never, otherThreatIntel as never, new NoopAssessmentJournal(), new GitHubRepositoryProvider(http as never) as never, again as never);
     const second = await other.repositoryRisk("acme", "demo");
     expect(secondSeen.sort()).toEqual([...seenCoordinates].sort());
-    // Observation-only evidence never changes the omni-risk-v1 verdict, and
+    // Observation-only evidence never changes the repository verdict, and
     // repository threat-intel failures stay outside generic sourceErrors.
     const engine = new RiskEngine();
     const baselineEvidence = [{ source: "OpenSSF Scorecard", kind: "repository_security_practices", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }];
