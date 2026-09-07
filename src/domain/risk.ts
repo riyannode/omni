@@ -1,11 +1,34 @@
-export const RISK_SNAPSHOT_SCHEMA_VERSION = 2 as const;
+export const RISK_SNAPSHOT_SCHEMA_VERSION = 3 as const;
 export const MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION = 1 as const;
+export const PACKAGE_COVERAGE_MODEL_VERSION = "package-coverage-v2" as const;
 
 export type Recommendation = "proceed" | "proceed_with_caution" | "manual_review" | "do_not_proceed";
 export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
+export type EvidenceExecution = "QUERIED" | "NOT_QUERIED";
+export type EvidenceResolution = "OBSERVED" | "ABSENT" | "UNAVAILABLE" | "UNKNOWN" | "NOT_APPLICABLE";
+export type EvidenceCoverageSource = { source: string; execution: EvidenceExecution; status: EvidenceResolution; weight: number };
+export type EvidenceCoverage = { modelVersion: string; sources: EvidenceCoverageSource[] };
+export type EvidenceCoverageSummary = { modelVersion: string; resolvedWeight: number; applicableWeight: number; sources: EvidenceCoverageSource[] };
 
 export type Evidence = { source: string; kind: string; observedAt: string; detail: Record<string, unknown>; expiresAt?: string };
-export type VulnerabilityFinding = { id: string; severity: RiskLevel; knownExploited: boolean; aliases: string[] };
+export type VulnerabilityFinding = { id: string; severity: RiskLevel; knownExploited: boolean; aliases: string[]; advisoryIds?: string[] };
+export type OsvAdvisoryEvidence = {
+  id: string;
+  aliases: string[];
+  raw: Record<string, unknown>;
+  summary?: string;
+  details?: string;
+  sourceReference?: string;
+  severity: RiskLevel;
+  severitySource?: string;
+  cvss: Array<{ type: string; score: string; source?: string }>;
+  published?: string;
+  modified?: string;
+  withdrawn?: string | null;
+  affected: OsvAffectedPackage[];
+  references: Array<{ type: string; url: string }>;
+  versionMatch: { ecosystem: string; name: string; version: string; matched: boolean; queryMatched: boolean; rationale: string };
+};
 export type PackageSupplyChain = { registry: "npm"; deprecated: boolean; hasInstallScript: boolean; integrityPresent: boolean; signatureCount: number; maintainerCount: number; publisher?: string; repositoryUrl?: string };
 export type ThreatFinding = { indicatorType: "url" | "hostname" | "wallet" | "package"; indicator: string; threatType: string; severity: Exclude<RiskLevel, "unknown">; source: string; reference?: string };
 export type OsvRangeEvent = { introduced?: string; fixed?: string; lastAffected?: string; limit?: string };
@@ -69,12 +92,14 @@ export type RiskSnapshot = {
   historyChecked?: boolean;
   activeProbeChecked?: boolean;
   endpoint?: { listedOnCircle?: boolean; supportsGateway?: boolean; supportsVanilla?: boolean; responseStatus?: number; paymentOptions?: number; payTo?: string; network?: string; priceAtomic?: string };
+  coverage?: EvidenceCoverage;
   evidence: Evidence[];
   sourceErrors?: string[];
 };
 
 export type RiskAssessment = {
   subject: RiskSnapshot["subject"]; policyVersion: string; recommendation: Recommendation; riskScore: number; evidenceCoverage: number;
+  coverage?: EvidenceCoverageSummary;
   dimensions: { knownVulnerabilities: RiskLevel; knownExploitation: RiskLevel; packageSupplyChain: RiskLevel; repositorySecurityPractices: RiskLevel; maliciousInfrastructure: RiskLevel; serviceIdentity: RiskLevel; paymentConfigurationRisk: RiskLevel; endpointOperationalRisk: RiskLevel };
   signals: RiskSignal[]; evidence: Evidence[]; sourceErrors: string[]; assessedAt: string;
   maliciousPackageObservations?: MaliciousPackageObservation[];

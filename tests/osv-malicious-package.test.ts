@@ -10,7 +10,32 @@ import { RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/risk-features.ts";
 const ordinary = {
   id: "GHSA-ordinary",
   aliases: ["CVE-2026-0001"],
-  database_specific: { severity: "high" }
+  database_specific: { severity: "high" },
+  affected: [{ package: { ecosystem: "npm", name: "demo" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }]
+};
+
+const pnpmEcosystemAdvisory = {
+  id: "GHSA-8cc4-rfj6-fhg4",
+  aliases: ["CVE-2024-47829"],
+  database_specific: { severity: "MODERATE" },
+  severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:L/A:L" }],
+  affected: [{
+    package: { name: "pnpm", ecosystem: "npm", purl: "pkg:npm/pnpm" },
+    ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "10.0.0" }] }],
+    database_specific: { source: "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/04/GHSA-8cc4-rfj6-fhg4/GHSA-8cc4-rfj6-fhg4.json" }
+  }]
+};
+
+const pnpmPathTraversalEcosystemAdvisory = {
+  id: "GHSA-v253-rj99-jwpq",
+  aliases: ["CVE-2026-24131"],
+  database_specific: { severity: "MODERATE" },
+  severity: [{ type: "CVSS_V4", score: "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:A/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N" }],
+  affected: [{
+    package: { name: "pnpm", ecosystem: "npm", purl: "pkg:npm/pnpm" },
+    ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "10.28.2" }] }],
+    database_specific: { source: "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-v253-rj99-jwpq/GHSA-v253-rj99-jwpq.json" }
+  }]
 };
 
 function maliciousRecord(id: string, version: string, modified: string, source: string) {
@@ -43,12 +68,142 @@ function maliciousRecord(id: string, version: string, modified: string, source: 
   };
 }
 
-async function query(vulns: unknown[]) {
+async function query(vulns: unknown[], packageName = "demo", packageVersion = "1.0.0") {
   const provider = new OsvProvider({ async json() { return { vulns }; } } as never);
-  return provider.packageVulnerabilities("npm", "demo", "1.0.0");
+  return provider.packageVulnerabilities("npm", packageName, packageVersion);
 }
 
 describe("OSV malicious-package recognition", () => {
+  test("matches an npm ECOSYSTEM range for an affected pnpm version", async () => {
+    const result = await query([pnpmEcosystemAdvisory], "pnpm", "9.9.0");
+    expect(result.findings).toEqual([{ id: "GHSA-8cc4-rfj6-fhg4", severity: "medium", knownExploited: false, aliases: ["CVE-2024-47829"] }]);
+    expect(result.evidence[0]?.detail.advisories).toHaveLength(1);
+    expect((result.evidence[0]?.detail.advisories as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: "GHSA-8cc4-rfj6-fhg4",
+      versionMatch: { ecosystem: "npm", name: "pnpm", version: "9.9.0", matched: true, queryMatched: true }
+    });
+  });
+
+  test("matches the pnpm path-traversal advisory before its npm ECOSYSTEM fix", async () => {
+    const result = await query([pnpmPathTraversalEcosystemAdvisory], "pnpm", "10.28.1");
+    expect(result.findings).toEqual([{ id: "GHSA-v253-rj99-jwpq", severity: "medium", knownExploited: false, aliases: ["CVE-2026-24131"] }]);
+    expect(result.evidence[0]?.detail.advisories).toHaveLength(1);
+    expect((result.evidence[0]?.detail.advisories as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: "GHSA-v253-rj99-jwpq",
+      versionMatch: { ecosystem: "npm", name: "pnpm", version: "10.28.1", matched: true, queryMatched: true }
+    });
+  });
+
+  test("excludes a fixed pnpm version from an npm ECOSYSTEM range", async () => {
+    await expect(query([], "pnpm", "10.0.0")).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
+    await expect(query([pnpmEcosystemAdvisory], "pnpm", "10.0.0")).rejects.toThrow("osv_advisory_version_mismatch");
+    await expect(query([], "pnpm", "10.28.2")).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
+    await expect(query([pnpmPathTraversalEcosystemAdvisory], "pnpm", "10.28.2")).rejects.toThrow("osv_advisory_version_mismatch");
+  });
+
+  test("keeps npm SEMVER range behavior unchanged", async () => {
+    const result = await query([ordinary], "demo", "1.0.0");
+    expect(result.findings).toEqual([{ id: "GHSA-ordinary", severity: "high", knownExploited: false, aliases: ["CVE-2026-0001"] }]);
+  });
+
+  test("groups alias-linked advisories without discarding raw advisory evidence", async () => {
+    const first = {
+      id: "GHSA-alpha",
+      aliases: ["CVE-2026-0001", "GHSA-beta"],
+      published: "2026-01-01T00:00:00Z",
+      modified: "2026-01-02T00:00:00Z",
+      database_specific: { severity: "HIGH", source: "https://source.example/alpha" },
+      severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+      affected: [{ package: { ecosystem: "npm", name: "demo" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }]
+    };
+    const second = {
+      id: "GHSA-beta",
+      aliases: ["CVE-2026-0001", "GHSA-alpha"],
+      published: "2026-01-03T00:00:00Z",
+      modified: "2026-01-04T00:00:00Z",
+      database_specific: { severity: "HIGH", source: "https://source.example/beta" },
+      severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+      affected: [{ package: { ecosystem: "npm", name: "demo" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }]
+    };
+    const result = await query([second, first]);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({ id: "GHSA-alpha", severity: "high", advisoryIds: ["GHSA-alpha", "GHSA-beta"] });
+    expect(result.findings[0]?.aliases).toEqual(expect.arrayContaining(["CVE-2026-0001", "GHSA-beta"]));
+    expect(result.evidence[0]?.detail.advisories).toHaveLength(2);
+    expect(result.evidence[0]?.detail.advisories).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "GHSA-alpha", published: "2026-01-01T00:00:00Z", modified: "2026-01-02T00:00:00Z" }),
+      expect.objectContaining({ id: "GHSA-beta", published: "2026-01-03T00:00:00Z", modified: "2026-01-04T00:00:00Z" })
+    ]));
+    const assessment = new RiskEngine().assess({ subject: { type: "package", id: "npm:demo@1.0.0" }, vulnerabilities: result.findings, exploitationChecked: true, evidence: result.evidence });
+    expect(assessment.signals.filter(signal => signal.code === "KNOWN_VULNERABILITY")).toHaveLength(1);
+    expect(JSON.stringify((await query([first, second])).findings)).toBe(JSON.stringify(result.findings));
+  });
+
+  test("keeps lodash advisory evidence complete while grouping its alias overlaps", async () => {
+    const advisories = [
+      ["GHSA-29mw-wpgm-hmr9", ["CVE-2020-28500"], "MODERATE"],
+      ["GHSA-35jh-r3h4-6jhm", ["CVE-2021-23337", "CVE-2026-4800", "GHSA-r5fr-rjxr-66jc"], "HIGH"],
+      ["GHSA-f23m-r3pf-42rh", ["CVE-2025-13465", "CVE-2026-2950", "GHSA-xxjr-mmjv-4gpg"], "MODERATE"],
+      ["GHSA-r5fr-rjxr-66jc", ["CVE-2021-23337", "CVE-2026-4800", "GHSA-35jh-r3h4-6jhm"], "HIGH"],
+      ["GHSA-xxjr-mmjv-4gpg", ["CVE-2025-13465", "CVE-2026-2950", "GHSA-f23m-r3pf-42rh"], "MODERATE"]
+    ].map(([id, aliases, severity]) => ({ id, aliases, database_specific: { severity }, affected: [{ package: { ecosystem: "npm", name: "demo" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "4.18.0" }] }] }] }));
+    const result = await query(advisories);
+    expect(result.evidence[0]?.detail.vulnerabilityIds).toEqual([
+      "GHSA-29mw-wpgm-hmr9",
+      "GHSA-35jh-r3h4-6jhm",
+      "GHSA-f23m-r3pf-42rh",
+      "GHSA-r5fr-rjxr-66jc",
+      "GHSA-xxjr-mmjv-4gpg"
+    ]);
+    expect(result.findings).toHaveLength(3);
+    expect(result.findings.filter(finding => finding.severity === "high")).toHaveLength(1);
+    expect(result.findings.find(finding => finding.id === "GHSA-35jh-r3h4-6jhm")?.advisoryIds).toEqual(["GHSA-35jh-r3h4-6jhm", "GHSA-r5fr-rjxr-66jc"]);
+  });
+
+  test("fails closed on malformed OSV responses", async () => {
+    const provider = new OsvProvider({ async json() { return { vulns: { id: "GHSA-invalid" } }; } } as never);
+    await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).rejects.toThrow("osv_response_malformed");
+  });
+
+  test("accepts OSV empty-object negative responses", async () => {
+    const provider = new OsvProvider({ async json() { return {}; } } as never);
+    await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
+  });
+
+  test("fails closed when OSV omits the vulnerability array from a non-empty response", async () => {
+    const provider = new OsvProvider({ async json() { return { status: "ok" }; } } as never);
+    await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).rejects.toThrow("osv_response_malformed");
+  });
+
+  test("fails closed on malformed nested affected-package metadata", async () => {
+    const provider = new OsvProvider({ async json() { return { vulns: [{ id: "GHSA-invalid", affected: [{ package: { ecosystem: "npm", name: 123 } }] }] }; } } as never);
+    await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).rejects.toThrow("osv_response_malformed");
+  });
+
+  test("retains withdrawn advisories as evidence without treating them as active findings", async () => {
+    const withdrawn = { ...ordinary, withdrawn: "2026-02-01T00:00:00Z" };
+    const result = await query([withdrawn]);
+    expect(result.findings).toEqual([]);
+    expect(result.evidence[0]?.detail.vulnerabilityIds).toEqual([]);
+    expect(result.evidence[0]?.detail.advisories).toEqual([expect.objectContaining({ id: "GHSA-ordinary", withdrawn: "2026-02-01T00:00:00Z" })]);
+  });
+
+  test("fails closed when affected metadata contradicts the exact OSV query version", async () => {
+    await expect(query([{ id: "GHSA-range", database_specific: { severity: "HIGH" }, affected: [{ package: { ecosystem: "npm", name: "other" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }] }])).rejects.toThrow("osv_advisory_version_mismatch");
+  });
+
+  test("keeps exact duplicate advisory IDs deterministic and rejects conflicts", async () => {
+    const affected = [{ package: { ecosystem: "npm", name: "demo" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }];
+    const first = { id: "GHSA-duplicate", aliases: ["CVE-2026-0002"], database_specific: { severity: "LOW" }, summary: "same", affected };
+    const forward = await query([first, first]);
+    const backward = await query([first, first]);
+    expect(JSON.stringify(forward.findings)).toBe(JSON.stringify(backward.findings));
+    expect(JSON.stringify(forward.evidence[0]?.detail)).toBe(JSON.stringify(backward.evidence[0]?.detail));
+    const conflicting = { ...first, database_specific: { severity: "CRITICAL" } };
+    await expect(query([first, conflicting])).rejects.toThrow("osv_duplicate_advisory_id_conflict");
+  });
+
   test("separates MAL reports from ordinary vulnerability findings and preserves provenance", async () => {
     const newer = maliciousRecord("MAL-2026-0002", "1.0.1", "2026-02-02T00:00:00Z", "https://github.com/ossf/malicious-packages/blob/main/osv/malicious/npm/demo/MAL-2026-0002.json");
     const older = maliciousRecord("MAL-2026-0001", "1.0.0", "2026-02-01T00:00:00Z", "https://github.com/ossf/malicious-packages/blob/main/osv/malicious/npm/demo/MAL-2026-0001.json");
@@ -118,7 +273,7 @@ describe("OSV malicious-package recognition", () => {
     await expect(provider.packageVulnerabilities("npm", "demo", "1.0.0")).rejects.toThrow("upstream 504 api.osv.dev");
   });
 
-  test("keeps MAL observations observation-only under omni-risk-v1", () => {
+  test("keeps MAL observations observation-only under the current risk policy", () => {
     const base: RiskSnapshot = {
       subject: { type: "package", id: "npm:demo@1.0.0" },
       vulnerabilities: [],

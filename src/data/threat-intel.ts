@@ -28,8 +28,10 @@ class PostgresThreatIntelStore implements ThreatIntelStore {
   private readonly db: SQL;
   constructor(url: string) { this.db = new SQL(url, { max: 20, idleTimeout: 30, connectionTimeout: 5 }); }
 
-  private async configured(): Promise<boolean> {
-    const rows = await this.db`SELECT 1 FROM threat_indicators WHERE expires_at IS NULL OR expires_at > now() LIMIT 1`;
+  private async configured(scope: "endpoint" | "package"): Promise<boolean> {
+    const rows = scope === "package"
+      ? await this.db`SELECT 1 FROM threat_indicators WHERE indicator_type = 'package' AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`
+      : await this.db`SELECT 1 FROM threat_indicators WHERE indicator_type IN ('url', 'hostname', 'wallet') AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`;
     return rows.length > 0;
   }
 
@@ -45,7 +47,7 @@ class PostgresThreatIntelStore implements ThreatIntelStore {
   }
 
   async lookupEndpoint(resource: string, payTo?: string): Promise<{ checked: boolean; findings: ThreatFinding[] }> {
-    if (!await this.configured()) return { checked: false, findings: [] };
+    if (!await this.configured("endpoint")) return { checked: false, findings: [] };
     const url = new URL(resource);
     const normalizedUrl = url.toString();
     const hostname = url.hostname.toLowerCase();
@@ -65,7 +67,7 @@ class PostgresThreatIntelStore implements ThreatIntelStore {
   }
 
   async lookupPackage(ecosystem: string, name: string, version: string): Promise<{ checked: boolean; findings: ThreatFinding[] }> {
-    if (!await this.configured()) return { checked: false, findings: [] };
+    if (!await this.configured("package")) return { checked: false, findings: [] };
     const exact = `${ecosystem}:${name}@${version}`.toLowerCase();
     const unversioned = `${ecosystem}:${name}`.toLowerCase();
     const rows = await this.db<ThreatRow[]>`

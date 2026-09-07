@@ -1,6 +1,6 @@
-import type { ProvenanceState, RiskLevel, RiskSnapshot, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
+import type { EvidenceCoverageSource, ProvenanceState, RiskLevel, RiskSnapshot, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
 
-export const RISK_FEATURE_SCHEMA_VERSION = 2 as const;
+export const RISK_FEATURE_SCHEMA_VERSION = 3 as const;
 
 export type RiskFeatures = {
   schemaVersion: typeof RISK_FEATURE_SCHEMA_VERSION;
@@ -17,23 +17,47 @@ export type RiskFeatures = {
   endpoint: { present: boolean; listedOnCircle: boolean | undefined; supportsGateway: boolean | undefined; supportsVanilla: boolean | undefined; responseStatus: number | undefined };
   history: { checked: boolean; present: boolean; payToChangeCount: number; networkChangeCount: number; priceChangeCount: number; schemaChangeCount: number; providerChangeCount: number };
   sourceErrorCount: number;
-  coverage: { completed: number; expected: number };
+  coverage: { completed: number; expected: number; modelVersion?: string; sources?: EvidenceCoverageSource[] };
   evidenceCount: number;
 };
+
+function validCoverageSources(sources: EvidenceCoverageSource[]): boolean {
+  const identities = new Set<string>();
+  return Array.isArray(sources) && sources.every(source => {
+    if (!source || typeof source !== "object" || typeof source.source !== "string" || source.source.length === 0 || identities.has(source.source) || !Number.isFinite(source.weight) || source.weight <= 0) return false;
+    if (source.execution !== "QUERIED" && source.execution !== "NOT_QUERIED") return false;
+    if (!["OBSERVED", "ABSENT", "UNAVAILABLE", "UNKNOWN", "NOT_APPLICABLE"].includes(source.status)) return false;
+    identities.add(source.source);
+    if (source.status === "NOT_APPLICABLE") return source.execution === "NOT_QUERIED";
+    if (source.execution === "NOT_QUERIED") return source.status === "UNKNOWN";
+    return true;
+  });
+}
 
 export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
   const vulnerabilities = snapshot.vulnerabilities; const threatFindings = snapshot.threatFindings ?? [];
   const ranks: Record<RiskLevel, number> = { unknown: 0, low: 1, medium: 2, high: 3, critical: 4 };
-  const maximumVulnerabilitySeverity = vulnerabilities?.reduce<RiskLevel | undefined>((maximum, vulnerability) => !maximum || ranks[vulnerability.severity] > ranks[maximum] ? vulnerability.severity : maximum, undefined);
+  const maximumVulnerabilitySeverity = vulnerabilities?.some(vulnerability => vulnerability.severity === "unknown")
+    ? "unknown"
+    : vulnerabilities?.reduce<RiskLevel | undefined>((maximum, vulnerability) => !maximum || ranks[vulnerability.severity] > ranks[maximum] ? vulnerability.severity : maximum, undefined);
   const countsBySeverity = { low: 0, medium: 0, high: 0, critical: 0 } as Record<Exclude<RiskLevel, "unknown">, number>;
   for (const finding of threatFindings) countsBySeverity[finding.severity] += 1;
   let expected = 0; let completed = 0;
-  switch (snapshot.subject.type) {
-    case "package": { const checks = [vulnerabilities !== undefined, snapshot.exploitationChecked === true]; if (snapshot.packageSupplyChain) checks.push(true); if (snapshot.threatIntelChecked !== undefined) checks.push(snapshot.threatIntelChecked); expected = checks.length; completed = checks.filter(Boolean).length; break; }
-    // omni-risk-v1 remains Scorecard-only for generic coverage and source error scoring.
-    case "repository": expected = 1; completed = snapshot.scorecard === undefined ? 0 : 1; break;
-    case "x402_endpoint": { const checks = [snapshot.endpoint?.listedOnCircle !== undefined, snapshot.activeProbeChecked === true, snapshot.historyChecked === true, snapshot.threatIntelChecked === true]; expected = checks.length; completed = checks.filter(Boolean).length; break; }
-    case "dependency_set": expected = 1; completed = snapshot.evidence.length === 0 ? 0 : 1; break;
+  if (snapshot.coverage && validCoverageSources(snapshot.coverage.sources)) {
+    const applicable = snapshot.coverage.sources.filter(source => source.status !== "NOT_APPLICABLE");
+    expected = applicable.reduce((total, source) => total + source.weight, 0);
+    completed = applicable.reduce((total, source) => total + (source.status === "OBSERVED" || source.status === "ABSENT" ? source.weight : 0), 0);
+  } else if (snapshot.coverage) {
+    expected = 0;
+    completed = 0;
+  } else {
+    switch (snapshot.subject.type) {
+      case "package": { const checks = [vulnerabilities !== undefined, snapshot.exploitationChecked === true]; if (snapshot.packageSupplyChain) checks.push(true); if (snapshot.threatIntelChecked !== undefined) checks.push(snapshot.threatIntelChecked); expected = checks.length; completed = checks.filter(Boolean).length; break; }
+      // Repository coverage remains Scorecard-only for the current risk policy.
+      case "repository": expected = 1; completed = snapshot.scorecard === undefined ? 0 : 1; break;
+      case "x402_endpoint": { const checks = [snapshot.endpoint?.listedOnCircle !== undefined, snapshot.activeProbeChecked === true, snapshot.historyChecked === true, snapshot.threatIntelChecked === true]; expected = checks.length; completed = checks.filter(Boolean).length; break; }
+      case "dependency_set": expected = 1; completed = snapshot.evidence.length === 0 ? 0 : 1; break;
+    }
   }
   const repositoryEvidence = snapshot.repositoryEvidence; const history = snapshot.endpointHistory;
   const provenanceStates = { NOT_CHECKED: 0, UNAVAILABLE: 0, PRESENT_UNVERIFIED: 0, VERIFIED: 0, VERIFIED_SOURCE_MISMATCH: 0, VERIFIED_COMMIT_MISMATCH: 0, VERIFIED_COMMIT_UNCONFIRMED: 0, ERROR: 0 } as Record<ProvenanceState, number>;
@@ -46,6 +70,6 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
     scorecard: snapshot.scorecard, threatIntel: { checked: snapshot.threatIntelChecked === true, findings: threatFindings, matchCount: threatFindings.length, countsBySeverity },
     endpoint: { present: snapshot.endpoint !== undefined, listedOnCircle: snapshot.endpoint?.listedOnCircle, supportsGateway: snapshot.endpoint?.supportsGateway, supportsVanilla: snapshot.endpoint?.supportsVanilla, responseStatus: snapshot.endpoint?.responseStatus },
     history: { checked: snapshot.historyChecked === true && history !== undefined, present: history !== undefined, payToChangeCount: history?.payToChangeCount ?? 0, networkChangeCount: history?.networkChangeCount ?? 0, priceChangeCount: history?.priceChangeCount ?? 0, schemaChangeCount: history?.schemaChangeCount ?? 0, providerChangeCount: history?.providerChangeCount ?? 0 },
-    sourceErrorCount: snapshot.sourceErrors?.length ?? 0, coverage: { completed, expected }, evidenceCount: snapshot.evidence.length
+    sourceErrorCount: snapshot.sourceErrors?.length ?? 0, coverage: { completed, expected, ...(snapshot.coverage?.modelVersion ? { modelVersion: snapshot.coverage.modelVersion } : {}), ...(snapshot.coverage ? { sources: snapshot.coverage.sources } : {}) }, evidenceCount: snapshot.evidence.length
   };
 }

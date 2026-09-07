@@ -26,5 +26,5 @@ test("journal persistence failure never changes the authoritative assessment", a
     journal
   );
   const assessment = await omni.packageRisk("npm", "fixture", "1.0.0");
-  expect(assessment).toMatchObject({ riskScore: 0, recommendation: "proceed", policyVersion: "omni-risk-v1" });
+  expect(assessment).toMatchObject({ riskScore: 0, recommendation: "proceed", policyVersion: "omni-risk-v2" });
 });

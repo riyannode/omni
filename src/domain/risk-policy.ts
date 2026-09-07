@@ -1,6 +1,6 @@
 import type { RiskLevel } from "./risk.ts";
 
-export const RISK_POLICY_VERSION = "omni-risk-v1" as const;
+export const RISK_POLICY_VERSION = "omni-risk-v2" as const;
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
   ? T

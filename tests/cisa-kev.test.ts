@@ -60,4 +60,18 @@ describe("CisaKevProvider", () => {
   test("rejects an empty feed list instead of degrading to no source", () => {
     expect(() => new CisaKevProvider(loader(), httpStub(async () => ({})), [])).toThrow(/at least one KEV feed/);
   });
+
+  test("rejects malformed feed content instead of treating it as a negative lookup", async () => {
+    const provider = new CisaKevProvider(loader(), httpStub(async () => ({ vulnerabilities: [{ cveID: 123 }] })));
+    await expect(provider.mark(["CVE-2021-44228"])).rejects.toThrow(/all KEV feeds unavailable/);
+  });
+
+  test("revalidates malformed cached feed content", async () => {
+    const cache: Cache = {
+      async get() { return JSON.stringify({ value: { feed: { vulnerabilities: [{ cveID: 123 }] }, feedUrl: "https://mirror.example/kev.json" }, cachedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2026-01-01T00:05:00.000Z" }); },
+      async set() {}
+    };
+    const provider = new CisaKevProvider(new CachedLoader(cache), httpStub(async () => ({ vulnerabilities: [] })));
+    await expect(provider.mark(["CVE-2021-44228"])).rejects.toThrow("kev_feed_malformed");
+  });
 });

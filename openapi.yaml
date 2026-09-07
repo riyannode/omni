@@ -327,6 +327,26 @@ components:
         severity: { type: string, enum: [low, medium, high, critical] }
         source: { type: string }
         detail: { type: object, additionalProperties: true }
+    EvidenceCoverageSource:
+      type: object
+      additionalProperties: false
+      required: [source, execution, status, weight]
+      properties:
+        source: { type: string }
+        execution: { type: string, enum: [QUERIED, NOT_QUERIED] }
+        status: { type: string, enum: [OBSERVED, ABSENT, UNAVAILABLE, UNKNOWN, NOT_APPLICABLE] }
+        weight: { type: number, minimum: 0 }
+    EvidenceCoverage:
+      type: object
+      additionalProperties: false
+      required: [modelVersion, resolvedWeight, applicableWeight, sources]
+      properties:
+        modelVersion: { type: string }
+        resolvedWeight: { type: number, minimum: 0 }
+        applicableWeight: { type: number, minimum: 0 }
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/EvidenceCoverageSource' }
     MarkdownArtifact:
       type: object
       additionalProperties: false
@@ -492,6 +512,10 @@ components:
           minimum: 0
           maximum: 1
           description: Fraction of subject-specific evidence paths that completed successfully. It is not a probability that the recommendation is correct.
+        coverage:
+          allOf:
+            - $ref: '#/components/schemas/EvidenceCoverage'
+          description: Additive source-aware coverage diagnostics. NOT_APPLICABLE sources are excluded from applicableWeight; OBSERVED and ABSENT sources contribute to resolvedWeight.
         dimensions: { $ref: '#/components/schemas/RiskDimensions' }
         signals:
           type: array

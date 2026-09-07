@@ -1,5 +1,6 @@
-import type { DependencyObservation, ExactDependencyCoordinate, RepositoryEvidence, RepositoryThreatIntelObservation, RiskAssessment, RiskSnapshot, ThreatFinding } from "./domain/risk.ts";
+import { PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RiskAssessment, type RiskSnapshot, type ThreatFinding } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
+import { RISK_POLICY_VERSION } from "./domain/risk-policy.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
 import { CachedLoader } from "./data/cache.ts";
 import type { HistoryStore } from "./data/history.ts";
@@ -31,6 +32,16 @@ export const MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES = 16;
 export const MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES = 512;
 
 function coordinateIdentity(coordinate: { ecosystem: string; name: string; version: string }): string { return `${coordinate.ecosystem}:${coordinate.name}@${coordinate.version}`; }
+
+function cachePart(value: string): string { return `${value.length}:${value}`; }
+
+function coverageSource(source: string, execution: EvidenceCoverageSource["execution"], status: EvidenceCoverageSource["status"]): EvidenceCoverageSource {
+  return { source, execution, status, weight: 1 };
+}
+
+function correlatableVulnerabilityIds(vulnerabilities: NonNullable<RiskSnapshot["vulnerabilities"]>): string[] {
+  return [...new Set(vulnerabilities.flatMap(vulnerability => [vulnerability.id, ...vulnerability.aliases]).filter(id => /^CVE-\d{4}-\d+$/i.test(id)))].sort();
+}
 
 const threatSeverityRank: Record<ThreatFinding["severity"], number> = { low: 1, medium: 2, high: 3, critical: 4 };
 const encoder = new TextEncoder();
@@ -251,7 +262,7 @@ export class OmniIntelligence {
   }
 
   async packageRisk(ecosystem: string, name: string, version: string): Promise<RiskAssessment> {
-    const key = `assessment:package:${ecosystem}:${name}:${version}`;
+    const key = `assessment:package:${RISK_POLICY_VERSION}:${PACKAGE_COVERAGE_MODEL_VERSION}:${[ecosystem, name, version].map(cachePart).join(":")}`;
     return this.cache.getOrLoad(key, 300, async () => {
       const errors: string[] = [];
       let vulnerabilities: RiskSnapshot["vulnerabilities"];
@@ -260,6 +271,7 @@ export class OmniIntelligence {
       let maliciousPackageObservations: RiskSnapshot["maliciousPackageObservations"] = [];
       let threatIntelChecked = false;
       let threatFindings: ThreatFinding[] = [];
+      const coverageSources: EvidenceCoverageSource[] = [];
       const evidence: RiskSnapshot["evidence"] = [];
 
       try {
@@ -267,33 +279,65 @@ export class OmniIntelligence {
         vulnerabilities = osv.findings;
         maliciousPackageObservations = osv.maliciousPackageObservations ?? [];
         evidence.push(...osv.evidence);
+        coverageSources.push(coverageSource("OSV", "QUERIED", vulnerabilities.length > 0 ? "OBSERVED" : "ABSENT"));
         if (vulnerabilities.length > 0) {
-          try {
-            const kev = await this.kev.mark(vulnerabilities.flatMap(v => [v.id, ...v.aliases]));
-            for (const vuln of vulnerabilities) {
-              vuln.knownExploited = kev.exploited.has(vuln.id) || vuln.aliases.some(alias => kev.exploited.has(alias));
-            }
+          const kevIds = correlatableVulnerabilityIds(vulnerabilities);
+          if (kevIds.length === 0) {
             exploitationChecked = true;
-            evidence.push(kev.evidence);
-          } catch (error) { errors.push(`CISA KEV: ${error instanceof Error ? error.message : "unknown error"}`); }
-        } else exploitationChecked = true;
-      } catch (error) { errors.push(`OSV: ${error instanceof Error ? error.message : "unknown error"}`); }
+            coverageSources.push(coverageSource("CISA KEV", "NOT_QUERIED", "NOT_APPLICABLE"));
+          } else {
+            try {
+              const kev = await this.kev.mark(kevIds);
+              for (const vuln of vulnerabilities) {
+                vuln.knownExploited = kev.exploited.has(vuln.id) || vuln.aliases.some(alias => kev.exploited.has(alias));
+              }
+              exploitationChecked = true;
+              coverageSources.push(coverageSource("CISA KEV", "QUERIED", kev.exploited.size > 0 ? "OBSERVED" : "ABSENT"));
+              evidence.push(kev.evidence);
+            } catch (error) {
+              coverageSources.push(coverageSource("CISA KEV", "QUERIED", "UNAVAILABLE"));
+              errors.push(`CISA KEV: ${error instanceof Error ? error.message : "unknown error"}`);
+            }
+          }
+        } else {
+          exploitationChecked = true;
+          coverageSources.push(coverageSource("CISA KEV", "NOT_QUERIED", "NOT_APPLICABLE"));
+        }
+      } catch (error) {
+        coverageSources.push(coverageSource("OSV", "QUERIED", "UNAVAILABLE"));
+        coverageSources.push(coverageSource("CISA KEV", "NOT_QUERIED", "UNKNOWN"));
+        errors.push(`OSV: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
 
       if (ecosystem.toLowerCase() === "npm") {
         try {
           const registry = await this.npm.packageMetadata(name, version);
           packageSupplyChain = registry.signals;
           evidence.push(registry.evidence);
-        } catch (error) { errors.push(`npm Registry: ${error instanceof Error ? error.message : "unknown error"}`); }
+          coverageSources.push(coverageSource("npm Registry", "QUERIED", "OBSERVED"));
+        } catch (error) {
+          coverageSources.push(coverageSource("npm Registry", "QUERIED", "UNAVAILABLE"));
+          errors.push(`npm Registry: ${error instanceof Error ? error.message : "unknown error"}`);
+        }
+      } else {
+        coverageSources.push(coverageSource("npm Registry", "NOT_QUERIED", "NOT_APPLICABLE"));
       }
 
       try {
         const threat = await this.threatIntel.lookupPackage(ecosystem, name, version);
         threatIntelChecked = threat.checked;
         threatFindings = threat.findings;
-        if (!threat.checked) errors.push("Threat intelligence: no licensed feed loaded");
-        else evidence.push({ source: "OMNI threat intelligence", kind: "package_ioc_lookup", observedAt: new Date().toISOString(), detail: { matches: threat.findings.length } });
-      } catch (error) { errors.push(`Threat intelligence: ${error instanceof Error ? error.message : "unknown error"}`); }
+        if (!threat.checked) {
+          coverageSources.push(coverageSource("Threat Intelligence", "QUERIED", "UNAVAILABLE"));
+          errors.push("Threat intelligence: no licensed feed loaded");
+        } else {
+          coverageSources.push(coverageSource("Threat Intelligence", "QUERIED", threat.findings.length > 0 ? "OBSERVED" : "ABSENT"));
+          evidence.push({ source: "OMNI threat intelligence", kind: "package_ioc_lookup", observedAt: new Date().toISOString(), detail: { matches: threat.findings.length } });
+        }
+      } catch (error) {
+        coverageSources.push(coverageSource("Threat Intelligence", "QUERIED", "UNAVAILABLE"));
+        errors.push(`Threat intelligence: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
 
       return this.assessAndJournal({
         subject: { type: "package", id: `${ecosystem}:${name}@${version}` },
@@ -301,6 +345,7 @@ export class OmniIntelligence {
         ...(packageSupplyChain ? { packageSupplyChain } : {}),
         ...(maliciousPackageObservations.length > 0 ? { maliciousPackageObservations } : {}),
         threatIntelChecked, threatFindings,
+        coverage: { modelVersion: PACKAGE_COVERAGE_MODEL_VERSION, sources: coverageSources },
         evidence, sourceErrors: errors
       });
     });
