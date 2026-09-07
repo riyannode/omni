@@ -233,8 +233,8 @@ const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig
     payment: "TESTNET only: choose acceptable TESTNET option from challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or cannot cover the payment, STOP; do not fall back to another chain.",
   },
   "arc-testnet-quick-test": {
-    task: "Use/reuse official Circle Agent Wallet. If setup/login needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "ARC TESTNET ONLY: select eip155:5042002; never enumerate/use another chain. If absent, STOP. If the Arc Testnet wallet or Gateway balance cannot cover the payment, STOP; do not use another chain.",
+    task: "Use/reuse official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, legal input.",
+    payment: "ARC TESTNET ONLY: select eip155:5042002; never enumerate/use another chain. If absent, STOP. If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not use another chain.",
   },
 };
 

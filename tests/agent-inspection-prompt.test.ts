@@ -15,7 +15,7 @@ describe("agent inspection prompt profiles", () => {
     expect(AGENT_QUICK_TEST_PROMPT).toContain("ARC TESTNET ONLY:");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("eip155:5042002");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("never enumerate/use another chain");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("If the Arc Testnet wallet or Gateway balance cannot cover the payment, STOP; do not use another chain.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not use another chain.");
     expect(AGENT_QUICK_TEST_PROMPT).not.toContain("TESTNET only: choose an acceptable TESTNET option");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("npm:express@5.2.1");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("5000 atomic units / 0.005000 USDC");
