@@ -223,80 +223,24 @@ function targetDescription(input: InspectionInput): string {
 }
 
 type AgentPromptProfileConfig = {
-  onboarding: string;
-  scopeRule: string;
-  networkRule: string;
+  task: string;
+  payment: string;
 };
 
 const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig> = {
   "generic-testnet": {
-    onboarding: `Set up or reuse an official Circle Agent Wallet for TESTNET x402.
-
-Run:
-
-curl -sL https://agents.circle.com/skills/setup.md
-
-and use the returned instructions to set up, log in to, or reuse the wallet.
-
-If a usable TESTNET wallet already exists, reuse it.
-
-If login requires an email, OTP, legal confirmation, or another user input, ask the user and continue after they provide it.
-
-If Circle cannot be reached, retry the same login operation up to 3 times. If it still fails, diagnose and report the connectivity problem.
-
-Do not change DNS, VPN, proxy, or other network settings without explicit user approval.
-
-Once the wallet is usable, continue with OMNI.`,
-    scopeRule: "- TESTNET ONLY.",
-    networkRule: "- Network, scheme, asset, and payTo come from the live challenge.",
+    task: "Use/reuse official Circle Agent Wallet. If setup/login needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
+    payment: "TESTNET only: choose acceptable TESTNET option from challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or cannot cover the payment, STOP; do not fall back to another chain.",
   },
   "arc-testnet-quick-test": {
-    onboarding: `Set up or reuse an official Circle Agent Wallet for ARC TESTNET x402.
-
-Run:
-
-curl -sL https://agents.circle.com/skills/setup.md
-
-and use the returned instructions to set up, log in to, or reuse the wallet.
-
-If a usable ARC TESTNET wallet already exists, reuse it.
-
-Do not discover, enumerate, inspect, create, or check balances on other chains.
-
-Use ARC TESTNET only.
-
-If the live HTTP 402 challenge does not offer ARC TESTNET, STOP and tell the user. Do not automatically fall back to another chain.
-
-If no usable ARC TESTNET wallet exists, or the ARC TESTNET wallet does not have enough USDC, STOP and ask the user what to do. Do not search other chains for another funded wallet.
-
-If login requires an email, OTP, legal confirmation, or another user input, ask the user and continue after they provide it.
-
-If Circle cannot be reached, retry the same login operation up to 3 times. If it still fails, diagnose and report the connectivity problem.
-
-Do not change DNS, VPN, proxy, or other network settings without explicit user approval.
-
-Once the ARC TESTNET wallet is usable, continue with OMNI.`,
-    scopeRule: "- ARC TESTNET ONLY.",
-    networkRule: `- Use only the Arc Testnet payment option from the live HTTP 402 challenge.
-- Expected network: eip155:5042002.
-- Do not inspect, enumerate, or try any other chain.
-- Do not automatically fall back to another network.
-- If Arc Testnet is not offered, STOP and report it to the user.`,
+    task: "Use/reuse official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, legal input.",
+    payment: "ARC TESTNET ONLY: select eip155:5042002; never enumerate/use another chain. If absent, STOP. If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not use another chain.",
   },
 };
 
-const SHARED_PAYMENT_RULES = {
-  beforeNetwork: `- Create one fresh UUID v4 Idempotency-Key.
-- Make the unpaid request first and inspect the real HTTP 402.
-- The challenged resource must match the exact OMNI request.
-- The asset must be USDC.`,
-  afterNetwork: `- The amount must equal exactly {{atomicAmount}} atomic units = {{displayPrice}} USDC.
-- If the live challenge price differs from the expected amount, STOP.
-- If the challenged resource differs, STOP.
-- If the asset is not USDC, STOP.
-- Authorize at most one payment.
-- Reuse the exact request and Idempotency-Key for the paid retry.`
-};
+const RESOURCE_VALIDATION_RULE = `Resolve new URL(challengeResource, originalRequestUrl) against full original OMNI request URL. Require same HTTPS origin, pathname, and query names/values; no missing/extra keys. Query order and equivalent percent-encoding are okay. Different origin, pathname, query key, or query value: STOP before payment.`;
+
+const UNPAID_REQUEST_RULE = "Make request unpaid first. Check HTTP status and PAYMENT-REQUIRED header; body {} is allowed.";
 
 export function buildAgentInspectionPrompt(input: InspectionInput, options: AgentPromptOptions = {}): string {
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
@@ -304,52 +248,27 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
   const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-testnet"];
   const request = buildRequest(input);
   const preflightRule = input.endpointId === "preflight"
-    ? `- The target URL is INPUT to OMNI. Pay OMNI only. Never pay the inspected target endpoint.
-- TESTNET ONLY applies to the Circle wallet/payment used to call OMNI, not to the inspected endpoint's advertised networks.
-- The inspected endpoint may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely because it advertises MAINNET.
-- Report the payment options returned by OMNI exactly as observed.
-- Do not choose a target network.
-- Do not create or check wallets on the target networks.
-- Do not run Circle payment against the target endpoint.
-- OMNI performs the unpaid target probe server-side.
-`
+    ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
-  const paymentRulesAfterNetwork = SHARED_PAYMENT_RULES.afterNetwork
-    .replace("{{atomicAmount}}", endpoint.atomicAmount)
-    .replace("{{displayPrice}}", endpoint.displayPrice);
 
-  return `${profile.onboarding}
+  return `TASK
+${profile.task}
 
-Read:
-
-https://api.askomni.xyz/llms.txt
-
-Perform exactly one OMNI inspection:
-
+REQUEST
 ${request.display}
+Inspect: ${targetDescription(input)}
 
-The user wants OMNI to inspect:
-${targetDescription(input)}
+PAYMENT
+${profile.payment}
+${UNPAID_REQUEST_RULE}
+Require asset USDC and exactly ${endpoint.atomicAmount} atomic units / ${endpoint.displayPrice} USDC.
+${RESOURCE_VALIDATION_RULE}
+Use one fresh UUID v4 Idempotency-Key. Authorize at most one payment. Retry same method, URL, POST body, and Idempotency-Key. If payment state is uncertain, STOP; never re-pay automatically.
+Never expose OTP, wallet, signing, or payment authorization secrets.
+${preflightRule}
 
-Rules:
-${profile.scopeRule}
-${SHARED_PAYMENT_RULES.beforeNetwork}
-${profile.networkRule}
-${paymentRulesAfterNetwork}
-${input.endpointId === "dependencies" ? "- For POST, reuse the exact same JSON body for the paid retry.\n" : ""}${preflightRule}- If payment state is uncertain, STOP. Never retry payment automatically.
-- Never expose private keys, seed phrases, wallet credentials, signing secrets, or payment authorization secrets.
-- Do not repeat or log OTP after using it.
-
-After HTTP 200:
-
-1. JSON Assessment
-   Show JSON without artifact.content.
-
-2. OMNI Markdown Report
-   Render artifact.content.
-
-If artifact.content is missing, report it and stop.
-Do not make another paid request.`;
+OUTPUT
+After HTTP 200, show JSON without artifact.content, then render artifact.content. Missing content: report and stop; no more paid requests.`;
 }
 
 export async function copyText(value: string): Promise<void> {
