@@ -26,7 +26,8 @@ describe("agent inspection prompt profiles", () => {
       const prompt = buildAgentInspectionPrompt(input);
       expect(prompt).toContain("TESTNET only:");
       expect(prompt).toContain("acceptable TESTNET option");
-      expect(prompt).toContain("If the selected TESTNET wallet is not payment-ready or cannot cover the payment, STOP; do not fall back to another chain.");
+      expect(prompt).toContain("If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not fall back to another chain.");
+      expect(prompt).not.toContain("or cannot cover the payment");
       expect(prompt).not.toContain("ARC TESTNET ONLY:");
       expect(prompt).not.toContain("eip155:5042002");
     }
@@ -117,9 +118,24 @@ describe("agent inspection prompt profiles", () => {
     expect(request.url).not.toContain("name=circle-fin%2Fx402-batching");
   });
 
-  test("copied prompts stay materially shorter", () => {
+  test("output renders JSON then the human-readable markdown report and stops when content is missing", () => {
+    const expectedOutput = [
+      "OUTPUT",
+      "After HTTP 200:",
+      "1. Show JSON without artifact.content.",
+      "2. Render artifact.content as the human-readable OMNI Markdown Report.",
+      "Missing content: report and stop; no more paid requests.",
+    ].join("\n");
+
+    for (const prompt of [AGENT_QUICK_TEST_PROMPT, buildAgentInspectionPrompt(packageInput)]) {
+      expect(prompt).toContain(expectedOutput);
+      expect(prompt.match(/^OUTPUT$/gm)).toHaveLength(1);
+    }
+  });
+
+  test("copied prompts keep a bounded word count after explicit output expansion", () => {
     const wordCount = (value: string) => value.trim().split(/\s+/).filter(Boolean).length;
-    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBeLessThanOrEqual(180);
-    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBeLessThanOrEqual(180);
+    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBe(187);
+    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBe(190);
   });
 });

@@ -230,7 +230,7 @@ type AgentPromptProfileConfig = {
 const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig> = {
   "generic-testnet": {
     task: "Use/reuse official Circle Agent Wallet. If setup/login needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "TESTNET only: choose acceptable TESTNET option from challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or cannot cover the payment, STOP; do not fall back to another chain.",
+    payment: "TESTNET only: choose acceptable TESTNET option from challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not fall back to another chain.",
   },
   "arc-testnet-quick-test": {
     task: "Use/reuse official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, legal input.",
@@ -268,7 +268,10 @@ Never expose OTP, wallet, signing, or payment authorization secrets.
 ${preflightRule}
 
 OUTPUT
-After HTTP 200, show JSON without artifact.content, then render artifact.content. Missing content: report and stop; no more paid requests.`;
+After HTTP 200:
+1. Show JSON without artifact.content.
+2. Render artifact.content as the human-readable OMNI Markdown Report.
+Missing content: report and stop; no more paid requests.`;
 }
 
 export async function copyText(value: string): Promise<void> {
