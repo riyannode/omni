@@ -224,23 +224,23 @@ function targetDescription(input: InspectionInput): string {
 
 type AgentPromptProfileConfig = {
   task: string;
-  network: string;
+  payment: string;
 };
 
 const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig> = {
   "generic-testnet": {
-    task: `Use/reuse the official Circle Agent Wallet. If setup/login is needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input. Never expose secrets.`,
-    network: "TESTNET only: choose an acceptable TESTNET option from the live challenge; if none, STOP. No automatic fallback.",
+    task: "Use/reuse official Circle Agent Wallet. If setup/login needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
+    payment: "TESTNET only: choose acceptable TESTNET option from challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or cannot cover the payment, STOP; do not fall back to another chain.",
   },
   "arc-testnet-quick-test": {
-    task: `Use/reuse the official Circle Agent Wallet. If setup/login is needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input. Never expose secrets.`,
-    network: "ARC TESTNET ONLY: select eip155:5042002; never enumerate/use another chain. If absent, STOP. No fallback.",
+    task: "Use/reuse official Circle Agent Wallet. If setup/login needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
+    payment: "ARC TESTNET ONLY: select eip155:5042002; never enumerate/use another chain. If absent, STOP. If the Arc Testnet wallet or Gateway balance cannot cover the payment, STOP; do not use another chain.",
   },
 };
 
-const RESOURCE_VALIDATION_RULE = `Resolve with new URL(challengeResource, originalRequestUrl) against the full original OMNI request URL, not only its origin. Require same HTTPS origin, pathname, and query names/values; no missing/extra keys. Query order and equivalent percent-encoding are okay. Different origin, pathname, query key, or query value: STOP before payment.`;
+const RESOURCE_VALIDATION_RULE = `Resolve new URL(challengeResource, originalRequestUrl) against full original OMNI request URL. Require same HTTPS origin, pathname, and query names/values; no missing/extra keys. Query order and equivalent percent-encoding are okay. Different origin, pathname, query key, or query value: STOP before payment.`;
 
-const UNPAID_REQUEST_RULE = "Make the request unpaid first. Check HTTP status and the PAYMENT-REQUIRED header; body {} is allowed.";
+const UNPAID_REQUEST_RULE = "Make request unpaid first. Check HTTP status and PAYMENT-REQUIRED header; body {} is allowed.";
 
 export function buildAgentInspectionPrompt(input: InspectionInput, options: AgentPromptOptions = {}): string {
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
@@ -255,15 +255,16 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
 ${profile.task}
 
 REQUEST
-${profile.network}
 ${request.display}
 Inspect: ${targetDescription(input)}
 
 PAYMENT
+${profile.payment}
 ${UNPAID_REQUEST_RULE}
 Require asset USDC and exactly ${endpoint.atomicAmount} atomic units / ${endpoint.displayPrice} USDC.
 ${RESOURCE_VALIDATION_RULE}
-Use one fresh UUID v4 Idempotency-Key. Authorize at most one payment. Retry the same method, URL, POST body, and Idempotency-Key. If payment state is uncertain, STOP; never re-pay automatically.
+Use one fresh UUID v4 Idempotency-Key. Authorize at most one payment. Retry same method, URL, POST body, and Idempotency-Key. If payment state is uncertain, STOP; never re-pay automatically.
+Never expose OTP, wallet, signing, or payment authorization secrets.
 ${preflightRule}
 
 OUTPUT
