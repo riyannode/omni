@@ -13,6 +13,7 @@ import { representationFromAccept, sendResult, type ResultRepresentation } from 
 
 const IDEMPOTENCY_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_EXECUTION_LEASE_MS = 30_000;
+const SETTLEMENT_WATCHDOG_MS = 30_000;
 
 type GatewayBeforeSettleHook = Parameters<GatewayMiddleware["onBeforeSettle"]>[0];
 type GatewayAfterSettleHook = Parameters<GatewayMiddleware["onAfterSettle"]>[0];
@@ -27,6 +28,8 @@ type PaidRouteSpec<T extends RouteInput> = {
   execute(input: T): Promise<unknown>;
 };
 
+type PaymentLifecycleStage = "request" | "verifying" | "before_settle" | "settlement_started" | "after_settle" | "settle_failure" | "reconciling" | "executing" | "completed";
+
 type PaymentContext = {
   readonly idempotencyKey: string;
   readonly requestFingerprint: string;
@@ -34,6 +37,9 @@ type PaymentContext = {
   paymentNonce?: string;
   beforeSettleEntered: boolean;
   durablePaymentMetadataRecorded: boolean;
+  lifecycleStage: PaymentLifecycleStage;
+  settlementOutcomeObserved: boolean;
+  settlementWatchdog?: ReturnType<typeof setTimeout>;
 };
 
 type ExecutionLeaseHeartbeat = {
@@ -47,6 +53,86 @@ export type GatewayWithHooks = {
   onSettleFailure?: (hook: GatewaySettleFailureHook) => unknown;
   onVerifyFailure?: (hook: GatewayVerifyFailureHook) => unknown;
 };
+
+function errorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : error && typeof error === "object" && "name" in error && typeof error.name === "string" ? error.name : "UnknownError";
+  return name.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 100) || "UnknownError";
+}
+
+function sanitizeErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "unknown error";
+  const sanitized = raw
+    .replace(/0x[0-9a-f]{64,}/gi, "[redacted]")
+    .replace(/(payment[-_ ]?signature|signature|authorization|private[-_ ]?key|secret|nonce)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/[A-Za-z0-9+/=_-]{96,}/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (sanitized || "unknown error").slice(0, 500);
+}
+
+function settlementFields(context: { requirements: { network: string; amount: string } }): { network: string; amountAtomic: string } {
+  return { network: context.requirements.network, amountAtomic: context.requirements.amount };
+}
+
+function startSettlementWatchdog(context: PaymentContext, requirements: { network: string; amount: string }): void {
+  context.settlementWatchdog = setTimeout(() => {
+    if (context.settlementOutcomeObserved) return;
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "paid_request_settlement_stalled",
+      idempotencyKey: context.idempotencyKey,
+      route: context.route,
+      lifecycleStage: context.lifecycleStage,
+      ...settlementFields({ requirements })
+    }));
+  }, SETTLEMENT_WATCHDOG_MS);
+  context.settlementWatchdog.unref?.();
+}
+
+function stopSettlementWatchdog(context: PaymentContext): void {
+  context.settlementOutcomeObserved = true;
+  if (context.settlementWatchdog !== undefined) clearTimeout(context.settlementWatchdog);
+  delete context.settlementWatchdog;
+}
+
+function observePaidRequestDisconnect(req: Request, res: Response, context: PaymentContext): void {
+  let responseFinished = false;
+  let reported = false;
+  const cleanup = () => {
+    req.removeListener("aborted", onAborted);
+    req.removeListener("close", onRequestClose);
+    res.removeListener("finish", onFinish);
+    res.removeListener("close", onResponseClose);
+  };
+  const report = () => {
+    if (reported || responseFinished) return;
+    reported = true;
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "paid_request_client_disconnected",
+      idempotencyKey: context.idempotencyKey,
+      route: context.route,
+      lifecycleStage: context.lifecycleStage,
+      headersSent: res.headersSent ? "yes" : "no"
+    }));
+  };
+  const onAborted = () => report();
+  const onRequestClose = () => {
+    if (!req.complete) report();
+  };
+  const onFinish = () => {
+    responseFinished = true;
+    cleanup();
+  };
+  const onResponseClose = () => {
+    if (!res.writableFinished) report();
+    cleanup();
+  };
+  req.once("aborted", onAborted);
+  req.once("close", onRequestClose);
+  res.once("finish", onFinish);
+  res.once("close", onResponseClose);
+}
 
 function sendError(res: Response, status: number, error: string, retryable = false): void {
   if (res.headersSent) return;
@@ -145,6 +231,7 @@ export class PaidRouteIntegration {
   private readonly beforeSettle: GatewayBeforeSettleHook = async (context) => {
     const requestContext = this.requestContext.getStore();
     if (!requestContext) return;
+    requestContext.lifecycleStage = "before_settle";
     requestContext.beforeSettleEntered = true;
     const metadata = paymentMetadataFromRequest(context.paymentPayload.payload, context.requirements);
     if (!metadata) {
@@ -154,6 +241,16 @@ export class PaidRouteIntegration {
     try {
       await this.store.persistPaymentNonce(requestContext.idempotencyKey, requestContext.requestFingerprint, metadata);
       requestContext.paymentNonce = metadata.paymentNonce;
+      requestContext.lifecycleStage = "settlement_started";
+      console.log(JSON.stringify({
+        level: "info",
+        event: "paid_request_settlement_started",
+        idempotencyKey: requestContext.idempotencyKey,
+        route: requestContext.route,
+        network: metadata.network,
+        amountAtomic: metadata.amountAtomic
+      }));
+      startSettlementWatchdog(requestContext, context.requirements);
     } catch (error) {
       console.error(JSON.stringify({
         level: "error",
@@ -168,9 +265,33 @@ export class PaidRouteIntegration {
 
   private readonly afterSettle: GatewayAfterSettleHook = async (context) => {
     const requestContext = this.requestContext.getStore();
-    if (!requestContext || !context.result.success || !context.result.transaction || !requestContext.paymentNonce) return;
+    if (!requestContext) return;
+    stopSettlementWatchdog(requestContext);
+    requestContext.lifecycleStage = "after_settle";
+    if (!context.result.success) {
+      console.error(JSON.stringify({
+        level: "error",
+        event: "paid_request_settlement_response_failed",
+        idempotencyKey: requestContext.idempotencyKey,
+        route: requestContext.route,
+        errorName: "CircleSettlementFailure",
+        message: sanitizeErrorMessage(context.result.errorReason),
+        ...settlementFields(context)
+      }));
+      return;
+    }
+    if (!context.result.transaction || !requestContext.paymentNonce) return;
     const metadata = paymentMetadataFromRequest(context.paymentPayload.payload, context.requirements);
     if (!metadata) return;
+    console.log(JSON.stringify({
+      level: "info",
+      event: "paid_request_settlement_succeeded",
+      idempotencyKey: requestContext.idempotencyKey,
+      route: requestContext.route,
+      circleTransferId: context.result.transaction,
+      network: metadata.network,
+      amountAtomic: metadata.amountAtomic
+    }));
     try {
       await this.store.markPaid(requestContext.idempotencyKey, requestContext.requestFingerprint, context.result.transaction, metadata);
       requestContext.durablePaymentMetadataRecorded = true;
@@ -179,7 +300,9 @@ export class PaidRouteIntegration {
         event: "paid_request_settled",
         idempotencyKey: requestContext.idempotencyKey,
         route: requestContext.route,
-        circleTransferId: context.result.transaction
+        circleTransferId: context.result.transaction,
+        network: metadata.network,
+        amountAtomic: metadata.amountAtomic
       }));
     } catch (error) {
       console.error(JSON.stringify({
@@ -196,17 +319,28 @@ export class PaidRouteIntegration {
   private readonly onSettleFailure: GatewaySettleFailureHook = async (context) => {
     const requestContext = this.requestContext.getStore();
     if (!requestContext) return;
+    stopSettlementWatchdog(requestContext);
+    requestContext.lifecycleStage = "settle_failure";
     console.error(JSON.stringify({
       level: "error",
       event: "paid_request_settlement_uncertain",
       idempotencyKey: requestContext.idempotencyKey,
       route: requestContext.route,
-      message: context.error instanceof Error ? context.error.message : "unknown error"
+      errorName: errorName(context.error),
+      message: sanitizeErrorMessage(context.error),
+      ...settlementFields(context)
     }));
   };
 
-  private readonly onVerifyFailure: GatewayVerifyFailureHook = async () => {
+  private readonly onVerifyFailure: GatewayVerifyFailureHook = async (context) => {
     const requestContext = this.requestContext.getStore();
+    console.error(JSON.stringify({
+      level: "error",
+      event: "paid_request_verification_failed",
+      ...(requestContext ? { idempotencyKey: requestContext.idempotencyKey, route: requestContext.route } : {}),
+      errorName: errorName(context.error),
+      message: sanitizeErrorMessage(context.error)
+    }));
     if (requestContext && !requestContext.paymentNonce) await this.releaseUnsettledAttempt(requestContext);
   };
 
@@ -359,8 +493,11 @@ export class PaidRouteIntegration {
       requestFingerprint,
       route: spec.route,
       beforeSettleEntered: false,
-      durablePaymentMetadataRecorded: false
+      durablePaymentMetadataRecorded: false,
+      lifecycleStage: "verifying",
+      settlementOutcomeObserved: false
     };
+    observePaidRequestDisconnect(req, res, context);
     await this.requestContext.run(context, async () => {
       const middleware = this.gateway.require(spec.price) as RequestHandler;
       await middleware(req, res, async (error?: unknown) => {
@@ -457,6 +594,8 @@ export class PaidRouteIntegration {
   }
 
   private async execute<T extends RouteInput>(input: T, spec: PaidRouteSpec<T>, idempotencyKey: string, requestFingerprint: string, res: Response, representation: ResultRepresentation): Promise<void> {
+    const requestContext = this.requestContext.getStore();
+    if (requestContext) requestContext.lifecycleStage = "executing";
     let claim: Awaited<ReturnType<PaidRequestStore["claimExecution"]>>;
     try {
       claim = await this.store.claimExecution(idempotencyKey, requestFingerprint, this.executionLeaseMs);
@@ -515,6 +654,7 @@ export class PaidRouteIntegration {
     await heartbeat.stop();
     try {
       await this.store.complete(idempotencyKey, requestFingerprint, leaseId, result, 200);
+      if (requestContext) requestContext.lifecycleStage = "completed";
       sendResult(res, 200, result, representation, spec.route);
     } catch (error) {
       try {
