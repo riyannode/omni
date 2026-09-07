@@ -28,6 +28,7 @@ type BeforeSettleContext = Parameters<Parameters<GatewayMiddleware["onBeforeSett
 type AfterSettleContext = Parameters<Parameters<GatewayMiddleware["onAfterSettle"]>[0]>[0];
 type SettleFailureContext = Parameters<Parameters<GatewayMiddleware["onSettleFailure"]>[0]>[0];
 type VerifyFailureContext = Parameters<Parameters<GatewayMiddleware["onVerifyFailure"]>[0]>[0];
+type LogEntry = Record<string, unknown>;
 
 const servers: Server[] = [];
 
@@ -211,15 +212,17 @@ class MemoryPaidRequestStore implements PaidRequestStore {
 class TestGateway {
   private readonly beforeHooks: Array<(context: BeforeSettleContext) => Promise<unknown>> = [];
   private readonly afterHooks: Array<(context: AfterSettleContext) => Promise<void>> = [];
+  private readonly settleFailureHooks: Array<(context: SettleFailureContext) => Promise<unknown>> = [];
   private readonly verifyFailureHooks: Array<(context: VerifyFailureContext) => Promise<unknown>> = [];
   settlementCount = 0;
   prices: string[] = [];
   verificationFailure = false;
+  settlementError?: Error;
   settlementResult: { success: boolean; errorReason?: string } = { success: true };
 
   onBeforeSettle(hook: (context: BeforeSettleContext) => Promise<unknown>): this { this.beforeHooks.push(hook); return this; }
   onAfterSettle(hook: (context: AfterSettleContext) => Promise<void>): this { this.afterHooks.push(hook); return this; }
-  onSettleFailure(_hook: (context: SettleFailureContext) => Promise<unknown>): this { return this; }
+  onSettleFailure(hook: (context: SettleFailureContext) => Promise<unknown>): this { this.settleFailureHooks.push(hook); return this; }
   onVerifyFailure(hook: (context: VerifyFailureContext) => Promise<unknown>): this { this.verifyFailureHooks.push(hook); return this; }
 
   require(price: string): RequestHandler {
@@ -245,15 +248,21 @@ class TestGateway {
           return;
         }
       }
-      this.settlementCount += 1;
-      const result = { ...this.settlementResult, transaction: `transfer-${this.settlementCount}`, network: NETWORK, payer: PAYER };
-      for (const hook of this.afterHooks) await hook({ paymentPayload, requirements, result });
-      if (!result.success) {
-        res.status(402).json({ error: result.errorReason ?? "payment_failed" });
-        return;
+      try {
+        if (this.settlementError) throw this.settlementError;
+        this.settlementCount += 1;
+        const result = { ...this.settlementResult, transaction: `transfer-${this.settlementCount}`, network: NETWORK, payer: PAYER };
+        for (const hook of this.afterHooks) await hook({ paymentPayload, requirements, result });
+        if (!result.success) {
+          res.status(402).json({ error: result.errorReason ?? "payment_failed" });
+          return;
+        }
+        res.setHeader("PAYMENT-RESPONSE", Buffer.from(JSON.stringify({ success: true, transaction: result.transaction, network: NETWORK, payer: PAYER })).toString("base64"));
+        await next();
+      } catch (error) {
+        for (const hook of this.settleFailureHooks) await hook({ paymentPayload, requirements, error: error instanceof Error ? error : new Error(String(error)) });
+        res.status(500).json({ error: "settlement_failed" });
       }
-      res.setHeader("PAYMENT-RESPONSE", Buffer.from(JSON.stringify({ success: true, transaction: result.transaction, network: NETWORK, payer: PAYER })).toString("base64"));
-      await next();
     };
   }
 
@@ -266,6 +275,33 @@ function paymentHeader(nonce = NONCE): string {
     accepted: { scheme: "exact", network: NETWORK, asset: ASSET, amount: "5000", payTo: SELLER, maxTimeoutSeconds: 604900, extra: {} },
     payload: { authorization: { from: PAYER, to: SELLER, value: "5000", validAfter: "0", validBefore: "9999999999", nonce }, signature: "0x" }
   })).toString("base64");
+}
+
+async function captureLogs<T>(operation: () => Promise<T>): Promise<{ result: T; logs: LogEntry[] }> {
+  const logs: LogEntry[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  const capture = (...args: unknown[]) => {
+    const first = args[0];
+    if (typeof first !== "string") return;
+    try {
+      const parsed = JSON.parse(first) as LogEntry;
+      if (typeof parsed.event === "string") logs.push(parsed);
+    } catch {
+      // Ignore non-JSON output from the test harness.
+    }
+  };
+  console.log = capture as typeof console.log;
+  console.error = capture as typeof console.error;
+  console.warn = capture as typeof console.warn;
+  try {
+    return { result: await operation(), logs };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    console.warn = originalWarn;
+  }
 }
 
 function testHistory(): HistoryStore {
@@ -1032,6 +1068,87 @@ describe("paid settlement reconciliation", () => {
     expect(response.status).toBe(402);
     expect(await response.json()).toEqual({ error: "payment_failed", retryable: false });
     expect(fixture.gateway.settlementCount).toBe(0);
+  });
+});
+
+describe("paid settlement observability", () => {
+  test("logs settlement start and success after nonce persistence without reporting normal close", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+    const captured = await captureLogs(async () => {
+      const response = await packageRequest(url, PACKAGE_KEY);
+      await response.json();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return response;
+    });
+
+    expect(captured.result.status).toBe(200);
+    expect(store.events[0]).toBe("nonce_persisted");
+    expect(captured.logs).toContainEqual(expect.objectContaining({
+      event: "paid_request_settlement_started",
+      idempotencyKey: PACKAGE_KEY,
+      route: "package",
+      network: NETWORK,
+      amountAtomic: "5000"
+    }));
+    expect(captured.logs).toContainEqual(expect.objectContaining({
+      event: "paid_request_settlement_succeeded",
+      idempotencyKey: PACKAGE_KEY,
+      route: "package",
+      circleTransferId: "transfer-1",
+      network: NETWORK,
+      amountAtomic: "5000"
+    }));
+    expect(captured.logs.some(log => log.event === "paid_request_client_disconnected")).toBe(false);
+    const serialized = JSON.stringify(captured.logs);
+    expect(serialized).not.toContain(NONCE);
+    expect(serialized).not.toContain("PAYMENT-SIGNATURE");
+  });
+
+  test("logs sanitized settlement failures without changing the settling state", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    gateway.settlementError = new Error(`transport failed nonce=${NONCE} signature=${"c".repeat(120)}`);
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+    const captured = await captureLogs(async () => packageRequest(url, PACKAGE_KEY));
+
+    expect(captured.result.status).toBe(500);
+    expect(store.rows.get(PACKAGE_KEY)?.state).toBe("settling");
+    expect(gateway.settlementCount).toBe(0);
+    const failure = captured.logs.find(log => log.event === "paid_request_settlement_uncertain");
+    expect(failure).toMatchObject({
+      idempotencyKey: PACKAGE_KEY,
+      route: "package",
+      errorName: "Error",
+      network: NETWORK,
+      amountAtomic: "5000"
+    });
+    expect(String(failure?.message)).toContain("transport failed");
+    expect(String(failure?.message)).not.toContain(NONCE);
+    expect(String(failure?.message)).not.toContain("c".repeat(120));
+  });
+
+  test("logs verification failure and preserves nonce-less release behavior", async () => {
+    const store = new MemoryPaidRequestStore();
+    const gateway = new TestGateway();
+    gateway.verificationFailure = true;
+    const app = createFixture(store, gateway, createOmni());
+    const { url } = await listen(app);
+    const captured = await captureLogs(async () => packageRequest(url, PACKAGE_KEY));
+
+    expect(captured.result.status).toBe(402);
+    expect(store.rows.get(PACKAGE_KEY)?.state).toBe("waiting_payment");
+    expect(captured.logs).toContainEqual(expect.objectContaining({
+      event: "paid_request_verification_failed",
+      idempotencyKey: PACKAGE_KEY,
+      route: "package",
+      errorName: "Error",
+      message: "injected verification failure"
+    }));
+    expect(JSON.stringify(captured.logs)).not.toContain(NONCE);
   });
 });
 
