@@ -9,8 +9,8 @@ function scoreLevel(score: number, policy: ReadonlyRiskPolicy): RiskLevel {
   return "low";
 }
 function worstSeverity(levels: RiskLevel[], policy: ReadonlyRiskPolicy): RiskLevel {
-  if (levels.includes("unknown")) return "unknown";
-  return levels.reduce<RiskLevel | undefined>((worst, current) => worst === undefined || policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, undefined) ?? "unknown";
+  const knownLevels = levels.filter(level => level !== "unknown");
+  return knownLevels.reduce<RiskLevel | undefined>((worst, current) => worst === undefined || policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, undefined) ?? "unknown";
 }
 function recommendation(score: number, policy: ReadonlyRiskPolicy): Recommendation {
   if (score >= policy.recommendationThresholds.doNotProceed) return "do_not_proceed";

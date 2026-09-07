@@ -100,8 +100,12 @@ function compareSemver(left: Semver, right: Semver): number {
   return 0;
 }
 
-function versionInRange(version: string, range: OsvAffectedRange): boolean {
-  if (range.type.toUpperCase() !== "SEMVER") return false;
+function versionInRange(version: string, range: OsvAffectedRange, ecosystem: string): boolean {
+  const rangeType = range.type.toUpperCase();
+  // OSV ECOSYSTEM ranges are interpreted by the named ecosystem. npm uses
+  // SemVer ordering for package versions; GIT ranges remain commit-only and
+  // must not be guessed from a package version.
+  if (rangeType !== "SEMVER" && !(rangeType === "ECOSYSTEM" && ecosystem.toLowerCase() === "npm")) return false;
   const requested = parseSemver(version);
   if (!requested) return false;
   let active = false;
@@ -127,7 +131,7 @@ function affectedVersionMatch(affected: OsvAffectedPackage[], ecosystem: string,
   return affected.some(item => {
     if (item.package.ecosystem.toLowerCase() !== ecosystem.toLowerCase() || item.package.name !== name) return false;
     if (item.versions.includes(version)) return true;
-    return item.ranges.some(range => versionInRange(version, range));
+    return item.ranges.some(range => versionInRange(version, range, ecosystem));
   });
 }
 

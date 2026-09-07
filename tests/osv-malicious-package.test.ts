@@ -14,6 +14,30 @@ const ordinary = {
   affected: [{ package: { ecosystem: "npm", name: "demo" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }]
 };
 
+const pnpmEcosystemAdvisory = {
+  id: "GHSA-8cc4-rfj6-fhg4",
+  aliases: ["CVE-2024-47829"],
+  database_specific: { severity: "MODERATE" },
+  severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:C/C:L/I:L/A:L" }],
+  affected: [{
+    package: { name: "pnpm", ecosystem: "npm", purl: "pkg:npm/pnpm" },
+    ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "10.0.0" }] }],
+    database_specific: { source: "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2025/04/GHSA-8cc4-rfj6-fhg4/GHSA-8cc4-rfj6-fhg4.json" }
+  }]
+};
+
+const pnpmPathTraversalEcosystemAdvisory = {
+  id: "GHSA-v253-rj99-jwpq",
+  aliases: ["CVE-2026-24131"],
+  database_specific: { severity: "MODERATE" },
+  severity: [{ type: "CVSS_V4", score: "CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:A/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N" }],
+  affected: [{
+    package: { name: "pnpm", ecosystem: "npm", purl: "pkg:npm/pnpm" },
+    ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "10.28.2" }] }],
+    database_specific: { source: "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/01/GHSA-v253-rj99-jwpq/GHSA-v253-rj99-jwpq.json" }
+  }]
+};
+
 function maliciousRecord(id: string, version: string, modified: string, source: string) {
   return {
     id,
@@ -44,12 +68,44 @@ function maliciousRecord(id: string, version: string, modified: string, source: 
   };
 }
 
-async function query(vulns: unknown[]) {
+async function query(vulns: unknown[], packageName = "demo", packageVersion = "1.0.0") {
   const provider = new OsvProvider({ async json() { return { vulns }; } } as never);
-  return provider.packageVulnerabilities("npm", "demo", "1.0.0");
+  return provider.packageVulnerabilities("npm", packageName, packageVersion);
 }
 
 describe("OSV malicious-package recognition", () => {
+  test("matches an npm ECOSYSTEM range for an affected pnpm version", async () => {
+    const result = await query([pnpmEcosystemAdvisory], "pnpm", "9.9.0");
+    expect(result.findings).toEqual([{ id: "GHSA-8cc4-rfj6-fhg4", severity: "medium", knownExploited: false, aliases: ["CVE-2024-47829"] }]);
+    expect(result.evidence[0]?.detail.advisories).toHaveLength(1);
+    expect((result.evidence[0]?.detail.advisories as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: "GHSA-8cc4-rfj6-fhg4",
+      versionMatch: { ecosystem: "npm", name: "pnpm", version: "9.9.0", matched: true, queryMatched: true }
+    });
+  });
+
+  test("matches the pnpm path-traversal advisory before its npm ECOSYSTEM fix", async () => {
+    const result = await query([pnpmPathTraversalEcosystemAdvisory], "pnpm", "10.28.1");
+    expect(result.findings).toEqual([{ id: "GHSA-v253-rj99-jwpq", severity: "medium", knownExploited: false, aliases: ["CVE-2026-24131"] }]);
+    expect(result.evidence[0]?.detail.advisories).toHaveLength(1);
+    expect((result.evidence[0]?.detail.advisories as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: "GHSA-v253-rj99-jwpq",
+      versionMatch: { ecosystem: "npm", name: "pnpm", version: "10.28.1", matched: true, queryMatched: true }
+    });
+  });
+
+  test("excludes a fixed pnpm version from an npm ECOSYSTEM range", async () => {
+    await expect(query([], "pnpm", "10.0.0")).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
+    await expect(query([pnpmEcosystemAdvisory], "pnpm", "10.0.0")).rejects.toThrow("osv_advisory_version_mismatch");
+    await expect(query([], "pnpm", "10.28.2")).resolves.toMatchObject({ findings: [], maliciousPackageObservations: [] });
+    await expect(query([pnpmPathTraversalEcosystemAdvisory], "pnpm", "10.28.2")).rejects.toThrow("osv_advisory_version_mismatch");
+  });
+
+  test("keeps npm SEMVER range behavior unchanged", async () => {
+    const result = await query([ordinary], "demo", "1.0.0");
+    expect(result.findings).toEqual([{ id: "GHSA-ordinary", severity: "high", knownExploited: false, aliases: ["CVE-2026-0001"] }]);
+  });
+
   test("groups alias-linked advisories without discarding raw advisory evidence", async () => {
     const first = {
       id: "GHSA-alpha",

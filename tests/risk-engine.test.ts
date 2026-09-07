@@ -135,7 +135,33 @@ test("keeps unknown vulnerability severity unknown in the dimension", () => {
   expect(result.dimensions.knownVulnerabilities).toBe("unknown");
 });
 
-test("unknown severity dominates a low vulnerability in the dimension", () => {
+test("known critical severity is not hidden by unknown severity", () => {
+  const result = engine.assess({
+    subject: { type: "package", id: "npm:demo@1.0.0" },
+    vulnerabilities: [
+      { id: "GHSA-critical", severity: "critical", knownExploited: false, aliases: [] },
+      { id: "GHSA-unknown", severity: "unknown", knownExploited: false, aliases: [] }
+    ],
+    exploitationChecked: true,
+    evidence: []
+  });
+  expect(result.dimensions.knownVulnerabilities).toBe("critical");
+});
+
+test("known high severity is not hidden by unknown severity", () => {
+  const result = engine.assess({
+    subject: { type: "package", id: "npm:demo@1.0.0" },
+    vulnerabilities: [
+      { id: "GHSA-high", severity: "high", knownExploited: false, aliases: [] },
+      { id: "GHSA-unknown", severity: "unknown", knownExploited: false, aliases: [] }
+    ],
+    exploitationChecked: true,
+    evidence: []
+  });
+  expect(result.dimensions.knownVulnerabilities).toBe("high");
+});
+
+test("known low severity is not hidden by unknown severity", () => {
   const result = engine.assess({
     subject: { type: "package", id: "npm:demo@1.0.0" },
     vulnerabilities: [
@@ -145,7 +171,7 @@ test("unknown severity dominates a low vulnerability in the dimension", () => {
     exploitationChecked: true,
     evidence: []
   });
-  expect(result.dimensions.knownVulnerabilities).toBe("unknown");
+  expect(result.dimensions.knownVulnerabilities).toBe("low");
 });
 
 test("does not turn partial no-signal package coverage into caution", () => {
