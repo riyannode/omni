@@ -202,32 +202,33 @@ export class GitHubRepositoryProvider {
     const base = this.base(parts.owner, parts.repo); const headers = this.headers();
     const response = await json<{ truncated?: boolean; tree?: TreeEntry[] }>(this.http, `${base}/git/trees/${identity.rootTreeSha}?recursive=1`, headers);
     const limitations: string[] = [];
-    if (response.truncated) limitations.push("github_tree_truncated");
+    const githubLimitations: string[] = [];
+    const addGithubLimitation = (limitation: string): void => { limitations.push(limitation); githubLimitations.push(limitation); };
+    if (response.truncated) addGithubLimitation("github_tree_truncated");
     const entries = (response.tree ?? []).filter((entry): entry is Required<TreeEntry> => typeof entry.path === "string" && entry.type === "blob" && typeof entry.sha === "string" && typeof entry.size === "number").sort((a, b) => a.path.localeCompare(b.path));
-    if (entries.length > MAX_TREE_ENTRIES) limitations.push("tree_entry_limit_reached");
+    if (entries.length > MAX_TREE_ENTRIES) addGithubLimitation("tree_entry_limit_reached");
     const candidates = entries.slice(0, MAX_TREE_ENTRIES).filter(entry => category(entry.path) !== undefined);
-    if (candidates.length > MAX_FILES) limitations.push("security_file_limit_reached");
+    if (candidates.length > MAX_FILES) addGithubLimitation("security_file_limit_reached");
     const securityFiles: RepositorySecurityFile[] = []; const inspected = new Map<string, string>(); let bytesInspected = 0;
     for (const entry of candidates.slice(0, MAX_FILES)) {
       const kind = category(entry.path)!;
-      if (entry.size > MAX_FILE_BYTES || bytesInspected + entry.size > MAX_TOTAL_BYTES) { limitations.push(`security_file_oversized:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "oversized", findings: [] }); continue; }
+      if (entry.size > MAX_FILE_BYTES || bytesInspected + entry.size > MAX_TOTAL_BYTES) { addGithubLimitation(`security_file_oversized:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "oversized", findings: [] }); continue; }
       try {
         const data = await json<{ encoding?: string; content?: string }>(this.http, `${base}/contents/${encodeURIComponent(entry.path)}?ref=${identity.resolvedCommitSha}`, headers);
         if (data.encoding !== "base64" || typeof data.content !== "string") throw new Error("github_content_unsupported");
         const decoded = Buffer.from(data.content.replaceAll("\n", ""), "base64");
-        if (decoded.byteLength > MAX_FILE_BYTES || bytesInspected + decoded.byteLength > MAX_TOTAL_BYTES) { limitations.push(`security_file_oversized:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "oversized", findings: [] }); continue; }
-        if (decoded.includes(0)) { limitations.push(`security_file_binary:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "binary", findings: [] }); continue; }
+        if (decoded.byteLength > MAX_FILE_BYTES || bytesInspected + decoded.byteLength > MAX_TOTAL_BYTES) { addGithubLimitation(`security_file_oversized:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "oversized", findings: [] }); continue; }
+        if (decoded.includes(0)) { addGithubLimitation(`security_file_binary:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "binary", findings: [] }); continue; }
         const text = new TextDecoder("utf-8", { fatal: true }).decode(decoded);
         bytesInspected += decoded.byteLength; inspected.set(entry.path, text); securityFiles.push({ path: entry.path, category: kind, status: "inspected", findings: inspect(entry.path, kind, text) });
-      } catch (error) { limitations.push(`${error instanceof Error ? error.message : "github_content_error"}:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "unsupported", findings: [] }); }
+      } catch (error) { addGithubLimitation(`${error instanceof Error ? error.message : "github_content_error"}:${entry.path}`); securityFiles.push({ path: entry.path, category: kind, status: "unsupported", findings: [] }); }
     }
     const candidatePaths = candidates.map(entry => entry.path);
     const resolved = dependencies(inspected, candidatePaths);
     const dependencyManifestPaths = entries.filter(entry => category(entry.path) === "manifest").map(entry => entry.path);
     const dependencyEvidence = { exact: resolved.exact, unresolved: resolved.unresolved, resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } };
     limitations.push(...resolved.limitations, ...unsupportedEcosystems(dependencyManifestPaths));
-    if (dependencyManifestPaths.length === 0) limitations.push("dependency_resolution_unavailable");
     if (resolved.unresolved.length > 0) limitations.push("dependency_versions_unresolved");
-    return { target: { repository: identity.repository, requestedRef: identity.requestedRef, resolvedCommitSha: identity.resolvedCommitSha }, securityFiles, dependencies: dependencyEvidence, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: limitations.length === 0 ? "complete" : "partial", treeEntriesInspected: Math.min(entries.length, MAX_TREE_ENTRIES), filesInspected: securityFiles.filter(file => file.status === "inspected").length, bytesInspected, limitations: [...new Set(limitations)].sort() }, sourceErrors: [] };
+    return { target: { repository: identity.repository, requestedRef: identity.requestedRef, resolvedCommitSha: identity.resolvedCommitSha }, githubCollection: { status: githubLimitations.length === 0 ? "complete" : "partial", limitations: [...new Set(githubLimitations)].sort(), sourceErrors: [] }, securityFiles, dependencies: dependencyEvidence, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: limitations.length === 0 ? "complete" : "partial", treeEntriesInspected: Math.min(entries.length, MAX_TREE_ENTRIES), filesInspected: securityFiles.filter(file => file.status === "inspected").length, bytesInspected, limitations: [...new Set(limitations)].sort() }, sourceErrors: [] };
   }
 }

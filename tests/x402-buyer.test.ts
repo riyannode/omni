@@ -28,6 +28,7 @@ function assessment(overrides: Partial<RiskAssessment> = {}): RiskAssessment {
   return {
     subject: { type: "x402_endpoint", id: "pending" },
     policyVersion: "test-policy",
+    scoreStatus: "measured",
     recommendation: "proceed",
     riskScore: 5,
     evidenceCoverage: 1,

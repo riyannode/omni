@@ -1,4 +1,4 @@
-import type { Recommendation, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot } from "./risk.ts";
+import type { Recommendation, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot, ScoreStatus } from "./risk.ts";
 import { extractRiskFeatures, type RiskFeatures } from "./risk-features.ts";
 import { DEFAULT_RISK_POLICY, type ReadonlyRiskPolicy } from "./risk-policy.ts";
 
@@ -12,8 +12,14 @@ function worstSeverity(levels: RiskLevel[], policy: ReadonlyRiskPolicy): RiskLev
   const knownLevels = levels.filter(level => level !== "unknown");
   return knownLevels.reduce<RiskLevel | undefined>((worst, current) => worst === undefined || policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, undefined) ?? "unknown";
 }
-function recommendation(score: number, policy: ReadonlyRiskPolicy): Recommendation {
+function scoreStatus(features: RiskFeatures): ScoreStatus {
+  if (features.coverage.expected === 0 || features.coverage.completed === 0) return "insufficient_evidence";
+  return features.coverage.completed === features.coverage.expected ? "measured" : "measured_partial";
+}
+
+function recommendation(score: number, policy: ReadonlyRiskPolicy, status: ScoreStatus, subjectType: RiskSnapshot["subject"]["type"]): Recommendation {
   if (score >= policy.recommendationThresholds.doNotProceed) return "do_not_proceed";
+  if (subjectType === "repository" && status !== "measured") return "manual_review";
   if (score >= policy.recommendationThresholds.manualReview) return "manual_review";
   if (score >= policy.recommendationThresholds.caution) return "proceed_with_caution";
   return "proceed";
@@ -104,18 +110,21 @@ export class RiskEngine {
     }
 
     const coverage = features.coverage.expected === 0 ? 0 : features.coverage.completed / features.coverage.expected;
-    const sourcePenalty = Math.min(policy.score.sourceErrorPenaltyCap, features.sourceErrorCount * policy.score.sourceErrorPenalty);
+    const status = scoreStatus(features);
+    const isRepository = snapshot.subject.type === "repository";
+    const sourcePenalty = isRepository ? 0 : Math.min(policy.score.sourceErrorPenaltyCap, features.sourceErrorCount * policy.score.sourceErrorPenalty);
     let score = Math.min(policy.score.maximum, Math.max(policy.score.minimum, Math.max(maxVulnScore, exploitedScore, packageRisk ?? 0, repoRisk ?? 0, maliciousInfrastructureRisk ?? 0, identityRisk ?? 0, paymentRisk ?? 0, endpointRisk ?? 0) + sourcePenalty));
-    if (coverage === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
-    else if (snapshot.subject.type !== "package" && coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
-    else if (snapshot.subject.type === "package" && features.coverage.sources?.some(source => source.source === "OSV" && (source.status === "UNAVAILABLE" || source.status === "UNKNOWN"))) score = Math.max(score, policy.recommendationThresholds.manualReview);
+    if (!isRepository && coverage === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
+    else if (!isRepository && snapshot.subject.type !== "package" && coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
+    else if (!isRepository && snapshot.subject.type === "package" && features.coverage.sources?.some(source => source.source === "OSV" && (source.status === "UNAVAILABLE" || source.status === "UNKNOWN"))) score = Math.max(score, policy.recommendationThresholds.manualReview);
 
     const knownVulnerabilities: RiskLevel = features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : worstSeverity(features.vulnerabilities.map(v => v.severity), policy);
     const knownExploitation: RiskLevel = features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : features.exploitationChecked ? scoreLevel(exploitedScore, policy) : "unknown";
     return {
       subject: snapshot.subject,
       policyVersion: policy.version,
-      recommendation: recommendation(score, policy),
+      scoreStatus: status,
+      recommendation: recommendation(score, policy, status, snapshot.subject.type),
       riskScore: score,
       evidenceCoverage: Number(coverage.toFixed(2)),
       ...(features.coverage.modelVersion && features.coverage.sources ? {
@@ -128,12 +137,12 @@ export class RiskEngine {
       } : {}),
       dimensions: {
         knownVulnerabilities, knownExploitation,
-        packageSupplyChain: packageRisk === undefined ? "unknown" : scoreLevel(packageRisk, policy),
+        packageSupplyChain: isRepository ? "not_applicable" : packageRisk === undefined ? "unknown" : scoreLevel(packageRisk, policy),
         repositorySecurityPractices: repoRisk === undefined ? "unknown" : scoreLevel(repoRisk, policy),
         maliciousInfrastructure: maliciousInfrastructureRisk === undefined ? "unknown" : scoreLevel(maliciousInfrastructureRisk, policy),
-        serviceIdentity: identityRisk === undefined ? "unknown" : scoreLevel(identityRisk, policy),
-        paymentConfigurationRisk: paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
-        endpointOperationalRisk: endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
+        serviceIdentity: isRepository ? "not_applicable" : identityRisk === undefined ? "unknown" : scoreLevel(identityRisk, policy),
+        paymentConfigurationRisk: isRepository ? "not_applicable" : paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
+        endpointOperationalRisk: isRepository ? "not_applicable" : endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
       },
       signals, evidence: snapshot.evidence, sourceErrors: snapshot.sourceErrors ?? [], assessedAt: new Date().toISOString(),
       ...(snapshot.maliciousPackageObservations ? { maliciousPackageObservations: snapshot.maliciousPackageObservations } : {}),

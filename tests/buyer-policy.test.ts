@@ -35,6 +35,7 @@ function preflight(overrides: Partial<RiskAssessment> = {}): X402EndpointPreflig
   return {
     subject: { type: "x402_endpoint", id: RESOURCE },
     policyVersion: "test-policy",
+    scoreStatus: "measured",
     recommendation: "proceed",
     riskScore: 5,
     evidenceCoverage: 1,

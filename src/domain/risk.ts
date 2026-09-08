@@ -1,9 +1,12 @@
 export const RISK_SNAPSHOT_SCHEMA_VERSION = 3 as const;
 export const MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION = 1 as const;
 export const PACKAGE_COVERAGE_MODEL_VERSION = "package-coverage-v2" as const;
+export const REPOSITORY_COVERAGE_MODEL_VERSION = "repository-coverage-v1" as const;
 
 export type Recommendation = "proceed" | "proceed_with_caution" | "manual_review" | "do_not_proceed";
 export type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
+export type RiskDimensionLevel = RiskLevel | "not_applicable";
+export type ScoreStatus = "measured" | "measured_partial" | "insufficient_evidence";
 export type EvidenceExecution = "QUERIED" | "NOT_QUERIED";
 export type EvidenceResolution = "OBSERVED" | "ABSENT" | "UNAVAILABLE" | "UNKNOWN" | "NOT_APPLICABLE";
 export type EvidenceCoverageSource = { source: string; execution: EvidenceExecution; status: EvidenceResolution; weight: number };
@@ -59,7 +62,7 @@ export type RepositorySecurityFile = { path: string; category: "manifest" | "wor
 export type ProvenanceState = "NOT_CHECKED" | "UNAVAILABLE" | "PRESENT_UNVERIFIED" | "VERIFIED" | "VERIFIED_SOURCE_MISMATCH" | "VERIFIED_COMMIT_MISMATCH" | "VERIFIED_COMMIT_UNCONFIRMED" | "ERROR";
 export type ProvenanceObservation = { package: ExactDependencyCoordinate; state: ProvenanceState; source: "deps.dev"; sourceRepository?: string; sourceCommit?: string; expectedSourceMatches?: boolean; expectedCommitMatches?: boolean; attestationUrl?: string };
 export type DependencyObservation = { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number; error?: string }; provenance: ProvenanceObservation[] };
-export type RepositoryThreatIntelStatus = "NOT_CHECKED" | "CHECKED" | "UNAVAILABLE";
+export type RepositoryThreatIntelStatus = "NOT_CHECKED" | "CHECKED" | "UNAVAILABLE" | "UNKNOWN";
 export type RepositoryThreatIntelFinding = { coordinate: ExactDependencyCoordinate; finding: ThreatFinding };
 export type RepositoryThreatIntelObservation = {
   status: RepositoryThreatIntelStatus;
@@ -68,8 +71,10 @@ export type RepositoryThreatIntelObservation = {
   errors: string[];
   limitations: string[];
 };
+export type RepositoryCollectionCoverage = { status: "complete" | "partial"; limitations: string[]; sourceErrors: string[] };
 export type RepositoryEvidence = {
   target: { repository: string; requestedRef?: string; resolvedCommitSha?: string };
+  githubCollection?: RepositoryCollectionCoverage;
   securityFiles: RepositorySecurityFile[];
   dependencies: { exact: ExactDependencyCoordinate[]; unresolved: UnresolvedDependency[]; resolvedGraph: { packagesChecked: number; nodesObserved: number; errors: string[] } };
   dependencyObservations: DependencyObservation[];
@@ -98,9 +103,9 @@ export type RiskSnapshot = {
 };
 
 export type RiskAssessment = {
-  subject: RiskSnapshot["subject"]; policyVersion: string; recommendation: Recommendation; riskScore: number; evidenceCoverage: number;
+  subject: RiskSnapshot["subject"]; policyVersion: string; scoreStatus: ScoreStatus; recommendation: Recommendation; riskScore: number; evidenceCoverage: number;
   coverage?: EvidenceCoverageSummary;
-  dimensions: { knownVulnerabilities: RiskLevel; knownExploitation: RiskLevel; packageSupplyChain: RiskLevel; repositorySecurityPractices: RiskLevel; maliciousInfrastructure: RiskLevel; serviceIdentity: RiskLevel; paymentConfigurationRisk: RiskLevel; endpointOperationalRisk: RiskLevel };
+  dimensions: { knownVulnerabilities: RiskDimensionLevel; knownExploitation: RiskDimensionLevel; packageSupplyChain: RiskDimensionLevel; repositorySecurityPractices: RiskDimensionLevel; maliciousInfrastructure: RiskDimensionLevel; serviceIdentity: RiskDimensionLevel; paymentConfigurationRisk: RiskDimensionLevel; endpointOperationalRisk: RiskDimensionLevel };
   signals: RiskSignal[]; evidence: Evidence[]; sourceErrors: string[]; assessedAt: string;
   maliciousPackageObservations?: MaliciousPackageObservation[];
   freshness: { oldestEvidenceAt: string | null; newestEvidenceAt: string | null; expiresAt?: string };

@@ -10,7 +10,7 @@ info:
     evaluates a dependency set, or pays an x402 endpoint. Inputs are an exact
     package coordinate, repository owner/name, up to 100 exact package
     coordinates, or a target endpoint URL. Outputs include riskScore,
-    recommendation, evidenceCoverage, source-attributed signals and evidence,
+    scoreStatus, recommendation, evidenceCoverage, source-attributed signals and evidence,
     sourceErrors, and deterministic JSON/Markdown representations. OMNI is
     advisory: caller policy decides whether to proceed, the wallet/runtime
     enforces payment policy, and Circle settles payment. Call OMNI when fresh
@@ -120,7 +120,7 @@ paths:
     get:
       operationId: getRepositoryRisk
       summary: Assess GitHub repository security practices.
-      description: "Price: $0.01 USDC per request. GitHub repository evidence is bound to the resolved immutable commit; deps.dev provenance is checked against the expected repository/commit where available. Scorecard is currently queried in latest mode, so its evidence is not equivalent to commit-pinned GitHub evidence. Repository evidence limitations are surfaced as source-attributed evidence and do not alter the Scorecard-authoritative omni-risk-v1 repository score/recommendation."
+      description: "Price: $0.01 USDC per request. GitHub repository evidence is bound to the resolved immutable commit; deps.dev provenance is checked against the expected repository/commit where available. Repository evidence from GitHub, OpenSSF Scorecard, dependency resolution, deps.dev provenance, and threat intelligence is attributed independently. Missing evidence affects coverage, scoreStatus, and recommendation gating; it does not itself increase observed repository riskScore."
       x-payment-info:
         price:
           mode: fixed
@@ -308,17 +308,21 @@ components:
       type: object
       required: [knownVulnerabilities, knownExploitation, packageSupplyChain, repositorySecurityPractices, maliciousInfrastructure, serviceIdentity, paymentConfigurationRisk, endpointOperationalRisk]
       properties:
-        knownVulnerabilities: { $ref: '#/components/schemas/RiskLevel' }
-        knownExploitation: { $ref: '#/components/schemas/RiskLevel' }
-        packageSupplyChain: { $ref: '#/components/schemas/RiskLevel' }
-        repositorySecurityPractices: { $ref: '#/components/schemas/RiskLevel' }
-        maliciousInfrastructure: { $ref: '#/components/schemas/RiskLevel' }
-        serviceIdentity: { $ref: '#/components/schemas/RiskLevel' }
-        paymentConfigurationRisk: { $ref: '#/components/schemas/RiskLevel' }
-        endpointOperationalRisk: { $ref: '#/components/schemas/RiskLevel' }
+        knownVulnerabilities: { $ref: '#/components/schemas/RiskDimensionLevel' }
+        knownExploitation: { $ref: '#/components/schemas/RiskDimensionLevel' }
+        packageSupplyChain: { $ref: '#/components/schemas/RiskDimensionLevel' }
+        repositorySecurityPractices: { $ref: '#/components/schemas/RiskDimensionLevel' }
+        maliciousInfrastructure: { $ref: '#/components/schemas/RiskDimensionLevel' }
+        serviceIdentity: { $ref: '#/components/schemas/RiskDimensionLevel' }
+        paymentConfigurationRisk: { $ref: '#/components/schemas/RiskDimensionLevel' }
+        endpointOperationalRisk: { $ref: '#/components/schemas/RiskDimensionLevel' }
     RiskLevel:
       type: string
       enum: [low, medium, high, critical, unknown]
+    RiskDimensionLevel:
+      type: string
+      description: Risk dimension state. not_applicable means the dimension does not apply to the subject; unknown means the dimension is relevant but evidence has not established it.
+      enum: [low, medium, high, critical, unknown, not_applicable]
     RiskSignal:
       type: object
       required: [code, severity, source, detail]
@@ -492,26 +496,30 @@ components:
                           limit: { type: string }
     RiskAssessment:
       type: object
-      required: [subject, policyVersion, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt, freshness]
+      required: [subject, policyVersion, scoreStatus, recommendation, riskScore, evidenceCoverage, dimensions, signals, evidence, sourceErrors, assessedAt, freshness]
       properties:
         subject: { $ref: '#/components/schemas/Subject' }
         policyVersion:
           type: string
           description: Stable deterministic scoring-policy identity used for this assessment.
+        scoreStatus:
+          type: string
+          enum: [measured, measured_partial, insufficient_evidence]
+          description: Evidence sufficiency state. measured means all applicable modeled evidence resolved; measured_partial means some meaningful evidence resolved while applicable evidence remains incomplete; insufficient_evidence means no meaningful modeled evidence resolved sufficiently for normal recommendation handling. This is not statistical confidence.
         recommendation:
           type: string
           enum: [proceed, proceed_with_caution, manual_review, do_not_proceed]
-          description: Advisory next action derived from the risk score; it is not an authorization decision.
+          description: Advisory next action derived from deterministic policy using observed risk and, where applicable, evidence sufficiency; it is not an authorization decision.
         riskScore:
           type: integer
           minimum: 0
           maximum: 100
-          description: Conservative decision-risk score where 0 means lower observed risk and 100 means higher observed risk; source failures can increase the score.
+          description: Deterministic observed-risk score where 0 means lower observed risk and 100 means higher observed risk. For repository assessments, source failures and coverage loss do not increase observed riskScore; package and x402 assessment scoring semantics remain subject-specific.
         evidenceCoverage:
           type: number
           minimum: 0
           maximum: 1
-          description: Fraction of subject-specific evidence paths that completed successfully. It is not a probability that the recommendation is correct.
+          description: Fraction of applicable modeled evidence paths that resolved for the subject. It is not statistical confidence or a probability that the recommendation is correct.
         coverage:
           allOf:
             - $ref: '#/components/schemas/EvidenceCoverage'
@@ -525,11 +533,11 @@ components:
           items: { $ref: '#/components/schemas/Evidence' }
         maliciousPackageObservations:
           type: array
-          description: OpenSSF MAL-* observations returned by OSV. Observation-only under omni-risk-v1; this field has no severity and does not alter scoring.
+          description: OpenSSF MAL-* observations returned by OSV. This field has no severity and does not alter scoring.
           items: { $ref: '#/components/schemas/MaliciousPackageObservation' }
         sourceErrors:
           type: array
-          description: Named source failures. For repository Scorecard, not_indexed means that no indexed result exists for the repository; it is not a generic provider outage.
+          description: Named source failures. For repository assessments, source failures remain visible uncertainty and do not increase observed riskScore. Scorecard not_indexed means that no indexed result exists for the repository; it is not a generic provider outage.
           items: { type: string }
         assessedAt: { type: string, format: date-time }
         freshness:

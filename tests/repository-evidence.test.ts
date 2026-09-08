@@ -10,14 +10,14 @@ import { CachedLoader, type Cache } from "../src/data/cache.ts";
 import { OmniIntelligence, MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL, MAX_REPOSITORY_THREAT_INTEL_BYTES, MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES, MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_INDICATOR_BYTES, MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_REFERENCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_SOURCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_THREAT_TYPE_BYTES } from "../src/services.ts";
 import type { ScorecardProviderResult } from "../src/providers/scorecard.ts";
 import { NoopAssessmentJournal, type AssessmentJournal } from "../src/data/assessment-journal.ts";
-import type { ExactDependencyCoordinate, RiskAssessment, RepositoryEvidence, ThreatFinding } from "../src/domain/risk.ts";
+import type { ExactDependencyCoordinate, ProvenanceState, RiskAssessment, RepositoryEvidence, ThreatFinding } from "../src/domain/risk.ts";
 
 function memoryCache(): Cache {
   const values = new Map<string, string>();
   return { async get(key) { return values.get(key) ?? null; }, async set(key, value) { values.set(key, value); } };
 }
 
-function fakeDepsDev(record: (coordinate: ExactDependencyCoordinate) => void): { packageVersion(coordinate: ExactDependencyCoordinate): Promise<{ observation: { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number }; provenance: Array<{ package: ExactDependencyCoordinate; state: "UNAVAILABLE"; source: "deps.dev" }> }; evidence: { source: string; kind: string; observedAt: string; detail: Record<string, never> } }> } {
+function fakeDepsDev(record: (coordinate: ExactDependencyCoordinate) => void): { packageVersion(coordinate: ExactDependencyCoordinate): Promise<{ observation: { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number }; provenance: Array<{ package: ExactDependencyCoordinate; state: ProvenanceState; source: "deps.dev" }> }; evidence: { source: string; kind: string; observedAt: string; detail: Record<string, never> } }> } {
   return { async packageVersion(coordinate) {
     record(coordinate);
     return {
@@ -63,12 +63,12 @@ function capturingJournal(snapshots: RiskSnapshot[]) {
 
 type ScorecardStub = { repository(): Promise<ScorecardProviderResult> };
 
-function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: ReturnType<typeof threatIntelStore>, journal: AssessmentJournal = new NoopAssessmentJournal(), scorecard: ScorecardStub = staticScorecard) {
-  const github = {
+function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: ReturnType<typeof threatIntelStore>, journal: AssessmentJournal = new NoopAssessmentJournal(), scorecard: ScorecardStub = staticScorecard, githubOverride?: { resolve(): Promise<unknown>; collectResolved(): Promise<RepositoryEvidence> }, depsDevOverride?: ReturnType<typeof fakeDepsDev>) {
+  const github = githubOverride ?? {
     async resolve() { return { repository: repositoryEvidence.target.repository, requestedRef: "main", resolvedCommitSha: commitSha, rootTreeSha: treeSha }; },
     async collectResolved() { return structuredClone(repositoryEvidence); }
   };
-  const depsDev = fakeDepsDev(() => {});
+  const depsDev = depsDevOverride ?? fakeDepsDev(() => {});
   return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, scorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
 }
 
@@ -104,6 +104,24 @@ const commitSha = "0123456789abcdef0123456789abcdef01234567";
 const treeSha = "abcdef0123456789abcdef0123456789abcdef01";
 const packageBlob = "1111111111111111111111111111111111111111";
 const workflowBlob = "2222222222222222222222222222222222222222";
+
+async function realGithubEvidence(tree: unknown[], contents: Record<string, string>, truncated = false): Promise<RepositoryEvidence> {
+  const base = "https://api.github.com/repos/acme/demo";
+  const treeUrl = `${base}/git/trees/${treeSha}?recursive=1`;
+  const http = {
+    async request(url: string | URL) {
+      const target = String(url);
+      if (target === base) return response({ full_name: "acme/demo", default_branch: "main" });
+      if (target === `${base}/commits/main`) return response({ sha: commitSha, commit: { tree: { sha: treeSha } } });
+      if (target === treeUrl) return response({ truncated, tree });
+      for (const [path, value] of Object.entries(contents)) {
+        if (target === `${base}/contents/${encodeURIComponent(path)}?ref=${commitSha}`) return response(content(value));
+      }
+      return response({ message: "not found" }, 404);
+    }
+  };
+  return new GitHubRepositoryProvider(http as never).collect("acme", "demo");
+}
 
 describe("repository evidence foundation", () => {
   test("resolves a mutable branch once and binds every security file read to its immutable commit", async () => {
@@ -163,6 +181,7 @@ describe("repository evidence foundation", () => {
 
     expect(resolveCalls).toBe(2);
     expect(collectionCalls).toBe(1);
+    expect([...values.keys()]).toEqual(["assessment:repo:omni-risk-v3:repository-coverage-v1:github.com/acme/demo:0123456789abcdef0123456789abcdef01234567"]);
   });
 
   test("marks tree truncation and oversized files partial instead of claiming clean coverage", async () => {
@@ -244,7 +263,7 @@ describe("repository evidence foundation", () => {
     const failedSnapshots: RiskSnapshot[] = [];
     const failed = await repositoryOmni(repositoryEvidenceWith([coordinate]), threatIntelStore(async () => { throw new Error("feed_timeout"); }), capturingJournal(failedSnapshots)).repositoryRisk("acme", "demo");
     const failedSnapshot = failedSnapshots[0]!;
-    expect({ riskScore: failed.riskScore, recommendation: failed.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    expect({ riskScore: failed.riskScore, recommendation: failed.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: "manual_review" });
     expect(failedSnapshot.sourceErrors ?? []).toEqual([]);
     expect(failedSnapshot.repositoryEvidence?.sourceErrors ?? []).toEqual([]);
     expect(failedSnapshot.repositoryEvidence?.dependencyThreatIntel).toMatchObject({ status: "UNAVAILABLE", packagesInspected: [coordinate], findings: [], errors: [`threat_intel NPM:${coordinate.name}@${coordinate.version}: feed_timeout`], limitations: [`threat_intel_lookup_failed:${coordinate.name}@${coordinate.version}`] });
@@ -258,6 +277,25 @@ describe("repository evidence foundation", () => {
     expect(zeroSnapshots[0]).not.toHaveProperty("threatIntelChecked");
     expect(zeroSnapshots[0]).not.toHaveProperty("threatFindings");
     expect(zeroSnapshots[0]?.repositoryEvidence?.dependencyThreatIntel).toMatchObject({ status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["no_exact_dependencies_selected"] });
+  });
+
+  test("aggregates repository threat-intel coverage by lookup outcome", async () => {
+    const coordinate = exactCoordinate("coverage-package", "1.0.0");
+    const finding: ThreatFinding = { indicatorType: "package", indicator: "npm:coverage-package@1.0.0", threatType: "malicious_package", severity: "high", source: "licensed-feed", reference: "https://intel.example/coverage" };
+    const coverage = async (lookup: (item: ExactDependencyCoordinate) => Promise<{ checked: boolean; findings: ThreatFinding[] }>) => {
+      const assessment = await repositoryOmni(repositoryEvidenceWith([coordinate]), threatIntelStore(lookup)).repositoryRisk("acme", "demo");
+      return assessment.coverage?.sources.find(source => source.source === "Threat Intelligence");
+    };
+
+    await expect(coverage(async () => ({ checked: true, findings: [] }))).resolves.toMatchObject({ execution: "QUERIED", status: "ABSENT" });
+    await expect(coverage(async () => ({ checked: true, findings: [finding] }))).resolves.toMatchObject({ execution: "QUERIED", status: "OBSERVED" });
+    await expect(coverage(async () => ({ checked: false, findings: [] }))).resolves.toMatchObject({ execution: "QUERIED", status: "UNAVAILABLE" });
+    const mixedCoordinates = [coordinate, exactCoordinate("coverage-failing", "1.0.0")];
+    const mixed = await repositoryOmni(repositoryEvidenceWith(mixedCoordinates), threatIntelStore(async item => item.name === coordinate.name ? { checked: true, findings: [] } : { checked: false, findings: [] })).repositoryRisk("acme", "demo");
+    expect(mixed.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const deferred = await repositoryOmni(repositoryEvidenceWith(Array.from({ length: 25 }, (_, index) => exactCoordinate(`coverage-deferred-${index}`))), threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(deferred.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
   });
 
   test("bounds repository threat-intel lookups to four concurrent calls and twenty-four total calls", async () => {
@@ -419,8 +457,9 @@ describe("repository evidence foundation", () => {
       await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: oversized })),
       await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => { throw new Error("feed_down"); })
     ];
-    for (const scenario of scenarios) {
-      expect({ riskScore: scenario.assessment.riskScore, recommendation: scenario.assessment.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    for (const [index, scenario] of scenarios.entries()) {
+      expect(scenario.assessment.riskScore).toBe(baseline.riskScore);
+      expect(scenario.assessment.recommendation).toBe(index === scenarios.length - 1 ? "manual_review" : baseline.recommendation);
       expect(scenario.snapshot.sourceErrors ?? []).toEqual([]);
     }
   });
@@ -688,8 +727,11 @@ describe("repository evidence foundation", () => {
     const evidence = evidenceOf(assessment);
 
     expect(enrichmentCalls).toBeLessThanOrEqual(24);
-    expect(evidence.coverage.status).toBe("partial");
-    expect(evidence.coverage.limitations).toEqual(expect.arrayContaining([expect.stringMatching(/^dependency_enrichment_limit_reached:\d+_of_40_deferred$/)]));
+    expect(evidence.coverage.status).toBe("complete");
+    expect(evidence.coverage.limitations).toEqual([]);
+    expect(assessment.scoreStatus).toBe("measured_partial");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
     // Deterministic selection: repeated runs select the same coordinates in the same order.
     const secondSeen: string[] = [];
     const again = fakeDepsDev(coordinate => { secondSeen.push(`${coordinate.name}@${coordinate.version}`); });
@@ -702,11 +744,153 @@ describe("repository evidence foundation", () => {
     const engine = new RiskEngine();
     const baselineEvidence = [{ source: "OpenSSF Scorecard", kind: "repository_security_practices", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }];
     const baseline = engine.assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: baselineEvidence });
-    expect({ riskScore: assessment.riskScore, recommendation: assessment.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
-    expect({ riskScore: second.riskScore, recommendation: second.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    expect(assessment.riskScore).toBe(baseline.riskScore);
+    expect(assessment.recommendation).toBe("manual_review");
+    expect(second.riskScore).toBe(baseline.riskScore);
+    expect(second.recommendation).toBe("manual_review");
   });
 
-  test("keeps not_indexed Scorecard conservative without treating it as an outage", async () => {
+  test("maps complete, partial, and unavailable GitHub collection states independently", async () => {
+    const complete = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(complete.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const partialEvidence = repositoryEvidenceWith([]);
+    partialEvidence.coverage = { ...partialEvidence.coverage, status: "partial", limitations: ["github_tree_truncated"] };
+    const partial = await repositoryOmni(partialEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(partial.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partial.coverage?.resolvedWeight).toBe(1);
+    expect(partial.coverage?.applicableWeight).toBe(5);
+
+    const unavailableGithub = {
+      async resolve(): Promise<never> { throw new Error("github_timeout"); },
+      async collectResolved(): Promise<RepositoryEvidence> { throw new Error("unreachable"); }
+    };
+    const unavailable = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, unavailableGithub).repositoryRisk("acme", "demo");
+    expect(unavailable.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+    expect(unavailable.sourceErrors).toContain("GitHub: github_timeout");
+
+    const downstreamFailure = repositoryEvidenceWith([exactCoordinate("downstream-failure")]);
+    const downstreamDepsDev = fakeDepsDev(() => {});
+    downstreamDepsDev.packageVersion = async () => { throw new Error("deps_dev_timeout"); };
+    const completeWithDepsDevFailure = await repositoryOmni(downstreamFailure, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, downstreamDepsDev).repositoryRisk("acme", "demo");
+    expect(completeWithDepsDevFailure.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(completeWithDepsDevFailure.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+    const primaryDetail = completeWithDepsDevFailure.evidence.find(item => item.kind === "repository_primary_evidence")?.detail ?? {};
+    expect(primaryDetail.collectorErrors).toEqual([]);
+    expect(primaryDetail.limitations).toEqual([]);
+
+    const unsupportedEvidence = repositoryEvidenceWith([]);
+    unsupportedEvidence.coverage.limitations = ["dependency_resolution_unsupported:CARGO"];
+    const completeWithUnsupported = await repositoryOmni(unsupportedEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(completeWithUnsupported.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(completeWithUnsupported.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("aggregates deps.dev provenance states without confusing absence, observation, and uncertainty", async () => {
+    const coordinate = exactCoordinate("provenance-package", "1.0.0");
+    const withEvidence = (state: "PRESENT_UNVERIFIED" | "VERIFIED" | "VERIFIED_SOURCE_MISMATCH" | "VERIFIED_COMMIT_MISMATCH" | "VERIFIED_COMMIT_UNCONFIRMED") => {
+      const evidence = repositoryEvidenceWith([coordinate]);
+      const depsDev = fakeDepsDev(() => {});
+      depsDev.packageVersion = async item => ({
+        observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state, source: "deps.dev" }] },
+        evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+      });
+      return repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, depsDev);
+    };
+
+    const observed = await (await withEvidence("VERIFIED")).repositoryRisk("acme", "demo");
+    expect(observed.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    const unverified = await (await withEvidence("PRESENT_UNVERIFIED")).repositoryRisk("acme", "demo");
+    expect(unverified.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    const mismatch = await (await withEvidence("VERIFIED_SOURCE_MISMATCH")).repositoryRisk("acme", "demo");
+    expect(mismatch.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const mixedObservedAbsent = repositoryEvidenceWith([coordinate, exactCoordinate("provenance-absent")]);
+    const mixedObservedAbsentDepsDev = fakeDepsDev(() => {});
+    mixedObservedAbsentDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: item.name === "provenance-absent" ? "UNAVAILABLE" : "VERIFIED", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const mixedObservedAbsentAssessment = await repositoryOmni(mixedObservedAbsent, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedObservedAbsentDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedObservedAbsentAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const mixedUnverifiedAbsent = repositoryEvidenceWith([coordinate, exactCoordinate("provenance-absent")]);
+    const mixedUnverifiedAbsentDepsDev = fakeDepsDev(() => {});
+    mixedUnverifiedAbsentDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: item.name === "provenance-absent" ? "UNAVAILABLE" : "PRESENT_UNVERIFIED", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const mixedUnverifiedAbsentAssessment = await repositoryOmni(mixedUnverifiedAbsent, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedUnverifiedAbsentDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedUnverifiedAbsentAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const mixedError = repositoryEvidenceWith([coordinate, exactCoordinate("provenance-error")]);
+    const mixedErrorDepsDev = fakeDepsDev(() => {});
+    mixedErrorDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: item.name === "provenance-error" ? "ERROR" : "VERIFIED", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const mixedErrorAssessment = await repositoryOmni(mixedError, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedErrorDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedErrorAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const mixedProviderFailure = repositoryEvidenceWith([coordinate, exactCoordinate("provider-failure")]);
+    const mixedProviderFailureDepsDev = fakeDepsDev(() => {});
+    mixedProviderFailureDepsDev.packageVersion = async item => {
+      if (item.name === "provider-failure") throw new Error("deps_dev_timeout");
+      return { observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: "VERIFIED", source: "deps.dev" }] }, evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} } };
+    };
+    const mixedProviderFailureAssessment = await repositoryOmni(mixedProviderFailure, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedProviderFailureDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedProviderFailureAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const absent = repositoryEvidenceWith([coordinate]);
+    const absentDepsDev = fakeDepsDev(() => {});
+    absentDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: "UNAVAILABLE", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const absentAssessment = await repositoryOmni(absent, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, absentDepsDev).repositoryRisk("acme", "demo");
+    expect(absentAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "ABSENT", weight: 1 });
+
+    const error = repositoryEvidenceWith([coordinate]);
+    const errorDepsDev = fakeDepsDev(() => {});
+    errorDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: "ERROR", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const errorAssessment = await repositoryOmni(error, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, errorDepsDev).repositoryRisk("acme", "demo");
+    expect(errorAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const failed = repositoryEvidenceWith([coordinate]);
+    const failedDepsDev = fakeDepsDev(() => {});
+    failedDepsDev.packageVersion = async () => { throw new Error("deps_dev_timeout"); };
+    const failedAssessment = await repositoryOmni(failed, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, failedDepsDev).repositoryRisk("acme", "demo");
+    expect(failedAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+
+    const deferred = repositoryEvidenceWith(Array.from({ length: 25 }, (_, index) => exactCoordinate(`deferred-${index}`)));
+    const deferredAssessment = await repositoryOmni(deferred, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, fakeDepsDev(() => {})).repositoryRisk("acme", "demo");
+    expect(deferredAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("distinguishes resolver execution from unsupported and not-applicable states", async () => {
+    const successful = repositoryEvidenceWith([exactCoordinate("resolved")]);
+    const successfulAssessment = await repositoryOmni(successful, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(successfulAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const partial = repositoryEvidenceWith([]);
+    partial.dependencies.unresolved = [{ ecosystem: "NPM", name: "unresolved", requirement: "^1.0.0", manifestPath: "package.json", workspacePath: "." }];
+    partial.coverage.limitations = ["dependency_lock_missing:package.json"];
+    const partialAssessment = await repositoryOmni(partial, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const unsupported = repositoryEvidenceWith([]);
+    unsupported.coverage.limitations = ["dependency_resolution_unsupported:CARGO"];
+    const unsupportedAssessment = await repositoryOmni(unsupported, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(unsupportedAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const notApplicable = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(notApplicable.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+  });
+
+  test("keeps not_indexed Scorecard as partial uncertainty without inflating observed risk", async () => {
     const repositoryEvidence = repositoryEvidenceWith([]);
     const notIndexed = {
       async repository() {
@@ -725,12 +909,178 @@ describe("repository evidence foundation", () => {
     const assessment = await repositoryOmni(repositoryEvidence, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), notIndexed).repositoryRisk("acme", "demo");
 
     expect(assessment.dimensions.repositorySecurityPractices).toBe("unknown");
-    expect(assessment.evidenceCoverage).toBe(0);
-    expect(assessment.riskScore).toBe(50);
+    expect(assessment.evidenceCoverage).toBeGreaterThan(0);
+    expect(assessment.riskScore).toBe(0);
+    expect(assessment.scoreStatus).toBe("measured_partial");
     expect(assessment.recommendation).toBe("manual_review");
     expect(assessment.sourceErrors).toEqual(["OpenSSF Scorecard: not_indexed (missing_result; HTTP 404 api.scorecard.dev; mode=latest; repository=github.com/acme/demo)"]);
+    expect(assessment.coverage).toMatchObject({ modelVersion: "repository-coverage-v1", resolvedWeight: 1, applicableWeight: 2 });
+    expect(assessment.coverage?.sources).toEqual(expect.arrayContaining([
+      { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 },
+      { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNKNOWN", weight: 1 },
+      { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+      { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+      { source: "Threat Intelligence", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 }
+    ]));
     expect(assessment.evidence.some(item => item.kind === "repository_primary_evidence")).toBe(true);
     expect(assessment.evidence.some(item => item.kind === "repository_security_practices")).toBe(false);
+  });
+
+  test("keeps an OpenSSF outage outside the observed repository risk score", async () => {
+    const repositoryEvidence = repositoryEvidenceWith([]);
+    const unavailable = {
+      async repository() {
+        return {
+          status: "unavailable" as const,
+          diagnostic: {
+            host: "api.scorecard.dev",
+            mode: "latest" as const,
+            repository: repositoryEvidence.target.repository,
+            reason: "timeout"
+          }
+        };
+      }
+    };
+    const assessment = await repositoryOmni(repositoryEvidence, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), unavailable).repositoryRisk("acme", "demo");
+
+    expect(assessment.riskScore).toBe(0);
+    expect(assessment.scoreStatus).toBe("measured_partial");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+  });
+
+  test("reports insufficient evidence and manual review when all applicable repository evidence is unavailable", () => {
+    const result = new RiskEngine().assess({
+      subject: { type: "repository", id: "github.com/acme/demo" },
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "Threat Intelligence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 }
+        ]
+      },
+      evidence: [],
+      sourceErrors: ["GitHub: unavailable", "OpenSSF Scorecard: timeout", "Threat intelligence: unavailable"]
+    });
+
+    expect(result.scoreStatus).toBe("insufficient_evidence");
+    expect(result.recommendation).toBe("manual_review");
+    expect(result.riskScore).toBe(0);
+    expect(result.evidenceCoverage).toBe(0);
+  });
+
+  test("uses not_applicable for repository-only dimensions and excludes it from coverage denominator", () => {
+    const result = new RiskEngine().assess({
+      subject: { type: "repository", id: "github.com/acme/demo" },
+      scorecard: 9.5,
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 2 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "ABSENT", weight: 3 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 5 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 7 },
+          { source: "Threat Intelligence", execution: "QUERIED", status: "UNAVAILABLE", weight: 11 }
+        ]
+      },
+      evidence: []
+    });
+
+    expect(result.coverage).toMatchObject({ resolvedWeight: 5, applicableWeight: 16 });
+    expect(result.evidenceCoverage).toBe(0.31);
+    expect(result.dimensions).toMatchObject({
+      packageSupplyChain: "not_applicable",
+      serviceIdentity: "not_applicable",
+      paymentConfigurationRisk: "not_applicable",
+      endpointOperationalRisk: "not_applicable",
+      repositorySecurityPractices: "low",
+      maliciousInfrastructure: "unknown"
+    });
+  });
+  test("maps real Cargo provider evidence without relabeling GitHub coverage", async () => {
+    const evidence = await realGithubEvidence([{ path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 }], { "Cargo.toml": "[dependencies]\nserde = \"1\"\n" });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    const detail = assessment.evidence.find(item => item.kind === "repository_primary_evidence")?.detail ?? {};
+    expect(detail.limitations).toEqual([]);
+    expect(detail.collectorErrors).toEqual([]);
+  });
+
+  test("maps a real npm manifest without its governing lockfile as resolver uncertainty", async () => {
+    const evidence = await realGithubEvidence([{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }) });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("maps a real complete repository with no dependency manifests as not applicable", async () => {
+    const evidence = await realGithubEvidence([{ path: "README.md", type: "blob", sha: packageBlob, size: 100 }], {});
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+  });
+
+  test("does not claim no dependencies when the real GitHub tree is partial", async () => {
+    const evidence = await realGithubEvidence([{ path: "README.md", type: "blob", sha: packageBlob, size: 100 }], {}, true);
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("propagates mixed real dependency resolution uncertainty to downstream sources", async () => {
+    const lock = JSON.stringify({ packages: { "node_modules/resolved": { version: "1.2.3" } } });
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { resolved: "^1.0.0", unresolved: "^2.0.0" } }),
+      "package-lock.json": lock
+    });
+    const depsDevCalls: string[] = [];
+    const threatIntelCalls: string[] = [];
+    const depsDev = fakeDepsDev(coordinate => { depsDevCalls.push(coordinate.name); });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async coordinate => {
+      threatIntelCalls.push(coordinate.name);
+      return { checked: true, findings: [] };
+    }), new NoopAssessmentJournal(), staticScorecard, undefined, depsDev).repositoryRisk("acme", "demo");
+
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(depsDevCalls).toEqual(["resolved"]);
+    expect(threatIntelCalls).toEqual(["resolved"]);
+  });
+
+  test("maps a real GitHub collection failure to unavailable", async () => {
+    const base = "https://api.github.com/repos/acme/demo";
+    const http = {
+      async request(url: string | URL) {
+        const target = String(url);
+        if (target === base) return response({ full_name: "acme/demo", default_branch: "main" });
+        if (target === `${base}/commits/main`) return response({ sha: commitSha, commit: { tree: { sha: treeSha } } });
+        return response({ message: "upstream unavailable" }, 503);
+      }
+    };
+    const provider = new GitHubRepositoryProvider(http as never);
+    const identity = await provider.resolve("acme", "demo");
+    const github = {
+      async resolve() { return identity; },
+      async collectResolved() { return provider.collectResolved("acme", "demo", identity); }
+    };
+    const assessment = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, github).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+    expect(assessment.sourceErrors).toContain("GitHub: github_http_503");
   });
 });
 

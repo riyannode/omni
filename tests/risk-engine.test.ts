@@ -42,6 +42,52 @@ describe("RiskEngine", () => {
     expect(result.recommendation).toBe("proceed_with_caution");
   });
 
+  test("does not downgrade observed do_not_proceed risk when repository coverage is partial", () => {
+    const result = engine.assess({
+      subject: { type: "repository", id: "github.com/a/b" },
+      scorecard: 0,
+      threatIntelChecked: true,
+      threatFindings: [{ indicatorType: "hostname", indicator: "bad.example", threatType: "malware", severity: "critical", source: "licensed-feed" }],
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNKNOWN", weight: 1 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "Threat Intelligence", execution: "QUERIED", status: "OBSERVED", weight: 1 }
+        ]
+      },
+      evidence: []
+    });
+
+    expect(result.scoreStatus).toBe("measured_partial");
+    expect(result.riskScore).toBeGreaterThanOrEqual(80);
+    expect(result.recommendation).toBe("do_not_proceed");
+  });
+
+  test("gates low observed repository risk with partial coverage to manual review", () => {
+    const result = engine.assess({
+      subject: { type: "repository", id: "github.com/a/b" },
+      scorecard: 9.5,
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNKNOWN", weight: 1 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "Threat Intelligence", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 }
+        ]
+      },
+      evidence: []
+    });
+
+    expect(result.scoreStatus).toBe("measured_partial");
+    expect(result.riskScore).toBe(3);
+    expect(result.recommendation).toBe("manual_review");
+  });
+
   test("returns at least proceed_with_caution for an unlisted endpoint", () => {
     const result = engine.assess({
       subject: { type: "x402_endpoint", id: "https://example.com/paid" },
@@ -53,6 +99,7 @@ describe("RiskEngine", () => {
     });
     expect(result.recommendation).toBe("proceed_with_caution");
   });
+
 
   test("reports full evidence coverage for a successful repository assessment", () => {
     const result = engine.assess({

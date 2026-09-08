@@ -1,4 +1,4 @@
-import { PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RiskAssessment, type RiskSnapshot, type ThreatFinding } from "./domain/risk.ts";
+import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RiskAssessment, type RiskSnapshot, type ThreatFinding } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import { RISK_POLICY_VERSION } from "./domain/risk-policy.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
@@ -10,7 +10,7 @@ import type { AssessmentJournal } from "./data/assessment-journal.ts";
 import { NoopAssessmentJournal } from "./data/assessment-journal.ts";
 import { OsvProvider } from "./providers/osv.ts";
 import { CisaKevProvider } from "./providers/cisa-kev.ts";
-import { ScorecardProvider } from "./providers/scorecard.ts";
+import { ScorecardProvider, type ScorecardProviderResult } from "./providers/scorecard.ts";
 import { GitHubRepositoryProvider } from "./providers/github-repository.ts";
 import { DepsDevProvider } from "./providers/deps-dev.ts";
 import { NpmRegistryProvider } from "./providers/npm-registry.ts";
@@ -37,6 +37,77 @@ function cachePart(value: string): string { return `${value.length}:${value}`; }
 
 function coverageSource(source: string, execution: EvidenceCoverageSource["execution"], status: EvidenceCoverageSource["status"]): EvidenceCoverageSource {
   return { source, execution, status, weight: 1 };
+}
+
+function githubCollectionFallback(repositoryEvidence: RepositoryEvidence): RepositoryCollectionCoverage {
+  const limitations = repositoryEvidence.coverage.limitations.filter(item => item === "github_collection_unavailable" || item === "github_tree_truncated" || item === "tree_entry_limit_reached" || item === "security_file_limit_reached" || item.startsWith("security_file_") || item.startsWith("github_"));
+  return { status: limitations.length === 0 ? "complete" : "partial", limitations, sourceErrors: repositoryEvidence.sourceErrors.filter(error => error.startsWith("GitHub:")) };
+}
+
+function repositoryDependencyResolutionCoverage(repositoryEvidence: RepositoryEvidence, githubCollection: RepositoryCollectionCoverage): EvidenceCoverageSource {
+  const limitations = repositoryEvidence.coverage.limitations;
+  const hasDependencies = repositoryEvidence.dependencies.exact.length > 0 || repositoryEvidence.dependencies.unresolved.length > 0;
+  const resolverAttempted = repositoryEvidence.dependencies.unresolved.length > 0
+    || limitations.some(item => item.startsWith("dependency_lock_") || item === "dependency_versions_unresolved");
+  const unsupported = limitations.some(item => item.startsWith("dependency_resolution_unsupported:"));
+  const resolutionIsIncomplete = resolverAttempted || unsupported || limitations.includes("dependency_resolution_unavailable");
+  if (!hasDependencies && !resolutionIsIncomplete && githubCollection.status !== "complete") return coverageSource("Dependency Resolution", "NOT_QUERIED", "UNKNOWN");
+  if (!hasDependencies && !resolutionIsIncomplete) return coverageSource("Dependency Resolution", "NOT_QUERIED", "NOT_APPLICABLE");
+  if (resolverAttempted) return coverageSource("Dependency Resolution", "QUERIED", "UNKNOWN");
+  if (unsupported || limitations.includes("dependency_resolution_unavailable")) return coverageSource("Dependency Resolution", "NOT_QUERIED", "UNKNOWN");
+  return coverageSource("Dependency Resolution", "QUERIED", "OBSERVED");
+}
+
+const observedProvenanceStates = new Set(["PRESENT_UNVERIFIED", "VERIFIED", "VERIFIED_SOURCE_MISMATCH", "VERIFIED_COMMIT_MISMATCH", "VERIFIED_COMMIT_UNCONFIRMED"]);
+
+function repositoryDependencyProvenanceCoverage(repositoryEvidence: RepositoryEvidence, dependencyResolution: EvidenceCoverageSource, enrichedCount: number, deferred: number): EvidenceCoverageSource {
+  if (dependencyResolution.status === "NOT_APPLICABLE") return coverageSource("deps.dev Provenance", "NOT_QUERIED", "NOT_APPLICABLE");
+  if (enrichedCount === 0) return coverageSource("deps.dev Provenance", "NOT_QUERIED", "UNKNOWN");
+  if (dependencyResolution.status === "UNKNOWN") return coverageSource("deps.dev Provenance", "QUERIED", "UNKNOWN");
+  const providerFailures = repositoryEvidence.sourceErrors.filter(error => error.startsWith("deps.dev ")).length;
+  if (deferred > 0) return coverageSource("deps.dev Provenance", "QUERIED", "UNKNOWN");
+  if (providerFailures > 0) return coverageSource("deps.dev Provenance", "QUERIED", providerFailures >= enrichedCount && repositoryEvidence.dependencyObservations.length === 0 ? "UNAVAILABLE" : "UNKNOWN");
+  if (repositoryEvidence.dependencyObservations.length < enrichedCount) return coverageSource("deps.dev Provenance", "QUERIED", "UNKNOWN");
+  if (repositoryEvidence.dependencyObservations.length === 0) return coverageSource("deps.dev Provenance", "QUERIED", "UNKNOWN");
+  const states = repositoryEvidence.dependencyObservations.flatMap(observation => observation.provenance.map(item => item.state));
+  if (states.some(state => observedProvenanceStates.has(state))) {
+    return coverageSource("deps.dev Provenance", "QUERIED", states.every(state => observedProvenanceStates.has(state) || state === "UNAVAILABLE") ? "OBSERVED" : "UNKNOWN");
+  }
+  if (states.length === 0 || states.every(state => state === "UNAVAILABLE")) return coverageSource("deps.dev Provenance", "QUERIED", "ABSENT");
+  return coverageSource("deps.dev Provenance", "QUERIED", "UNKNOWN");
+}
+
+function repositoryThreatIntelCoverage(repositoryEvidence: RepositoryEvidence, dependencyResolution: EvidenceCoverageSource, enrichedCount: number, deferred: number): EvidenceCoverageSource {
+  if (dependencyResolution.status === "NOT_APPLICABLE") return coverageSource("Threat Intelligence", "NOT_QUERIED", "NOT_APPLICABLE");
+  if (enrichedCount === 0) return coverageSource("Threat Intelligence", "NOT_QUERIED", "UNKNOWN");
+  if (dependencyResolution.status === "UNKNOWN") return coverageSource("Threat Intelligence", "QUERIED", "UNKNOWN");
+  if (repositoryEvidence.dependencyThreatIntel.status === "UNAVAILABLE") return coverageSource("Threat Intelligence", "QUERIED", "UNAVAILABLE");
+  if (repositoryEvidence.dependencyThreatIntel.status === "UNKNOWN") return coverageSource("Threat Intelligence", "QUERIED", "UNKNOWN");
+  if (deferred > 0 || repositoryEvidence.dependencyThreatIntel.status === "NOT_CHECKED") return coverageSource("Threat Intelligence", "QUERIED", "UNKNOWN");
+  return coverageSource("Threat Intelligence", "QUERIED", repositoryEvidence.dependencyThreatIntel.findings.length > 0 ? "OBSERVED" : "ABSENT");
+}
+
+function repositoryCoverage(repositoryEvidence: RepositoryEvidence, scorecardResult: ScorecardProviderResult, enrichedCount: number, deferred: number, githubCollection: RepositoryCollectionCoverage): EvidenceCoverageSource[] {
+  const githubUnavailable = githubCollection.limitations.includes("github_collection_unavailable")
+    || githubCollection.sourceErrors.some(error => error.startsWith("GitHub:"));
+  const githubStatus = githubUnavailable
+    ? "UNAVAILABLE"
+    : githubCollection.status === "partial"
+      ? "UNKNOWN"
+      : "OBSERVED";
+  const scorecardStatus = scorecardResult.status === "available"
+    ? "OBSERVED"
+    : scorecardResult.status === "unavailable"
+      ? "UNAVAILABLE"
+      : "UNKNOWN";
+  const dependencyResolution = repositoryDependencyResolutionCoverage(repositoryEvidence, githubCollection);
+  return [
+    coverageSource("GitHub Repository Evidence", "QUERIED", githubStatus),
+    coverageSource("OpenSSF Scorecard", "QUERIED", scorecardStatus),
+    dependencyResolution,
+    repositoryDependencyProvenanceCoverage(repositoryEvidence, dependencyResolution, enrichedCount, deferred),
+    repositoryThreatIntelCoverage(repositoryEvidence, dependencyResolution, enrichedCount, deferred)
+  ];
 }
 
 function correlatableVulnerabilityIds(vulnerabilities: NonNullable<RiskSnapshot["vulnerabilities"]>): string[] {
@@ -185,7 +256,8 @@ export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore
   const findingsByCoordinate = new Map<string, RepositoryThreatIntelObservation["findings"]>();
   const errors: string[] = [];
   const limitations = deferred > 0 ? [`dependency_enrichment_limit_reached:${deferred}_of_${selectedCount}_deferred`] : [];
-  let unavailable = false;
+  let successfulLookups = 0;
+  let unavailableLookups = 0;
   for (let offset = 0; offset < coordinates.length; offset += REPOSITORY_ENRICHMENT_CONCURRENCY) {
     const chunk = coordinates.slice(offset, offset + REPOSITORY_ENRICHMENT_CONCURRENCY);
     const results = await Promise.all(chunk.map(async coordinate => {
@@ -198,15 +270,15 @@ export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore
     for (const item of results) {
       const identity = coordinateIdentity(item.coordinate);
       if ("error" in item) {
-        unavailable = true;
+        unavailableLookups += 1;
         errors.push(`threat_intel ${identity}: ${item.error}`);
         limitations.push(`threat_intel_lookup_failed:${item.coordinate.name}@${item.coordinate.version}`);
         continue;
       }
       if (!item.result.checked) {
-        unavailable = true;
+        unavailableLookups += 1;
         limitations.push(`threat_intel_unavailable:${item.coordinate.name}@${item.coordinate.version}`);
-      }
+      } else successfulLookups += 1;
       const normalized: RepositoryThreatIntelObservation["findings"] = [];
       let fieldTruncated = false;
       for (const finding of Array.isArray(item.result.findings) ? item.result.findings : []) {
@@ -225,7 +297,8 @@ export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore
   const allFindings = uniqueSortedFindings([...findingsByCoordinate.values()].flat());
   if (allFindings.length > MAX_REPOSITORY_THREAT_FINDINGS_TOTAL) limitations.push(`threat_intel_total_findings_truncated:${MAX_REPOSITORY_THREAT_FINDINGS_TOTAL}_of_${allFindings.length}`);
   const retained = allFindings.slice(0, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL);
-  return finalizeRepositoryThreatIntelObservation(unavailable ? "UNAVAILABLE" : "CHECKED", coordinates, retained, errors, limitations);
+  const status = unavailableLookups === 0 ? "CHECKED" : successfulLookups === 0 ? "UNAVAILABLE" : "UNKNOWN";
+  return finalizeRepositoryThreatIntelObservation(status, coordinates, retained, errors, limitations);
 }
 
 function repositoryThreatIntelDetail(observation: RepositoryThreatIntelObservation): Record<string, unknown> {
@@ -357,19 +430,21 @@ export class OmniIntelligence {
     try {
       const identity = await this.github.resolve(owner, repo);
       canonicalRepository = identity.repository;
-      return this.cache.getOrLoad(`assessment:repo:${identity.repository}:${identity.resolvedCommitSha}`, REPOSITORY_ASSESSMENT_CACHE_TTL_SECONDS, async () => {
+      return await this.cache.getOrLoad(`assessment:repo:${RISK_POLICY_VERSION}:${REPOSITORY_COVERAGE_MODEL_VERSION}:${identity.repository}:${identity.resolvedCommitSha}`, REPOSITORY_ASSESSMENT_CACHE_TTL_SECONDS, async () => {
         const repositoryEvidence = await this.github.collectResolved(owner, repo, identity);
         return this.repositoryRiskFromEvidence(repositoryEvidence);
       });
     }
     catch (error) {
-      const repositoryEvidence: RepositoryEvidence = { target: { repository: canonicalRepository ?? target }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [`GitHub: ${error instanceof Error ? error.message : "unknown error"}`] };
+      const repositoryError = `GitHub: ${error instanceof Error ? error.message : "unknown error"}`;
+      const repositoryEvidence: RepositoryEvidence = { target: { repository: canonicalRepository ?? target }, githubCollection: { status: "partial", limitations: ["github_collection_unavailable"], sourceErrors: [repositoryError] }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [repositoryError] };
       return this.repositoryRiskFromEvidence(repositoryEvidence);
     }
   }
 
   private async repositoryRiskFromEvidence(repositoryEvidence: RepositoryEvidence): Promise<RiskAssessment> {
-    const evidence: RiskSnapshot["evidence"] = [{ source: "GitHub", kind: "repository_primary_evidence", observedAt: new Date().toISOString(), detail: { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { resolvedCommitSha: repositoryEvidence.target.resolvedCommitSha } : {}), coverage: repositoryEvidence.coverage.status, limitations: repositoryEvidence.coverage.limitations } }];
+    const githubCollection = repositoryEvidence.githubCollection ?? githubCollectionFallback(repositoryEvidence);
+    const evidence: RiskSnapshot["evidence"] = [{ source: "GitHub", kind: "repository_primary_evidence", observedAt: new Date().toISOString(), detail: { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { resolvedCommitSha: repositoryEvidence.target.resolvedCommitSha } : {}), coverage: githubCollection.status, limitations: githubCollection.limitations } }];
     const sourceErrors: string[] = []; let scorecard: number | undefined;
     const scorecardIdentity = { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { resolvedCommitSha: repositoryEvidence.target.resolvedCommitSha } : {}) };
     const scorecardResult = await this.scorecard.repository(scorecardIdentity, "latest");
@@ -415,10 +490,12 @@ export class OmniIntelligence {
         catch (error) { repositoryEvidence.sourceErrors.push(`deps.dev ${coordinate.name}@${coordinate.version}: ${error instanceof Error ? error.message : "unknown error"}`); repositoryEvidence.coverage.status = "partial"; repositoryEvidence.coverage.limitations.push(`deps_dev_unavailable:${coordinate.name}@${coordinate.version}`); }
       }));
     }
-    evidence[0]!.detail.collectorErrors = [...repositoryEvidence.sourceErrors];
-    evidence[0]!.detail.coverage = repositoryEvidence.coverage.status;
-    evidence[0]!.detail.limitations = [...new Set(repositoryEvidence.coverage.limitations)].sort();
-    return this.assessAndJournal({ subject: { type: "repository", id: repositoryEvidence.target.repository }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, evidence, sourceErrors });
+    evidence[0]!.detail.collectorErrors = [...githubCollection.sourceErrors];
+    evidence[0]!.detail.coverage = githubCollection.status;
+    evidence[0]!.detail.limitations = [...new Set(githubCollection.limitations)].sort();
+    sourceErrors.push(...repositoryEvidence.sourceErrors);
+    const coverageSources = repositoryCoverage(repositoryEvidence, scorecardResult, enriched.length, deferred, githubCollection);
+    return this.assessAndJournal({ subject: { type: "repository", id: repositoryEvidence.target.repository }, ...(scorecard === undefined ? {} : { scorecard }), repositoryEvidence, coverage: { modelVersion: REPOSITORY_COVERAGE_MODEL_VERSION, sources: coverageSources }, evidence, sourceErrors });
   }
 
   async dependenciesRisk(packages: Array<{ ecosystem: string; name: string; version: string }>) {

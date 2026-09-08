@@ -53,7 +53,7 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
   } else {
     switch (snapshot.subject.type) {
       case "package": { const checks = [vulnerabilities !== undefined, snapshot.exploitationChecked === true]; if (snapshot.packageSupplyChain) checks.push(true); if (snapshot.threatIntelChecked !== undefined) checks.push(snapshot.threatIntelChecked); expected = checks.length; completed = checks.filter(Boolean).length; break; }
-      // Repository coverage remains Scorecard-only for the current risk policy.
+      // Repository assessments supply the versioned source-state ledger in the snapshot.
       case "repository": expected = 1; completed = snapshot.scorecard === undefined ? 0 : 1; break;
       case "x402_endpoint": { const checks = [snapshot.endpoint?.listedOnCircle !== undefined, snapshot.activeProbeChecked === true, snapshot.historyChecked === true, snapshot.threatIntelChecked === true]; expected = checks.length; completed = checks.filter(Boolean).length; break; }
       case "dependency_set": expected = 1; completed = snapshot.evidence.length === 0 ? 0 : 1; break;

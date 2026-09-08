@@ -17,7 +17,7 @@ describe("learning-ready deterministic boundaries", () => {
   test("default policy and provenance are stable", () => {
     const result = new RiskEngine().assess(snapshot);
     expect(DEFAULT_RISK_POLICY.version).toBe(RISK_POLICY_VERSION);
-    expect(result.policyVersion).toBe("omni-risk-v2");
+    expect(result.policyVersion).toBe("omni-risk-v3");
   });
 
   test("default policy is deeply immutable", () => {
@@ -62,17 +62,18 @@ describe("learning-ready deterministic boundaries", () => {
     expect(new RiskEngine().assess(snapshot).riskScore).toBe(baseline.riskScore);
   });
 
-  test("default policy preserves the existing score and recommendation fixtures", () => {
+  test("preserves package/x402 fixtures and applies repository v3 uncertainty semantics", () => {
     const cases: Array<[RiskSnapshot, number, string]> = [
       [{ subject: { type: "package", id: "npm:demo@1.0.0" }, vulnerabilities: [{ id: "CVE-1", severity: "critical", knownExploited: true, aliases: [] }], exploitationChecked: true, evidence: [] }, 90, "do_not_proceed"],
       [{ subject: { type: "package", id: "npm:demo@1.0.0" }, vulnerabilities: [{ id: "GHSA-1", severity: "high", knownExploited: false, aliases: [] }], exploitationChecked: true, evidence: [] }, 60, "manual_review"],
-      [{ subject: { type: "repository", id: "github.com/a/b" }, evidence: [], sourceErrors: ["source down"] }, 50, "manual_review"],
+      [{ subject: { type: "repository", id: "github.com/a/b" }, evidence: [], sourceErrors: ["source down"] }, 0, "manual_review"],
       [{ subject: { type: "package", id: "npm:demo@1.0.0" }, vulnerabilities: [{ id: "GHSA-unknown", severity: "unknown", knownExploited: false, aliases: [] }], exploitationChecked: true, evidence: [] }, 30, "proceed_with_caution"],
       [{ subject: { type: "x402_endpoint", id: "https://example.com/paid" }, endpoint: { listedOnCircle: false, responseStatus: 402 }, evidence: [] }, 25, "proceed_with_caution"],
       [{ subject: { type: "repository", id: "github.com/a/b" }, scorecard: 9.5, evidence: [] }, 3, "proceed"],
       [{ subject: { type: "x402_endpoint", id: "https://bad.example/pay" }, endpoint: { listedOnCircle: true, responseStatus: 402 }, activeProbeChecked: true, historyChecked: true, endpointHistory: { observationCount: 2, payToChangeCount: 0, priceChangeCount: 0, networkChangeCount: 0, schemaChangeCount: 0, providerChangeCount: 0, relatedResourcesByPayTo: 0 }, threatIntelChecked: true, threatFindings: [{ indicatorType: "hostname", indicator: "bad.example", threatType: "malware", severity: "critical", source: "licensed-feed" }], evidence: [] }, 100, "do_not_proceed"]
     ];
     for (const [input, score, recommendation] of cases) expect(new RiskEngine().assess(input)).toMatchObject({ riskScore: score, recommendation });
+    expect(new RiskEngine().assess(cases[2]![0]).scoreStatus).toBe("insufficient_evidence");
   });
 
   test("evaluation metrics fixture covers TP, FP, TN, FN and rates", () => {

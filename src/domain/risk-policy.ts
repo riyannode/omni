@@ -1,6 +1,7 @@
 import type { RiskLevel } from "./risk.ts";
 
-export const RISK_POLICY_VERSION = "omni-risk-v2" as const;
+// v3 separates observed repository risk from evidence completeness/uncertainty.
+export const RISK_POLICY_VERSION = "omni-risk-v3" as const;
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
   ? T
