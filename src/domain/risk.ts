@@ -56,8 +56,16 @@ export type MaliciousPackageObservation = {
 export type EndpointHistory = { observationCount: number; firstSeenAt?: string; lastSeenAt?: string; payToChangeCount: number; priceChangeCount: number; networkChangeCount: number; schemaChangeCount: number; providerChangeCount: number; relatedResourcesByPayTo: number };
 export type RiskSignal = { code: string; severity: Exclude<RiskLevel, "unknown">; source: string; detail: Record<string, unknown> };
 
-export type ExactDependencyCoordinate = { ecosystem: "NPM"; name: string; version: string; sourcePath: string; manifestPath: string; workspacePath: string };
-export type UnresolvedDependency = { ecosystem: "NPM"; name: string; requirement: string; sourcePath?: string; manifestPath: string; workspacePath: string };
+export type ExactDependencyCoordinate = { ecosystem: "NPM" | "CARGO"; name: string; version: string; sourcePath: string; manifestPath: string; workspacePath: string };
+export type UnresolvedDependency = { ecosystem: "NPM" | "CARGO"; name: string; requirement: string; sourcePath?: string; manifestPath: string; workspacePath: string };
+export type RepositoryDependencyResolution = {
+  manifestDiscoveryComplete: boolean;
+  supportedManifestCount: number;
+  unsupportedEcosystems: string[];
+  resolversAttempted: string[];
+  applicableExternalDependencyCount: number;
+  unresolvedDependencyCount: number;
+};
 export type RepositorySecurityFile = { path: string; category: "manifest" | "workflow" | "build" | "release"; status: "inspected" | "missing" | "oversized" | "binary" | "unsupported"; findings: string[] };
 export type ProvenanceState = "NOT_CHECKED" | "UNAVAILABLE" | "PRESENT_UNVERIFIED" | "VERIFIED" | "VERIFIED_SOURCE_MISMATCH" | "VERIFIED_COMMIT_MISMATCH" | "VERIFIED_COMMIT_UNCONFIRMED" | "ERROR";
 export type ProvenanceObservation = { package: ExactDependencyCoordinate; state: ProvenanceState; source: "deps.dev"; sourceRepository?: string; sourceCommit?: string; expectedSourceMatches?: boolean; expectedCommitMatches?: boolean; attestationUrl?: string };
@@ -79,6 +87,7 @@ export type RepositoryEvidence = {
   dependencies: { exact: ExactDependencyCoordinate[]; unresolved: UnresolvedDependency[]; resolvedGraph: { packagesChecked: number; nodesObserved: number; errors: string[] } };
   dependencyObservations: DependencyObservation[];
   dependencyThreatIntel: RepositoryThreatIntelObservation;
+  dependencyResolution?: RepositoryDependencyResolution;
   coverage: { status: "complete" | "partial"; treeEntriesInspected: number; filesInspected: number; bytesInspected: number; limitations: string[] };
   sourceErrors: string[];
 };

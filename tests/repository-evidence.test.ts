@@ -105,17 +105,21 @@ const treeSha = "abcdef0123456789abcdef0123456789abcdef01";
 const packageBlob = "1111111111111111111111111111111111111111";
 const workflowBlob = "2222222222222222222222222222222222222222";
 
-async function realGithubEvidence(tree: unknown[], contents: Record<string, string>, truncated = false): Promise<RepositoryEvidence> {
+async function realGithubEvidence(tree: unknown[], contents: Record<string, string>, truncated = false, rawAccepts: string[] = []): Promise<RepositoryEvidence> {
   const base = "https://api.github.com/repos/acme/demo";
   const treeUrl = `${base}/git/trees/${treeSha}?recursive=1`;
   const http = {
-    async request(url: string | URL) {
+    async request(url: string | URL, init?: RequestInit) {
       const target = String(url);
       if (target === base) return response({ full_name: "acme/demo", default_branch: "main" });
       if (target === `${base}/commits/main`) return response({ sha: commitSha, commit: { tree: { sha: treeSha } } });
       if (target === treeUrl) return response({ truncated, tree });
+      const accept = new Headers(init?.headers).get("accept") ?? "";
       for (const [path, value] of Object.entries(contents)) {
-        if (target === `${base}/contents/${encodeURIComponent(path)}?ref=${commitSha}`) return response(content(value));
+        if (target === `${base}/contents/${encodeURIComponent(path)}?ref=${commitSha}`) {
+          rawAccepts.push(accept);
+          return accept.includes("application/vnd.github.raw") ? new Response(value) : response(content(value));
+        }
       }
       return response({ message: "not found" }, 404);
     }
@@ -209,7 +213,7 @@ describe("repository evidence foundation", () => {
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }, { path: "bun.lock", type: "blob", sha: bunBlob, size: 100 }] },
         [`${base}/contents/package.json?ref=${commitSha}`]: content(JSON.stringify({ dependencies: { safe: "^1.2.0" } })),
-        [`${base}/contents/bun.lock?ref=${commitSha}`]: content('"safe": ["safe@1.2.3", "", {}, "sha512-example"]')
+        [`${base}/contents/bun.lock?ref=${commitSha}`]: content(JSON.stringify({ lockfileVersion: 1, workspaces: { "": { dependencies: { safe: "^1.2.0" } } }, packages: { safe: ["safe@1.2.3", "", {}, "sha512-example"] }}))
       };
       return response(fixtures[target] ?? {}, fixtures[target] === undefined ? 404 : 200);
     } };
@@ -520,7 +524,7 @@ describe("repository evidence foundation", () => {
 
   test("associates each workspace manifest with its own same-directory lock and preserves distinct coordinates", async () => {
     const base = "https://api.github.com/repos/acme/demo";
-    const lock = (entries: Record<string, string>) => JSON.stringify({ packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
+    const lock = (entries: Record<string, string>) => JSON.stringify({ lockfileVersion: 1, packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
@@ -597,7 +601,7 @@ describe("repository evidence foundation", () => {
       return response(fixtures[target] ?? {}, fixtures[target] === undefined ? 404 : 200);
     } };
     const result = await new GitHubRepositoryProvider(http as never).collect("acme", "demo");
-    expect(result.coverage.limitations).toEqual(expect.arrayContaining(["dependency_resolution_unsupported:CARGO", "dependency_resolution_unsupported:GO", "dependency_resolution_unsupported:PYPI"]));
+    expect(result.coverage.limitations).toEqual(expect.arrayContaining(["dependency_resolution_unsupported:GO", "dependency_resolution_unsupported:PYPI"]));
     expect(result.coverage.status).toBe("partial");
   });
 
@@ -692,7 +696,7 @@ describe("repository evidence foundation", () => {
 
   test("bounds deps.dev enrichment deterministically instead of fanning out to every declared coordinate", async () => {
     const base = "https://api.github.com/repos/acme/demo";
-    const lock = (entries: Record<string, string>) => JSON.stringify({ packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
+    const lock = (entries: Record<string, string>) => JSON.stringify({ lockfileVersion: 1, packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
     // 40 distinct exact coordinates across two workspaces — above the enrichment limit.
     const rootEntries = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`pkg-${i}`, `1.0.${i}`]));
     const nestedEntries = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`nested-${i}`, `2.0.${i}`]));
@@ -1003,9 +1007,7 @@ describe("repository evidence foundation", () => {
     const evidence = await realGithubEvidence([{ path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 }], { "Cargo.toml": "[dependencies]\nserde = \"1\"\n" });
     const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
     expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
-    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
-    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
-    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
     const detail = assessment.evidence.find(item => item.kind === "repository_primary_evidence")?.detail ?? {};
     expect(detail.limitations).toEqual([]);
     expect(detail.collectorErrors).toEqual([]);
@@ -1038,8 +1040,334 @@ describe("repository evidence foundation", () => {
     expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
   });
 
+  test("resolves direct Cargo dependencies from Cargo.lock, including renamed crates", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\nrenamed = { package = \"real-crate\", version = \"0.9\" }\nlocal-crate = { path = \"../local-crate\" }\n\n[dev-dependencies]\ntempfile = \"3\"\n",
+      "Cargo.lock": "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\n \"real-crate\",\n \"serde\",\n \"tempfile\",\n]\n\n[[package]]\nname = \"real-crate\"\nversion = \"0.9.4\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"tempfile\"\nversion = \"3.20.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+    });
+    expect(evidence.dependencies.exact).toEqual(expect.arrayContaining([
+      { ecosystem: "CARGO", name: "serde", version: "1.0.219", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." },
+      { ecosystem: "CARGO", name: "real-crate", version: "0.9.4", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." },
+      { ecosystem: "CARGO", name: "tempfile", version: "3.20.0", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." }
+    ]));
+    expect(evidence.dependencies.exact.some(item => item.name === "local-crate")).toBe(false);
+    expect(evidence.dependencies.unresolved).toEqual([]);
+  });
+
+  test("does not guess Cargo versions without Cargo.lock and excludes local crates", async () => {
+    const evidence = await realGithubEvidence([{ path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 }], {
+      "Cargo.toml": "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\nlocal-crate = { path = \"../local-crate\" }\nworkspace-crate = { workspace = true }\n"
+    });
+    expect(evidence.dependencies.exact).toEqual([]);
+    expect(evidence.dependencies.unresolved).toEqual(expect.arrayContaining([
+      { ecosystem: "CARGO", name: "serde", requirement: "1", manifestPath: "Cargo.toml", workspacePath: "." },
+      { ecosystem: "CARGO", name: "workspace-crate", requirement: "<unspecified>", manifestPath: "Cargo.toml", workspacePath: "." }
+    ]));
+    expect(evidence.dependencies.unresolved.some(item => item.name === "local-crate")).toBe(false);
+    expect(evidence.coverage.limitations).toContain("dependency_lock_missing:Cargo.toml");
+  });
+
+  test("resolves Cargo workspace-inherited registry dependencies and excludes inherited local crates", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 },
+      { path: "crates/app/Cargo.toml", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[workspace]\nmembers = [\"crates/app\"]\n[workspace.dependencies]\nserde = \"1\"\nlocal-crate = { path = \"crates/local\" }\n",
+      "Cargo.lock": "version = 3\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"serde\",\n]\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+      "crates/app/Cargo.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nserde = { workspace = true }\nlocal-crate = { workspace = true }\n"
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "CARGO", name: "serde", version: "1.0.219", sourcePath: "Cargo.lock", manifestPath: "crates/app/Cargo.toml", workspacePath: "crates/app" }]);
+    expect(evidence.dependencies.unresolved.some(item => item.name === "local-crate")).toBe(false);
+  });
+
+  test("resolves nested npm workspaces from a governing root package-lock.json", async () => {
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: {
+      "": { workspaces: ["packages/*"] },
+      "packages/app": { dependencies: { demo: "^1.0.0" } },
+      "node_modules/demo": { version: "1.2.3" }
+    } });
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ workspaces: ["packages/*"] }),
+      "package-lock.json": lock,
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.2.3", sourcePath: "package-lock.json", manifestPath: "packages/app/package.json", workspacePath: "packages/app" }]);
+  });
+
+  test("supports npm-shrinkwrap.json as a governing lockfile", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "npm-shrinkwrap.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "npm-shrinkwrap.json": JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { demo: "^2.0.0" } }, "node_modules/demo": { version: "2.4.1" } } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "2.4.1", sourcePath: "npm-shrinkwrap.json", manifestPath: "package.json", workspacePath: "." }]);
+  });
+
+  test("resolves nested Bun workspace dependencies from the root bun.lock", async () => {
+    const bunLock = JSON.stringify({ lockfileVersion: 1, workspaces: {
+      "": { name: "demo", workspaces: ["packages/*"] },
+      "packages/app": { name: "app", dependencies: { demo: "^1.0.0" } }
+    }, packages: { demo: ["demo@1.3.0", "", {}, "sha512-demo"] } });
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "bun.lock", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ workspaces: ["packages/*"] }),
+      "bun.lock": bunLock,
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.3.0", sourcePath: "bun.lock", manifestPath: "packages/app/package.json", workspacePath: "packages/app" }]);
+  });
+
+  test("resolves nested pnpm importers and excludes workspace references", async () => {
+    const pnpmLock = "lockfileVersion: '9.0'\nimporters:\n  packages/app:\n    dependencies:\n      demo:\n        specifier: ^1.0.0\n        version: 1.4.0\n      local-package:\n        specifier: workspace:*\n        version: link:../local-package\npackages:\n  demo@1.4.0:\n    resolution: {integrity: sha512-demo}\nsnapshots:\n  demo@1.4.0: {}\n";
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "pnpm-lock.yaml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ workspaces: ["packages/*"] }),
+      "pnpm-lock.yaml": pnpmLock,
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0", "local-package": "workspace:*" } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.4.0", sourcePath: "pnpm-lock.yaml", manifestPath: "packages/app/package.json", workspacePath: "packages/app" }]);
+    expect(evidence.dependencies.exact.some(item => item.name === "local-package")).toBe(false);
+  });
+
+  test("resolves Yarn classic selectors, including multiple selectors and scoped names", async () => {
+    const yarnLock = "# yarn lockfile v1\n\"@scope/demo@^1.0.0\", \"@scope/demo@~1.0.0\":\n  version \"1.5.0\"\n  resolved \"https://registry.yarnpkg.com/@scope/demo/-/demo-1.5.0.tgz\"\n";
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "yarn.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { "@scope/demo": "^1.0.0" } }),
+      "yarn.lock": yarnLock
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "@scope/demo", version: "1.5.0", sourcePath: "yarn.lock", manifestPath: "package.json", workspacePath: "." }]);
+  });
+
+  test("fails closed for unsupported Yarn formats, ambiguous lock roots, malformed locks, and local workspace references", async () => {
+    const unsupportedYarn = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "yarn.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0", local: "workspace:*" } }),
+      "yarn.lock": "__metadata:\n  version: 6\n"
+    });
+    expect(unsupportedYarn.dependencies.exact).toEqual([]);
+    expect(unsupportedYarn.dependencies.unresolved).toEqual([{ ecosystem: "NPM", name: "demo", requirement: "^1.0.0", sourcePath: "yarn.lock", manifestPath: "package.json", workspacePath: "." }]);
+    expect(unsupportedYarn.coverage.limitations).toContain("dependency_lock_unsupported:yarn.lock");
+
+    const ambiguous = await realGithubEvidence([
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }),
+      "package-lock.json": JSON.stringify({ packages: { "node_modules/demo": { version: "1.0.0" } } }),
+      "packages/package-lock.json": JSON.stringify({ packages: { "node_modules/demo": { version: "2.0.0" } } })
+    });
+    expect(ambiguous.dependencies.exact).toEqual([]);
+    expect(ambiguous.coverage.limitations).toContain("dependency_lock_association_ambiguous:packages/app/package.json");
+
+    const malformed = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }), "package-lock.json": "{not-json" });
+    expect(malformed.dependencies.exact).toEqual([]);
+    expect(malformed.dependencies.unresolved[0]).toMatchObject({ ecosystem: "NPM", name: "demo" });
+
+    const local = await realGithubEvidence([{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }], {
+      "package.json": JSON.stringify({ dependencies: { local: "workspace:*", linked: "link:../linked", filed: "file:../filed" } })
+    });
+    expect(local.dependencies.exact).toEqual([]);
+    expect(local.dependencies.unresolved).toEqual([]);
+  });
+
+  test("resolves a valid lockfile above the security budget through GitHub raw media within the dependency budget", async () => {
+    const lock = JSON.stringify({ lockfileVersion: 3, metadata: "x".repeat(1_200_000), packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.9.0" } } });
+    const rawAccepts: string[] = [];
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: lock.length }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }), "package-lock.json": lock }, false, rawAccepts);
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.9.0", sourcePath: "package-lock.json", manifestPath: "package.json", workspacePath: "." }]);
+    expect(rawAccepts).toContain("application/vnd.github.raw+json");
+    expect(evidence.securityFiles.find(file => file.path === "package-lock.json")?.status).toBe("oversized");
+    expect(evidence.coverage.limitations.some(item => item.startsWith("dependency_lock_oversized"))).toBe(false);
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+  });
+
+  test("fails closed when lock declarations or selectors do not bind to the current manifest", async () => {
+    const staleNpm = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "package-lock.json": JSON.stringify({ packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.9.0" } } })
+    });
+    expect(staleNpm.dependencies.exact).toEqual([]);
+    expect(staleNpm.dependencies.unresolved[0]).toMatchObject({ ecosystem: "NPM", name: "demo", requirement: "^2.0.0" });
+
+    const missingNpmMetadata = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/demo": { version: "1.9.0" } } })
+    });
+    expect(missingNpmMetadata.dependencies.exact).toEqual([]);
+
+    const staleBun = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "bun.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "bun.lock": JSON.stringify({ lockfileVersion: 1, workspaces: { "": { dependencies: { demo: "^1.0.0" } } }, packages: { demo: ["demo@1.9.0", "", {}, "sha512-demo"] } })
+    });
+    expect(staleBun.dependencies.exact).toEqual([]);
+
+    const missingBunMetadata = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "bun.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "bun.lock": JSON.stringify({ lockfileVersion: 1, packages: { demo: ["demo@1.9.0", "", {}, "sha512-demo"] } })
+    });
+    expect(missingBunMetadata.dependencies.exact).toEqual([]);
+
+    const stalePnpm = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "pnpm-lock.yaml", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2" } }),
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      demo:\n        specifier: ^1\n        version: 1.9.0\npackages:\n  demo@1.9.0: {}\nsnapshots:\n  demo@1.9.0: {}\n"
+    });
+    expect(stalePnpm.dependencies.exact).toEqual([]);
+
+    const wrongYarn = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "yarn.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "yarn.lock": "# yarn lockfile v1\n\"demo@^1.0.0\":\n  version \"1.9.0\"\n"
+    });
+    expect(wrongYarn.dependencies.exact).toEqual([]);
+    expect(wrongYarn.dependencies.unresolved[0]).toMatchObject({ name: "demo" });
+  });
+
+  test("requires Cargo direct edges and preserves actual renamed crate identity", async () => {
+    const transitiveOnly = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n",
+      "Cargo.lock": "version = 3\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+    });
+    expect(transitiveOnly.dependencies.exact).toEqual([]);
+    expect(transitiveOnly.dependencies.unresolved[0]).toMatchObject({ ecosystem: "CARGO", name: "serde" });
+
+    const renamed = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nserde_alias = { package = \"serde\", version = \"1\" }\n",
+      "Cargo.lock": "version = 3\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"serde\"]\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+    });
+    expect(renamed.dependencies.exact).toEqual([{ ecosystem: "CARGO", name: "serde", version: "1.0.219", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." }]);
+  });
+
+  test("excludes non-registry NPM specifiers and reports unsupported requirements explicitly", async () => {
+    const evidence = await realGithubEvidence([{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }], {
+      "package.json": JSON.stringify({ dependencies: {
+        local: "workspace:*",
+        linked: "portal:../linked",
+        gitDep: "git+https://github.com/acme/gitDep.git",
+        remote: "https://example.com/remote.tgz",
+        alias: "npm:real-package@1.2.3",
+        githubShort: "owner/repo#main"
+      } })
+    });
+    expect(evidence.dependencies.exact).toEqual([]);
+    expect(evidence.dependencies.unresolved.map(item => item.name).sort()).toEqual(["alias", "gitDep", "githubShort", "remote"]);
+    expect(evidence.coverage.limitations).toEqual(expect.arrayContaining([
+      "dependency_specifier_unsupported:package.json:alias",
+      "dependency_specifier_unsupported:package.json:gitDep",
+      "dependency_specifier_unsupported:package.json:githubShort",
+      "dependency_specifier_unsupported:package.json:remote"
+    ]));
+    expect(evidence.dependencyResolution?.applicableExternalDependencyCount).toBe(evidence.dependencies.exact.length + evidence.dependencies.unresolved.length);
+  });
+
+  test("classifies every requirements variant as unsupported PyPI", async () => {
+    const evidence = await realGithubEvidence([{ path: "requirements-prod.txt", type: "blob", sha: packageBlob, size: 100 }], { "requirements-prod.txt": "requests==2.0.0\n" });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(evidence.dependencyResolution?.unsupportedEcosystems).toEqual(["PYPI"]);
+  });
+
+  test("bounds dependency files above the 2 MiB budget and keeps metadata counts consistent when lock content is unavailable", async () => {
+    const oversizedLock = "x".repeat(2 * 1024 * 1024 + 1);
+    const oversized = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: oversizedLock.length }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }), "package-lock.json": oversizedLock });
+    expect(oversized.dependencies.exact).toEqual([]);
+    expect(oversized.coverage.limitations).toContain("dependency_file_oversized:package-lock.json");
+    expect(oversized.dependencyResolution?.applicableExternalDependencyCount).toBe(oversized.dependencies.exact.length + oversized.dependencies.unresolved.length);
+
+    const unavailable = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }) });
+    expect(unavailable.dependencies.exact).toEqual([]);
+    expect(unavailable.dependencies.unresolved).toHaveLength(1);
+    expect(unavailable.dependencyResolution?.applicableExternalDependencyCount).toBe(unavailable.dependencies.exact.length + unavailable.dependencies.unresolved.length);
+  });
+
+  test("keeps partial-tree exact subsets unknown and attributes mixed supported/unsupported execution", async () => {
+    const partialEvidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }),
+      "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.2.0" } } })
+    }, true);
+    expect(partialEvidence.dependencies.exact).toHaveLength(1);
+    const partialAssessment = await repositoryOmni(partialEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const mixedEvidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "go.mod", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }),
+      "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.2.0" } } }),
+      "go.mod": "module example.com/demo\n"
+    });
+    const mixedAssessment = await repositoryOmni(mixedEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(mixedAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
   test("propagates mixed real dependency resolution uncertainty to downstream sources", async () => {
-    const lock = JSON.stringify({ packages: { "node_modules/resolved": { version: "1.2.3" } } });
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { resolved: "^1.0.0", unresolved: "^2.0.0" } }, "node_modules/resolved": { version: "1.2.3" } } });
     const evidence = await realGithubEvidence([
       { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
       { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }

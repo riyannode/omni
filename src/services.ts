@@ -45,6 +45,17 @@ function githubCollectionFallback(repositoryEvidence: RepositoryEvidence): Repos
 }
 
 function repositoryDependencyResolutionCoverage(repositoryEvidence: RepositoryEvidence, githubCollection: RepositoryCollectionCoverage): EvidenceCoverageSource {
+  const resolution = repositoryEvidence.dependencyResolution;
+  if (resolution) {
+    const hasApplicableExternalDependencies = resolution.applicableExternalDependencyCount > 0;
+    const execution = resolution.resolversAttempted.length > 0 ? "QUERIED" : "NOT_QUERIED";
+    if (!hasApplicableExternalDependencies && resolution.manifestDiscoveryComplete && resolution.unsupportedEcosystems.length === 0 && resolution.unresolvedDependencyCount === 0) {
+      return coverageSource("Dependency Resolution", "NOT_QUERIED", "NOT_APPLICABLE");
+    }
+    if (execution === "NOT_QUERIED") return coverageSource("Dependency Resolution", "NOT_QUERIED", "UNKNOWN");
+    const complete = resolution.manifestDiscoveryComplete && resolution.unsupportedEcosystems.length === 0 && resolution.unresolvedDependencyCount === 0;
+    return coverageSource("Dependency Resolution", "QUERIED", complete ? "OBSERVED" : "UNKNOWN");
+  }
   const limitations = repositoryEvidence.coverage.limitations;
   const hasDependencies = repositoryEvidence.dependencies.exact.length > 0 || repositoryEvidence.dependencies.unresolved.length > 0;
   const resolverAttempted = repositoryEvidence.dependencies.unresolved.length > 0

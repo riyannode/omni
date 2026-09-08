@@ -26,7 +26,9 @@
     "@x402/core": "2.21.0",
     "@x402/evm": "2.21.0",
     "express": "5.2.1",
+    "smol-toml": "1.8.0",
     "viem": "2.55.11",
+    "yaml": "2.9.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
