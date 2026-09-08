@@ -39,6 +39,7 @@ function repositoryEvidenceWith(exact: ExactDependencyCoordinate[]): RepositoryE
     securityFiles: [],
     dependencies: { exact, unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } },
     dependencyObservations: [],
+    dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: [] },
     dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] },
     coverage: { status: "complete", treeEntriesInspected: 1, filesInspected: 1, bytesInspected: 10, limitations: [] },
     sourceErrors: []
@@ -69,7 +70,9 @@ function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: Ret
     async collectResolved() { return structuredClone(repositoryEvidence); }
   };
   const depsDev = depsDevOverride ?? fakeDepsDev(() => {});
-  return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, scorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
+  const osv = { async packageVulnerabilities() { return { findings: [], maliciousPackageObservations: [], evidence: [] }; } };
+  const kev = { async mark() { return { exploited: new Set<string>(), evidence: { source: "CISA KEV", kind: "known_exploitation", observedAt: "2026-01-01T00:00:00.000Z", detail: { matched: [] } } }; } };
+  return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), osv as never, kev as never, scorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
 }
 
 async function repositoryObservation(repositoryEvidence: RepositoryEvidence, lookup: (coordinate: ExactDependencyCoordinate) => Promise<{ checked: boolean; findings: ThreatFinding[] }>) {
@@ -89,6 +92,7 @@ function evidenceOf(assessment: RiskAssessment): RepositoryEvidence {
     securityFiles: [],
     dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } },
     dependencyObservations: [],
+    dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: [] },
     dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] },
     coverage: { status: detail.coverage ?? "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: detail.limitations ?? [] },
     sourceErrors: detail.collectorErrors ?? []
@@ -470,7 +474,7 @@ describe("repository evidence foundation", () => {
 
   test("preserves repository score/recommendation with available or unavailable new evidence", () => {
     const base: RiskSnapshot = { subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "OpenSSF Scorecard", kind: "repository_security_practices", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] };
-    const evidence: RepositoryEvidence = { target: { repository: "github.com/acme/demo", requestedRef: "main", resolvedCommitSha: commitSha }, securityFiles: [{ path: "package.json", category: "manifest" as const, status: "inspected" as const, findings: ["INSTALL_LIFECYCLE_SCRIPT"] }], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: "complete" as const, treeEntriesInspected: 1, filesInspected: 1, bytesInspected: 10, limitations: [] }, sourceErrors: [] };
+    const evidence: RepositoryEvidence = { target: { repository: "github.com/acme/demo", requestedRef: "main", resolvedCommitSha: commitSha }, securityFiles: [{ path: "package.json", category: "manifest" as const, status: "inspected" as const, findings: ["INSTALL_LIFECYCLE_SCRIPT"] }], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: [] }, dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: "complete" as const, treeEntriesInspected: 1, filesInspected: 1, bytesInspected: 10, limitations: [] }, sourceErrors: [] };
     const unavailable = { ...evidence, coverage: { ...evidence.coverage, status: "partial" as const, limitations: ["github_rate_limited"] }, sourceErrors: ["GitHub: github_rate_limited"] };
     const engine = new RiskEngine();
     const before = engine.assess(base);
@@ -763,7 +767,7 @@ describe("repository evidence foundation", () => {
     const partial = await repositoryOmni(partialEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
     expect(partial.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
     expect(partial.coverage?.resolvedWeight).toBe(1);
-    expect(partial.coverage?.applicableWeight).toBe(5);
+    expect(partial.coverage?.applicableWeight).toBe(7);
 
     const unavailableGithub = {
       async resolve(): Promise<never> { throw new Error("github_timeout"); },

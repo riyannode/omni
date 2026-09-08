@@ -79,6 +79,32 @@ export type RepositoryThreatIntelObservation = {
   errors: string[];
   limitations: string[];
 };
+export type RepositoryDependencyVulnerabilityStatus = "NOT_CHECKED" | "CHECKED" | "UNAVAILABLE" | "UNKNOWN";
+export type RepositoryDependencyVulnerabilitySource = "OSV" | "CISA KEV";
+export type RepositoryDependencyVulnerabilityFinding = {
+  coordinate: ExactDependencyCoordinate;
+  vulnerability: VulnerabilityFinding;
+  sources: RepositoryDependencyVulnerabilitySource[];
+};
+export type RepositoryMaliciousPackageObservation = {
+  coordinate: ExactDependencyCoordinate;
+  id: string;
+  source: "OSV";
+};
+export type RepositoryDependencyCisaKevObservation = {
+  status: "NOT_QUERIED" | "CHECKED" | "UNAVAILABLE" | "UNKNOWN";
+  correlatableCveIds: string[];
+  matchedCveIds: string[];
+};
+export type RepositoryDependencyVulnerabilityObservation = {
+  status: RepositoryDependencyVulnerabilityStatus;
+  packagesInspected: ExactDependencyCoordinate[];
+  findings: RepositoryDependencyVulnerabilityFinding[];
+  maliciousPackageObservations: RepositoryMaliciousPackageObservation[];
+  cisaKev: RepositoryDependencyCisaKevObservation;
+  errors: string[];
+  limitations: string[];
+};
 export type RepositoryCollectionCoverage = { status: "complete" | "partial"; limitations: string[]; sourceErrors: string[] };
 export type RepositoryEvidence = {
   target: { repository: string; requestedRef?: string; resolvedCommitSha?: string };
@@ -86,6 +112,7 @@ export type RepositoryEvidence = {
   securityFiles: RepositorySecurityFile[];
   dependencies: { exact: ExactDependencyCoordinate[]; unresolved: UnresolvedDependency[]; resolvedGraph: { packagesChecked: number; nodesObserved: number; errors: string[] } };
   dependencyObservations: DependencyObservation[];
+  dependencyVulnerabilities: RepositoryDependencyVulnerabilityObservation;
   dependencyThreatIntel: RepositoryThreatIntelObservation;
   dependencyResolution?: RepositoryDependencyResolution;
   coverage: { status: "complete" | "partial"; treeEntriesInspected: number; filesInspected: number; bytesInspected: number; limitations: string[] };

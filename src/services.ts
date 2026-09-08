@@ -1,4 +1,4 @@
-import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RiskAssessment, type RiskSnapshot, type ThreatFinding } from "./domain/risk.ts";
+import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RiskAssessment, type RiskSnapshot, type ThreatFinding } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import { RISK_POLICY_VERSION } from "./domain/risk-policy.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
@@ -8,7 +8,7 @@ import type { ThreatIntelStore } from "./data/threat-intel.ts";
 import { extractRiskFeatures } from "./domain/risk-features.ts";
 import type { AssessmentJournal } from "./data/assessment-journal.ts";
 import { NoopAssessmentJournal } from "./data/assessment-journal.ts";
-import { OsvProvider } from "./providers/osv.ts";
+import { OsvProvider, repositoryOsvEcosystem } from "./providers/osv.ts";
 import { CisaKevProvider } from "./providers/cisa-kev.ts";
 import { ScorecardProvider, type ScorecardProviderResult } from "./providers/scorecard.ts";
 import { GitHubRepositoryProvider } from "./providers/github-repository.ts";
@@ -20,6 +20,13 @@ import { X402Probe } from "./providers/x402-probe.ts";
 const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
 const REPOSITORY_ENRICHMENT_CONCURRENCY = 4;
 const REPOSITORY_ASSESSMENT_CACHE_TTL_SECONDS = 600;
+export const MAX_REPOSITORY_OSV_FINDINGS_PER_PACKAGE = 16;
+export const MAX_REPOSITORY_OSV_FINDINGS_TOTAL = 128;
+export const MAX_REPOSITORY_OSV_MALICIOUS_OBSERVATIONS_TOTAL = 128;
+export const MAX_REPOSITORY_OSV_ERROR_ENTRIES = 16;
+export const MAX_REPOSITORY_OSV_LIMITATION_ENTRIES = 16;
+export const MAX_REPOSITORY_OSV_ENTRY_BYTES = 512;
+export const MAX_REPOSITORY_OSV_BYTES = 64 * 1024;
 export const MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE = 8;
 export const MAX_REPOSITORY_THREAT_FINDINGS_TOTAL = 64;
 export const MAX_REPOSITORY_THREAT_INTEL_BYTES = 64 * 1024;
@@ -98,6 +105,29 @@ function repositoryThreatIntelCoverage(repositoryEvidence: RepositoryEvidence, d
   return coverageSource("Threat Intelligence", "QUERIED", repositoryEvidence.dependencyThreatIntel.findings.length > 0 ? "OBSERVED" : "ABSENT");
 }
 
+function repositoryDependencyVulnerabilityCoverage(repositoryEvidence: RepositoryEvidence, dependencyResolution: EvidenceCoverageSource, enrichedCount: number, deferred: number): EvidenceCoverageSource {
+  const observation = repositoryEvidence.dependencyVulnerabilities;
+  if (dependencyResolution.status === "NOT_APPLICABLE") return coverageSource("OSV Dependency Vulnerabilities", "NOT_QUERIED", "NOT_APPLICABLE");
+  if (enrichedCount === 0) return coverageSource("OSV Dependency Vulnerabilities", "NOT_QUERIED", "UNKNOWN");
+  if (dependencyResolution.status === "UNKNOWN" || deferred > 0) return coverageSource("OSV Dependency Vulnerabilities", "QUERIED", "UNKNOWN");
+  if (observation.status === "UNAVAILABLE") return coverageSource("OSV Dependency Vulnerabilities", "QUERIED", "UNAVAILABLE");
+  if (observation.status !== "CHECKED") return coverageSource("OSV Dependency Vulnerabilities", "QUERIED", "UNKNOWN");
+  if (observation.limitations.some(item => item.startsWith("repository_osv_") || item.startsWith("dependency_enrichment_limit_reached:"))) return coverageSource("OSV Dependency Vulnerabilities", "QUERIED", "UNKNOWN");
+  return coverageSource("OSV Dependency Vulnerabilities", "QUERIED", observation.findings.length > 0 || observation.maliciousPackageObservations.length > 0 ? "OBSERVED" : "ABSENT");
+}
+
+function repositoryDependencyKevCoverage(repositoryEvidence: RepositoryEvidence, dependencyResolution: EvidenceCoverageSource, osvCoverage: EvidenceCoverageSource, enrichedCount: number, deferred: number): EvidenceCoverageSource {
+  const observation = repositoryEvidence.dependencyVulnerabilities;
+  if (dependencyResolution.status === "NOT_APPLICABLE") return coverageSource("CISA KEV", "NOT_QUERIED", "NOT_APPLICABLE");
+  if (enrichedCount === 0) return coverageSource("CISA KEV", "NOT_QUERIED", "UNKNOWN");
+  const incomplete = dependencyResolution.status === "UNKNOWN" || deferred > 0 || osvCoverage.status === "UNKNOWN";
+  if (incomplete) return coverageSource("CISA KEV", observation.cisaKev.status === "CHECKED" || observation.cisaKev.status === "UNAVAILABLE" ? "QUERIED" : "NOT_QUERIED", "UNKNOWN");
+  if (observation.cisaKev.status === "NOT_QUERIED") return coverageSource("CISA KEV", "NOT_QUERIED", "NOT_APPLICABLE");
+  if (observation.cisaKev.status === "UNAVAILABLE") return coverageSource("CISA KEV", "QUERIED", "UNAVAILABLE");
+  if (observation.cisaKev.status !== "CHECKED") return coverageSource("CISA KEV", "NOT_QUERIED", "UNKNOWN");
+  return coverageSource("CISA KEV", "QUERIED", observation.cisaKev.matchedCveIds.length > 0 ? "OBSERVED" : "ABSENT");
+}
+
 function repositoryCoverage(repositoryEvidence: RepositoryEvidence, scorecardResult: ScorecardProviderResult, enrichedCount: number, deferred: number, githubCollection: RepositoryCollectionCoverage): EvidenceCoverageSource[] {
   const githubUnavailable = githubCollection.limitations.includes("github_collection_unavailable")
     || githubCollection.sourceErrors.some(error => error.startsWith("GitHub:"));
@@ -112,10 +142,13 @@ function repositoryCoverage(repositoryEvidence: RepositoryEvidence, scorecardRes
       ? "UNAVAILABLE"
       : "UNKNOWN";
   const dependencyResolution = repositoryDependencyResolutionCoverage(repositoryEvidence, githubCollection);
+  const osv = repositoryDependencyVulnerabilityCoverage(repositoryEvidence, dependencyResolution, enrichedCount, deferred);
   return [
     coverageSource("GitHub Repository Evidence", "QUERIED", githubStatus),
     coverageSource("OpenSSF Scorecard", "QUERIED", scorecardStatus),
     dependencyResolution,
+    osv,
+    repositoryDependencyKevCoverage(repositoryEvidence, dependencyResolution, osv, enrichedCount, deferred),
     repositoryDependencyProvenanceCoverage(repositoryEvidence, dependencyResolution, enrichedCount, deferred),
     repositoryThreatIntelCoverage(repositoryEvidence, dependencyResolution, enrichedCount, deferred)
   ];
@@ -140,6 +173,165 @@ function compareCoordinates(left: ExactDependencyCoordinate, right: ExactDepende
     if (result !== 0) return result;
   }
   return 0;
+}
+
+function compareRepositoryVulnerabilityFinding(left: RepositoryDependencyVulnerabilityFinding, right: RepositoryDependencyVulnerabilityFinding): number {
+  return compareCoordinates(left.coordinate, right.coordinate)
+    || compareText(left.vulnerability.id, right.vulnerability.id)
+    || compareText(JSON.stringify(left), JSON.stringify(right));
+}
+
+function uniqueRepositoryVulnerabilityFindings(findings: RepositoryDependencyVulnerabilityFinding[]): RepositoryDependencyVulnerabilityFinding[] {
+  const unique = new Map<string, RepositoryDependencyVulnerabilityFinding>();
+  for (const finding of findings) {
+    const sources = [...new Set(finding.sources)].sort(compareText) as RepositoryDependencyVulnerabilityFinding["sources"];
+    const normalized = { ...finding, sources };
+    const key = JSON.stringify(normalized);
+    if (!unique.has(key)) unique.set(key, normalized);
+  }
+  return [...unique.values()].sort(compareRepositoryVulnerabilityFinding);
+}
+
+function boundedRepositoryOsvStrings(values: string[], maximumEntries: number, label: "errors" | "limitations"): { values: string[]; overflow: boolean; entryTruncated: boolean } {
+  let entryTruncated = false;
+  const normalized = [...new Set(values.map(value => {
+    const bounded = truncateUtf8(value, MAX_REPOSITORY_OSV_ENTRY_BYTES);
+    entryTruncated ||= bounded.truncated;
+    return bounded.value;
+  }))].sort(compareText);
+  const overflow = normalized.length > maximumEntries;
+  const marker = `repository_osv_${label}_truncated:${maximumEntries}_of_${normalized.length}`;
+  const retained = overflow ? [...normalized.slice(0, Math.max(0, maximumEntries - 1)), marker] : normalized;
+  return { values: [...new Set(retained)].sort(compareText), overflow, entryTruncated };
+}
+
+function repositoryOsvIdentity(coordinate: ExactDependencyCoordinate): string {
+  return `${coordinate.name}@${coordinate.version}`;
+}
+
+function fitRepositoryDependencyVulnerabilityObservation(observation: RepositoryDependencyVulnerabilityObservation): RepositoryDependencyVulnerabilityObservation {
+  let packagesInspected = [...observation.packagesInspected].sort(compareCoordinates);
+  let findings = [...observation.findings].sort(compareRepositoryVulnerabilityFinding);
+  let maliciousPackageObservations = [...observation.maliciousPackageObservations].sort((left, right) => compareCoordinates(left.coordinate, right.coordinate) || compareText(left.id, right.id));
+  let limitations = [...observation.limitations].sort(compareText);
+  const result = (): RepositoryDependencyVulnerabilityObservation => ({ ...observation, packagesInspected, findings, maliciousPackageObservations, limitations });
+  if (utf8Bytes(JSON.stringify(result())) <= MAX_REPOSITORY_OSV_BYTES) return result();
+
+  limitations = [...new Set([...limitations, "repository_osv_payload_truncated"])].sort(compareText);
+  while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_OSV_BYTES && findings.length > 0) findings.pop();
+  while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_OSV_BYTES && maliciousPackageObservations.length > 0) maliciousPackageObservations.pop();
+  while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_OSV_BYTES && packagesInspected.length > 0) packagesInspected.pop();
+  if (utf8Bytes(JSON.stringify(result())) <= MAX_REPOSITORY_OSV_BYTES) return result();
+  return { ...observation, packagesInspected: [], findings: [], maliciousPackageObservations: [], errors: [], limitations: ["repository_osv_payload_reduction_failed"] };
+}
+
+function finalizeRepositoryDependencyVulnerabilityObservation(
+  status: RepositoryDependencyVulnerabilityObservation["status"],
+  packagesInspected: ExactDependencyCoordinate[],
+  findings: RepositoryDependencyVulnerabilityFinding[],
+  maliciousPackageObservations: RepositoryDependencyVulnerabilityObservation["maliciousPackageObservations"],
+  cisaKev: RepositoryDependencyVulnerabilityObservation["cisaKev"],
+  errors: string[],
+  limitations: string[]
+): RepositoryDependencyVulnerabilityObservation {
+  const boundedErrors = boundedRepositoryOsvStrings(errors, MAX_REPOSITORY_OSV_ERROR_ENTRIES, "errors");
+  const rawLimitations = [...limitations];
+  if (boundedErrors.overflow) rawLimitations.push(`repository_osv_errors_truncated:${MAX_REPOSITORY_OSV_ERROR_ENTRIES}_of_${errors.length}`);
+  if (boundedErrors.entryTruncated) rawLimitations.push("repository_osv_error_entry_truncated");
+  const boundedLimitations = boundedRepositoryOsvStrings(rawLimitations, MAX_REPOSITORY_OSV_LIMITATION_ENTRIES, "limitations");
+  return fitRepositoryDependencyVulnerabilityObservation({
+    status,
+    packagesInspected: [...packagesInspected].sort(compareCoordinates),
+    findings: uniqueRepositoryVulnerabilityFindings(findings),
+    maliciousPackageObservations: [...new Map(maliciousPackageObservations.map(item => [`${coordinateIdentity(item.coordinate)}:${item.id}`, item])).values()],
+    cisaKev,
+    errors: boundedErrors.values,
+    limitations: boundedLimitations.values
+  });
+}
+
+async function collectRepositoryDependencyVulnerabilities(
+  osv: OsvProvider,
+  kev: CisaKevProvider,
+  coordinates: ExactDependencyCoordinate[],
+  deferred: number,
+  selectedCount: number,
+  resolutionIncomplete: boolean
+): Promise<RepositoryDependencyVulnerabilityObservation> {
+  const orderedCoordinates = [...coordinates].sort((left, right) => coordinateIdentity(left).localeCompare(coordinateIdentity(right)) || compareCoordinates(left, right));
+  const limitations = deferred > 0 ? [`dependency_enrichment_limit_reached:${deferred}_of_${selectedCount}_deferred`] : [];
+  if (resolutionIncomplete && orderedCoordinates.length === 0) {
+    return finalizeRepositoryDependencyVulnerabilityObservation("NOT_CHECKED", [], [], [], { status: "UNKNOWN", correlatableCveIds: [], matchedCveIds: [] }, [], limitations);
+  }
+  if (orderedCoordinates.length === 0) {
+    return finalizeRepositoryDependencyVulnerabilityObservation("NOT_CHECKED", [], [], [], { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, [], limitations);
+  }
+
+  const findings: RepositoryDependencyVulnerabilityFinding[] = [];
+  const maliciousPackageObservations: RepositoryDependencyVulnerabilityObservation["maliciousPackageObservations"] = [];
+  const errors: string[] = [];
+  let successfulQueries = 0;
+  let failedQueries = 0;
+
+  for (let offset = 0; offset < orderedCoordinates.length; offset += REPOSITORY_ENRICHMENT_CONCURRENCY) {
+    const chunk = orderedCoordinates.slice(offset, offset + REPOSITORY_ENRICHMENT_CONCURRENCY);
+    const results = await Promise.all(chunk.map(async coordinate => {
+      const ecosystem = repositoryOsvEcosystem(coordinate.ecosystem);
+      if (!ecosystem) return { coordinate, error: "unsupported_ecosystem" };
+      try {
+        return { coordinate, result: await osv.packageVulnerabilities(ecosystem, coordinate.name, coordinate.version) };
+      } catch (error) {
+        return { coordinate, error: error instanceof Error ? error.message : "unknown error" };
+      }
+    }));
+    for (const item of results) {
+      if ("error" in item) {
+        failedQueries += 1;
+        errors.push(`OSV ${repositoryOsvIdentity(item.coordinate)}: ${item.error}`);
+        continue;
+      }
+      successfulQueries += 1;
+      const packageFindings = item.result.findings.map(vulnerability => ({ coordinate: item.coordinate, vulnerability: { ...vulnerability, knownExploited: false, aliases: [...vulnerability.aliases].sort(compareText) }, sources: ["OSV"] as RepositoryDependencyVulnerabilityFinding["sources"] }));
+      const uniquePackageFindings = uniqueRepositoryVulnerabilityFindings(packageFindings);
+      if (uniquePackageFindings.length > MAX_REPOSITORY_OSV_FINDINGS_PER_PACKAGE) limitations.push(`repository_osv_findings_truncated:${repositoryOsvIdentity(item.coordinate)}:${MAX_REPOSITORY_OSV_FINDINGS_PER_PACKAGE}_of_${uniquePackageFindings.length}`);
+      findings.push(...uniquePackageFindings.slice(0, MAX_REPOSITORY_OSV_FINDINGS_PER_PACKAGE));
+      for (const malicious of item.result.maliciousPackageObservations) {
+        if (typeof malicious.id === "string" && malicious.id.length > 0) maliciousPackageObservations.push({ coordinate: item.coordinate, id: malicious.id, source: "OSV" });
+      }
+    }
+  }
+
+  const status = failedQueries === 0 ? "CHECKED" : successfulQueries === 0 ? "UNAVAILABLE" : "UNKNOWN";
+  const uniqueFindings = uniqueRepositoryVulnerabilityFindings(findings);
+  if (uniqueFindings.length > MAX_REPOSITORY_OSV_FINDINGS_TOTAL) limitations.push(`repository_osv_total_findings_truncated:${MAX_REPOSITORY_OSV_FINDINGS_TOTAL}_of_${uniqueFindings.length}`);
+  const retainedFindings = uniqueFindings.slice(0, MAX_REPOSITORY_OSV_FINDINGS_TOTAL);
+  const uniqueMalicious = [...new Map(maliciousPackageObservations.map(item => [`${coordinateIdentity(item.coordinate)}:${item.id}`, item])).values()]
+    .sort((left, right) => compareCoordinates(left.coordinate, right.coordinate) || compareText(left.id, right.id));
+  if (uniqueMalicious.length > MAX_REPOSITORY_OSV_MALICIOUS_OBSERVATIONS_TOTAL) limitations.push(`repository_osv_malicious_observations_truncated:${MAX_REPOSITORY_OSV_MALICIOUS_OBSERVATIONS_TOTAL}_of_${uniqueMalicious.length}`);
+  const retainedMalicious = uniqueMalicious.slice(0, MAX_REPOSITORY_OSV_MALICIOUS_OBSERVATIONS_TOTAL);
+  const completeOsv = status === "CHECKED" && !resolutionIncomplete && deferred === 0 && !limitations.some(item => item.startsWith("repository_osv_"));
+  const correlatableCveIds = correlatableVulnerabilityIds(retainedFindings.map(item => item.vulnerability));
+  let cisaKev: RepositoryDependencyVulnerabilityObservation["cisaKev"] = {
+    status: completeOsv && correlatableCveIds.length === 0 ? "NOT_QUERIED" : "UNKNOWN",
+    correlatableCveIds,
+    matchedCveIds: []
+  };
+  if (correlatableCveIds.length > 0 && successfulQueries > 0) {
+    try {
+      const observed = await kev.mark(correlatableCveIds);
+      const matchedCveIds = correlatableCveIds.filter(id => observed.exploited.has(id));
+      cisaKev = { status: "CHECKED", correlatableCveIds, matchedCveIds };
+      for (const finding of retainedFindings) {
+        const knownExploited = [finding.vulnerability.id, ...finding.vulnerability.aliases].some(id => observed.exploited.has(id));
+        finding.vulnerability = { ...finding.vulnerability, knownExploited };
+        finding.sources = [...new Set(["OSV", ...(knownExploited ? ["CISA KEV"] : [])])].sort(compareText) as RepositoryDependencyVulnerabilityFinding["sources"];
+      }
+    } catch (error) {
+      cisaKev = { status: "UNAVAILABLE", correlatableCveIds, matchedCveIds: [] };
+      errors.push(`CISA KEV: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
+  }
+  return finalizeRepositoryDependencyVulnerabilityObservation(status, orderedCoordinates, retainedFindings, retainedMalicious, cisaKev, errors, limitations);
 }
 
 function truncateUtf8(value: unknown, maximumBytes: number): { value: string; truncated: boolean } {
@@ -316,6 +508,10 @@ function repositoryThreatIntelDetail(observation: RepositoryThreatIntelObservati
   return { status: observation.status, packagesInspected: observation.packagesInspected, findings: observation.findings, errors: observation.errors, limitations: observation.limitations };
 }
 
+function repositoryDependencyVulnerabilityDetail(observation: RepositoryDependencyVulnerabilityObservation): Record<string, unknown> {
+  return { status: observation.status, packagesInspected: observation.packagesInspected, findings: observation.findings, maliciousPackageObservations: observation.maliciousPackageObservations, cisaKev: observation.cisaKev, errors: observation.errors, limitations: observation.limitations };
+}
+
 
 export class OmniIntelligence {
   constructor(
@@ -448,7 +644,7 @@ export class OmniIntelligence {
     }
     catch (error) {
       const repositoryError = `GitHub: ${error instanceof Error ? error.message : "unknown error"}`;
-      const repositoryEvidence: RepositoryEvidence = { target: { repository: canonicalRepository ?? target }, githubCollection: { status: "partial", limitations: ["github_collection_unavailable"], sourceErrors: [repositoryError] }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [repositoryError] };
+      const repositoryEvidence: RepositoryEvidence = { target: { repository: canonicalRepository ?? target }, githubCollection: { status: "partial", limitations: ["github_collection_unavailable"], sourceErrors: [repositoryError] }, securityFiles: [], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "UNKNOWN", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: ["github_collection_unavailable"] }, dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["github_collection_unavailable"] }, coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: ["github_collection_unavailable"] }, sourceErrors: [repositoryError] };
       return this.repositoryRiskFromEvidence(repositoryEvidence);
     }
   }
@@ -478,6 +674,14 @@ export class OmniIntelligence {
     if (deferred > 0) {
       repositoryEvidence.coverage.status = "partial";
       repositoryEvidence.coverage.limitations.push(`dependency_enrichment_limit_reached:${deferred}_of_${selected.length}_deferred`);
+    }
+    const dependencyResolution = repositoryDependencyResolutionCoverage(repositoryEvidence, githubCollection);
+    const resolutionIncomplete = dependencyResolution.status === "UNKNOWN";
+    const vulnerabilityObservation = await collectRepositoryDependencyVulnerabilities(this.osv, this.kev, enriched, deferred, selected.length, resolutionIncomplete);
+    repositoryEvidence.dependencyVulnerabilities = vulnerabilityObservation;
+    evidence.push({ source: "OSV", kind: "repository_dependency_vulnerabilities", observedAt: new Date().toISOString(), detail: repositoryDependencyVulnerabilityDetail(vulnerabilityObservation) });
+    if (vulnerabilityObservation.cisaKev.status !== "NOT_QUERIED") {
+      evidence.push({ source: "CISA KEV", kind: "repository_dependency_known_exploitation", observedAt: new Date().toISOString(), detail: { ...vulnerabilityObservation.cisaKev } });
     }
     const expected = { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { commit: repositoryEvidence.target.resolvedCommitSha } : {}) };
     const threatIntelObservation = await collectRepositoryThreatIntel(this.threatIntel, enriched, deferred, selected.length);

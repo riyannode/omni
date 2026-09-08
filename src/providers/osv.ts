@@ -60,6 +60,12 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+export function repositoryOsvEcosystem(ecosystem: string): "npm" | "crates.io" | undefined {
+  if (ecosystem === "NPM") return "npm";
+  if (ecosystem === "CARGO") return "crates.io";
+  return undefined;
+}
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize).sort((left, right) => compareText(JSON.stringify(left), JSON.stringify(right)));
   if (isRecord(value)) return Object.fromEntries(Object.keys(value).sort(compareText).map(key => [key, canonicalize(value[key])]));
@@ -102,10 +108,11 @@ function compareSemver(left: Semver, right: Semver): number {
 
 function versionInRange(version: string, range: OsvAffectedRange, ecosystem: string): boolean {
   const rangeType = range.type.toUpperCase();
-  // OSV ECOSYSTEM ranges are interpreted by the named ecosystem. npm uses
-  // SemVer ordering for package versions; GIT ranges remain commit-only and
-  // must not be guessed from a package version.
-  if (rangeType !== "SEMVER" && !(rangeType === "ECOSYSTEM" && ecosystem.toLowerCase() === "npm")) return false;
+  // OSV ECOSYSTEM ranges for npm and crates.io use their proven
+  // semver-compatible package-version ordering. GIT ranges remain
+  // commit-only and must not be guessed from a package version.
+  const normalizedEcosystem = ecosystem.toLowerCase();
+  if (rangeType !== "SEMVER" && !(rangeType === "ECOSYSTEM" && (normalizedEcosystem === "npm" || normalizedEcosystem === "crates.io"))) return false;
   const requested = parseSemver(version);
   if (!requested) return false;
   let active = false;

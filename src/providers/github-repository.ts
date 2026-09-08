@@ -240,6 +240,7 @@ export class GitHubRepositoryProvider {
       securityFiles,
       dependencies: dependencyEvidence,
       dependencyObservations: [],
+      dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: [] },
       dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] },
       dependencyResolution: resolved.metadata,
       coverage: { status: limitations.length === 0 ? "complete" : "partial", treeEntriesInspected: Math.min(entries.length, MAX_TREE_ENTRIES), filesInspected: securityFiles.filter(file => file.status === "inspected").length, bytesInspected, limitations: [...new Set(limitations)].sort() },
