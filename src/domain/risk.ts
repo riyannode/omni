@@ -1,4 +1,4 @@
-export const RISK_SNAPSHOT_SCHEMA_VERSION = 3 as const;
+export const RISK_SNAPSHOT_SCHEMA_VERSION = 4 as const;
 export const MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION = 1 as const;
 export const PACKAGE_COVERAGE_MODEL_VERSION = "package-coverage-v2" as const;
 export const REPOSITORY_COVERAGE_MODEL_VERSION = "repository-coverage-v1" as const;
@@ -73,10 +73,13 @@ export type ProvenanceObservation = { package: ExactDependencyCoordinate; state:
 export type DependencyObservation = { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number; error?: string }; provenance: ProvenanceObservation[] };
 export type RepositoryThreatIntelStatus = "NOT_CHECKED" | "CHECKED" | "UNAVAILABLE" | "UNKNOWN";
 export type RepositoryThreatIntelFinding = { coordinate: ExactDependencyCoordinate; finding: ThreatFinding };
+export type RepositorySummaryStatus = "VALID" | "TRUNCATED" | "UNAVAILABLE" | "MISSING" | "INCONSISTENT" | "NOT_CHECKED" | "UNKNOWN";
+export type RepositoryThreatIntelSummary = { status: RepositorySummaryStatus; findingsObserved: number; countsBySeverity: Record<Exclude<RiskLevel, "unknown">, number> };
 export type RepositoryThreatIntelObservation = {
   status: RepositoryThreatIntelStatus;
   packagesInspected: ExactDependencyCoordinate[];
   findings: RepositoryThreatIntelFinding[];
+  summary?: RepositoryThreatIntelSummary;
   errors: string[];
   limitations: string[];
 };
@@ -97,11 +100,13 @@ export type RepositoryDependencyCisaKevObservation = {
   correlatableCveIds: string[];
   matchedCveIds: string[];
 };
+export type RepositoryDependencyVulnerabilitySummary = { status: RepositorySummaryStatus; findingsObserved: number; countsBySeverity: Record<RiskLevel, number>; knownExploitedObserved: number; maliciousPackageObservationsObserved: number };
 export type RepositoryDependencyVulnerabilityObservation = {
   status: RepositoryDependencyVulnerabilityStatus;
   packagesInspected: ExactDependencyCoordinate[];
   findings: RepositoryDependencyVulnerabilityFinding[];
   maliciousPackageObservations: RepositoryMaliciousPackageObservation[];
+  summary?: RepositoryDependencyVulnerabilitySummary;
   cisaKev: RepositoryDependencyCisaKevObservation;
   errors: string[];
   limitations: string[];

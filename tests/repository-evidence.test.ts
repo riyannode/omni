@@ -257,7 +257,7 @@ describe("repository evidence foundation", () => {
     expect(normalizeProvenance({ verified: true, sourceRepository: "github.com/acme/demo", commit: "1111111111111111111111111111111111111111" }, { repository: "github.com/acme/demo", commit: commitSha }).state).toBe("VERIFIED_COMMIT_MISMATCH");
   });
 
-  test("keeps repository dependency threat intel observation-only across checked, failed, and not-checked states", async () => {
+  test("scores repository dependency threat intel while separating uncertainty states", async () => {
     const baseline = new RiskEngine().assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "Scorecard", kind: "score", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] });
     const coordinate = exactCoordinate("dangerous-package", "4.2.0");
     const finding: ThreatFinding = { indicatorType: "package", indicator: "npm:dangerous-package@4.2.0", threatType: "malicious_package", severity: "critical", source: "licensed-feed", reference: "https://intel.example/finding/1" };
@@ -266,7 +266,7 @@ describe("repository evidence foundation", () => {
     const checked = await repositoryOmni(repositoryEvidenceWith([coordinate]), threatIntelStore(async () => ({ checked: true, findings: [finding] })), capturingJournal(checkedSnapshots)).repositoryRisk("acme", "demo");
     const checkedSnapshot = checkedSnapshots[0]!;
     const checkedObservation = checkedSnapshot.repositoryEvidence?.dependencyThreatIntel;
-    expect({ riskScore: checked.riskScore, recommendation: checked.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    expect({ riskScore: checked.riskScore, recommendation: checked.recommendation }).toEqual({ riskScore: 100, recommendation: "do_not_proceed" });
     expect(checkedSnapshot).not.toHaveProperty("threatIntelChecked");
     expect(checkedSnapshot).not.toHaveProperty("threatFindings");
     expect(checkedSnapshot.sourceErrors ?? []).toEqual([]);
@@ -471,8 +471,8 @@ describe("repository evidence foundation", () => {
       await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => { throw new Error("feed_down"); })
     ];
     for (const [index, scenario] of scenarios.entries()) {
-      expect(scenario.assessment.riskScore).toBe(baseline.riskScore);
-      expect(scenario.assessment.recommendation).toBe(index === scenarios.length - 1 ? "manual_review" : baseline.recommendation);
+      expect(scenario.assessment.riskScore).toBe(index === 0 ? baseline.riskScore : index === 3 ? baseline.riskScore : 100);
+      expect(scenario.assessment.recommendation).toBe(index === 1 || index === 2 ? "do_not_proceed" : index === 3 ? "manual_review" : baseline.recommendation);
       expect(scenario.snapshot.sourceErrors ?? []).toEqual([]);
     }
   });
@@ -485,11 +485,12 @@ describe("repository evidence foundation", () => {
     const before = engine.assess(base);
     const available = engine.assess({ ...base, repositoryEvidence: evidence });
     const partial = engine.assess({ ...base, repositoryEvidence: unavailable });
-    expect({ riskScore: available.riskScore, recommendation: available.recommendation }).toEqual({ riskScore: before.riskScore, recommendation: before.recommendation });
-    expect({ riskScore: partial.riskScore, recommendation: partial.recommendation }).toEqual({ riskScore: before.riskScore, recommendation: before.recommendation });
+    expect({ riskScore: available.riskScore, recommendation: available.recommendation }).toEqual({ riskScore: 10, recommendation: "proceed" });
+    expect({ riskScore: partial.riskScore, recommendation: partial.recommendation }).toEqual({ riskScore: 10, recommendation: "proceed" });
+
     expect(available.signals.map(signal => signal.code)).toContain("INSTALL_LIFECYCLE_SCRIPT_OBSERVED");
     expect(partial.signals.map(signal => signal.code)).toContain("REPOSITORY_EVIDENCE_PARTIAL");
-    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(3);
+    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(4);
     expect(extractRiskFeatures({ ...base, repositoryEvidence: evidence }).schemaVersion).toBe(RISK_FEATURE_SCHEMA_VERSION);
   });
 
@@ -498,12 +499,16 @@ describe("repository evidence foundation", () => {
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "package" as const, id: "old-package" },
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "x402_endpoint" as const, id: "old-endpoint" },
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "repository" as const, id: "old-repository" },
-      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "current-repository" }
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "package" as const, id: "historical-package" },
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "x402_endpoint" as const, id: "historical-endpoint" },
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "dependency_set" as const, id: "historical-dependencies" },
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "historical-repository" },
+      { snapshotSchemaVersion: 4, featureSchemaVersion: 4, subjectType: "repository" as const, id: "current-repository" }
     ];
     expect(partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION)).toEqual({
-      compatible: [rows[0]!, rows[1]!, rows[3]!],
-      incompatible: [rows[2]!],
-      schemaVersionsPresent: { snapshot: [1, 3], feature: [1, 3] }
+      compatible: [rows[0]!, rows[1]!, rows[3]!, rows[4]!, rows[5]!, rows[7]!],
+      incompatible: [rows[2]!, rows[6]!],
+      schemaVersionsPresent: { snapshot: [1, 3, 4], feature: [1, 3, 4] }
     });
   });
 
@@ -520,11 +525,13 @@ describe("repository evidence foundation", () => {
       // cohort-aware comparison must prove semantic equality instead.
       expect(featuresEqual(fresh, legacyRow)).toBe(false);
       expect(featuresEqualForCohort(fresh, legacyRow, 1)).toEqual({ equal: true, comparison: "legacy-projected" });
+      expect(featuresEqualForCohort(fresh, legacyRow, 3, snapshot.subject.type)).toEqual({ equal: true, comparison: "legacy-projected" });
+      expect(featuresEqualForCohort({ repository: { old: true } }, { repository: { old: false } }, 3, "repository")).toEqual({ equal: false, comparison: "current-schema" });
       // Real semantic change on the shared surface still counts as drift.
       const driftedLegacy = { ...legacyRow, vulnerabilityCount: 7 };
       expect(featuresEqualForCohort(fresh, driftedLegacy, 1)).toEqual({ equal: false, comparison: "legacy-projected" });
       // Current-cohort rows keep the strict byte-exact comparison.
-      expect(featuresEqualForCohort(fresh, structuredClone(fresh), 2)).toEqual({ equal: true, comparison: "current-schema" });
+      expect(featuresEqualForCohort(fresh, structuredClone(fresh), 2, snapshot.subject.type)).toEqual({ equal: true, comparison: "legacy-projected" });
       const mutatedCurrent = structuredClone(fresh) as unknown as Record<string, unknown>;
       mutatedCurrent.vulnerabilityCount = 3;
       expect(featuresEqualForCohort(fresh, mutatedCurrent, 2).equal).toBe(false);

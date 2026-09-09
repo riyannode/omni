@@ -1,4 +1,4 @@
-import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RiskAssessment, type RiskSnapshot, type ThreatFinding } from "./domain/risk.ts";
+import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryDependencyVulnerabilitySummary, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RepositoryThreatIntelFinding, type RepositoryThreatIntelSummary, type RiskAssessment, type RiskSnapshot, type ThreatFinding, type RiskLevel } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import { RISK_POLICY_VERSION } from "./domain/risk-policy.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
@@ -192,6 +192,30 @@ function uniqueRepositoryVulnerabilityFindings(findings: RepositoryDependencyVul
   return [...unique.values()].sort(compareRepositoryVulnerabilityFinding);
 }
 
+function repositoryVulnerabilitySummary(status: RepositoryDependencyVulnerabilitySummary["status"], findings: RepositoryDependencyVulnerabilityFinding[], maliciousPackageObservations: RepositoryDependencyVulnerabilityObservation["maliciousPackageObservations"]): RepositoryDependencyVulnerabilitySummary {
+  const countsBySeverity = { unknown: 0, low: 0, medium: 0, high: 0, critical: 0 } as Record<RiskLevel, number>;
+  for (const finding of findings) countsBySeverity[finding.vulnerability.severity] += 1;
+  return { status, findingsObserved: findings.length, countsBySeverity, knownExploitedObserved: findings.filter(finding => finding.vulnerability.knownExploited).length, maliciousPackageObservationsObserved: maliciousPackageObservations.length };
+}
+
+function repositoryThreatIntelSummary(status: RepositoryThreatIntelSummary["status"], findings: RepositoryThreatIntelFinding[]): RepositoryThreatIntelSummary {
+  const countsBySeverity = { low: 0, medium: 0, high: 0, critical: 0 } as Record<Exclude<RiskLevel, "unknown">, number>;
+  for (const finding of findings) countsBySeverity[finding.finding.severity] += 1;
+  return { status, findingsObserved: findings.length, countsBySeverity };
+}
+
+function threatIntelDetailWasTruncated(limitation: string): boolean {
+  return limitation === "threat_intel_payload_truncated"
+    || limitation.startsWith("threat_intel_finding_field_truncated:")
+    || limitation.startsWith("threat_intel_findings_truncated:")
+    || limitation.startsWith("threat_intel_total_findings_truncated:")
+    || limitation.startsWith("threat_intel_packages_inspected_truncated:");
+}
+
+function vulnerabilityIdentity(finding: RepositoryDependencyVulnerabilityFinding): string {
+  return `${coordinateIdentity(finding.coordinate)}:${finding.vulnerability.id}`;
+}
+
 function boundedRepositoryOsvStrings(values: string[], maximumEntries: number, label: "errors" | "limitations"): { values: string[]; overflow: boolean; entryTruncated: boolean } {
   let entryTruncated = false;
   const normalized = [...new Set(values.map(value => {
@@ -214,15 +238,17 @@ function fitRepositoryDependencyVulnerabilityObservation(observation: Repository
   let findings = [...observation.findings].sort(compareRepositoryVulnerabilityFinding);
   let maliciousPackageObservations = [...observation.maliciousPackageObservations].sort((left, right) => compareCoordinates(left.coordinate, right.coordinate) || compareText(left.id, right.id));
   let limitations = [...observation.limitations].sort(compareText);
-  const result = (): RepositoryDependencyVulnerabilityObservation => ({ ...observation, packagesInspected, findings, maliciousPackageObservations, limitations });
+  let summary = observation.summary;
+  const result = (): RepositoryDependencyVulnerabilityObservation => ({ ...observation, ...(summary ? { summary } : {}), packagesInspected, findings, maliciousPackageObservations, limitations });
   if (utf8Bytes(JSON.stringify(result())) <= MAX_REPOSITORY_OSV_BYTES) return result();
 
   limitations = [...new Set([...limitations, "repository_osv_payload_truncated"])].sort(compareText);
+  if (summary) summary = { ...summary, status: "TRUNCATED" };
   while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_OSV_BYTES && findings.length > 0) findings.pop();
   while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_OSV_BYTES && maliciousPackageObservations.length > 0) maliciousPackageObservations.pop();
   while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_OSV_BYTES && packagesInspected.length > 0) packagesInspected.pop();
   if (utf8Bytes(JSON.stringify(result())) <= MAX_REPOSITORY_OSV_BYTES) return result();
-  return { ...observation, packagesInspected: [], findings: [], maliciousPackageObservations: [], errors: [], limitations: ["repository_osv_payload_reduction_failed"] };
+  return { ...result(), packagesInspected: [], findings: [], maliciousPackageObservations: [], errors: [], limitations: ["repository_osv_payload_reduction_failed"] };
 }
 
 function finalizeRepositoryDependencyVulnerabilityObservation(
@@ -230,6 +256,7 @@ function finalizeRepositoryDependencyVulnerabilityObservation(
   packagesInspected: ExactDependencyCoordinate[],
   findings: RepositoryDependencyVulnerabilityFinding[],
   maliciousPackageObservations: RepositoryDependencyVulnerabilityObservation["maliciousPackageObservations"],
+  summary: RepositoryDependencyVulnerabilitySummary,
   cisaKev: RepositoryDependencyVulnerabilityObservation["cisaKev"],
   errors: string[],
   limitations: string[]
@@ -244,6 +271,7 @@ function finalizeRepositoryDependencyVulnerabilityObservation(
     packagesInspected: [...packagesInspected].sort(compareCoordinates),
     findings: uniqueRepositoryVulnerabilityFindings(findings),
     maliciousPackageObservations: [...new Map(maliciousPackageObservations.map(item => [`${coordinateIdentity(item.coordinate)}:${item.id}`, item])).values()],
+    summary,
     cisaKev,
     errors: boundedErrors.values,
     limitations: boundedLimitations.values
@@ -261,13 +289,14 @@ async function collectRepositoryDependencyVulnerabilities(
   const orderedCoordinates = [...coordinates].sort((left, right) => coordinateIdentity(left).localeCompare(coordinateIdentity(right)) || compareCoordinates(left, right));
   const limitations = deferred > 0 ? [`dependency_enrichment_limit_reached:${deferred}_of_${selectedCount}_deferred`] : [];
   if (resolutionIncomplete && orderedCoordinates.length === 0) {
-    return finalizeRepositoryDependencyVulnerabilityObservation("NOT_CHECKED", [], [], [], { status: "UNKNOWN", correlatableCveIds: [], matchedCveIds: [] }, [], limitations);
+    return finalizeRepositoryDependencyVulnerabilityObservation("NOT_CHECKED", [], [], [], repositoryVulnerabilitySummary("UNKNOWN", [], []), { status: "UNKNOWN", correlatableCveIds: [], matchedCveIds: [] }, [], limitations);
   }
   if (orderedCoordinates.length === 0) {
-    return finalizeRepositoryDependencyVulnerabilityObservation("NOT_CHECKED", [], [], [], { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, [], limitations);
+    return finalizeRepositoryDependencyVulnerabilityObservation("NOT_CHECKED", [], [], [], repositoryVulnerabilitySummary("NOT_CHECKED", [], []), { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, [], limitations);
   }
 
   const findings: RepositoryDependencyVulnerabilityFinding[] = [];
+  const observedFindings: RepositoryDependencyVulnerabilityFinding[] = [];
   const maliciousPackageObservations: RepositoryDependencyVulnerabilityObservation["maliciousPackageObservations"] = [];
   const errors: string[] = [];
   let successfulQueries = 0;
@@ -293,6 +322,7 @@ async function collectRepositoryDependencyVulnerabilities(
       successfulQueries += 1;
       const packageFindings = item.result.findings.map(vulnerability => ({ coordinate: item.coordinate, vulnerability: { ...vulnerability, knownExploited: false, aliases: [...vulnerability.aliases].sort(compareText) }, sources: ["OSV"] as RepositoryDependencyVulnerabilityFinding["sources"] }));
       const uniquePackageFindings = uniqueRepositoryVulnerabilityFindings(packageFindings);
+      observedFindings.push(...uniquePackageFindings);
       if (uniquePackageFindings.length > MAX_REPOSITORY_OSV_FINDINGS_PER_PACKAGE) limitations.push(`repository_osv_findings_truncated:${repositoryOsvIdentity(item.coordinate)}:${MAX_REPOSITORY_OSV_FINDINGS_PER_PACKAGE}_of_${uniquePackageFindings.length}`);
       findings.push(...uniquePackageFindings.slice(0, MAX_REPOSITORY_OSV_FINDINGS_PER_PACKAGE));
       for (const malicious of item.result.maliciousPackageObservations) {
@@ -302,15 +332,15 @@ async function collectRepositoryDependencyVulnerabilities(
   }
 
   const status = failedQueries === 0 ? "CHECKED" : successfulQueries === 0 ? "UNAVAILABLE" : "UNKNOWN";
-  const uniqueFindings = uniqueRepositoryVulnerabilityFindings(findings);
+  const uniqueFindings = uniqueRepositoryVulnerabilityFindings(observedFindings);
   if (uniqueFindings.length > MAX_REPOSITORY_OSV_FINDINGS_TOTAL) limitations.push(`repository_osv_total_findings_truncated:${MAX_REPOSITORY_OSV_FINDINGS_TOTAL}_of_${uniqueFindings.length}`);
-  const retainedFindings = uniqueFindings.slice(0, MAX_REPOSITORY_OSV_FINDINGS_TOTAL);
+  let retainedFindings = uniqueRepositoryVulnerabilityFindings(findings).slice(0, MAX_REPOSITORY_OSV_FINDINGS_TOTAL);
   const uniqueMalicious = [...new Map(maliciousPackageObservations.map(item => [`${coordinateIdentity(item.coordinate)}:${item.id}`, item])).values()]
     .sort((left, right) => compareCoordinates(left.coordinate, right.coordinate) || compareText(left.id, right.id));
   if (uniqueMalicious.length > MAX_REPOSITORY_OSV_MALICIOUS_OBSERVATIONS_TOTAL) limitations.push(`repository_osv_malicious_observations_truncated:${MAX_REPOSITORY_OSV_MALICIOUS_OBSERVATIONS_TOTAL}_of_${uniqueMalicious.length}`);
   const retainedMalicious = uniqueMalicious.slice(0, MAX_REPOSITORY_OSV_MALICIOUS_OBSERVATIONS_TOTAL);
   const completeOsv = status === "CHECKED" && !resolutionIncomplete && deferred === 0 && !limitations.some(item => item.startsWith("repository_osv_"));
-  const correlatableCveIds = correlatableVulnerabilityIds(retainedFindings.map(item => item.vulnerability));
+  const correlatableCveIds = correlatableVulnerabilityIds(uniqueFindings.map(item => item.vulnerability));
   let cisaKev: RepositoryDependencyVulnerabilityObservation["cisaKev"] = {
     status: completeOsv && correlatableCveIds.length === 0 ? "NOT_QUERIED" : "UNKNOWN",
     correlatableCveIds,
@@ -321,17 +351,22 @@ async function collectRepositoryDependencyVulnerabilities(
       const observed = await kev.mark(correlatableCveIds);
       const matchedCveIds = correlatableCveIds.filter(id => observed.exploited.has(id));
       cisaKev = { status: "CHECKED", correlatableCveIds, matchedCveIds };
-      for (const finding of retainedFindings) {
+      const markKnownExploited = (finding: RepositoryDependencyVulnerabilityFinding): RepositoryDependencyVulnerabilityFinding => {
         const knownExploited = [finding.vulnerability.id, ...finding.vulnerability.aliases].some(id => observed.exploited.has(id));
-        finding.vulnerability = { ...finding.vulnerability, knownExploited };
-        finding.sources = [...new Set(["OSV", ...(knownExploited ? ["CISA KEV"] : [])])].sort(compareText) as RepositoryDependencyVulnerabilityFinding["sources"];
-      }
+        return { ...finding, vulnerability: { ...finding.vulnerability, knownExploited }, sources: [...new Set(["OSV", ...(knownExploited ? ["CISA KEV"] : [])])].sort(compareText) as RepositoryDependencyVulnerabilityFinding["sources"] };
+      };
+      const markedFindings = uniqueFindings.map(markKnownExploited);
+      const markedByIdentity = new Map(markedFindings.map(finding => [vulnerabilityIdentity(finding), finding]));
+      retainedFindings = retainedFindings.map(finding => markedByIdentity.get(vulnerabilityIdentity(finding)) ?? finding);
+      const summaryStatus = successfulQueries === 0 ? "UNAVAILABLE" : limitations.some(item => item.startsWith("repository_osv_")) ? "TRUNCATED" : "VALID";
+      return finalizeRepositoryDependencyVulnerabilityObservation(status, orderedCoordinates, retainedFindings, retainedMalicious, repositoryVulnerabilitySummary(summaryStatus, markedFindings, uniqueMalicious), cisaKev, errors, limitations);
     } catch (error) {
       cisaKev = { status: "UNAVAILABLE", correlatableCveIds, matchedCveIds: [] };
       errors.push(`CISA KEV: ${error instanceof Error ? error.message : "unknown error"}`);
     }
   }
-  return finalizeRepositoryDependencyVulnerabilityObservation(status, orderedCoordinates, retainedFindings, retainedMalicious, cisaKev, errors, limitations);
+  const summaryStatus = successfulQueries === 0 ? "UNAVAILABLE" : limitations.some(item => item.startsWith("repository_osv_")) ? "TRUNCATED" : "VALID";
+  return finalizeRepositoryDependencyVulnerabilityObservation(status, orderedCoordinates, retainedFindings, retainedMalicious, repositoryVulnerabilitySummary(summaryStatus, uniqueFindings, uniqueMalicious), cisaKev, errors, limitations);
 }
 
 function truncateUtf8(value: unknown, maximumBytes: number): { value: string; truncated: boolean } {
@@ -419,11 +454,13 @@ function fitRepositoryThreatIntelObservation(observation: RepositoryThreatIntelO
   let packagesInspected = [...observation.packagesInspected].sort(compareCoordinates);
   let findings = [...observation.findings];
   let limitations = boundedLimitations(observation.limitations).values;
-  const result = (): RepositoryThreatIntelObservation => ({ ...observation, packagesInspected, findings, limitations });
+  let summary = observation.summary;
+  const result = (): RepositoryThreatIntelObservation => ({ ...observation, ...(summary ? { summary } : {}), packagesInspected, findings, limitations });
 
   if (utf8Bytes(JSON.stringify(result())) <= MAX_REPOSITORY_THREAT_INTEL_BYTES) return result();
 
   limitations = boundedLimitations([...limitations, "threat_intel_payload_truncated"]).values;
+  if (summary) summary = { ...summary, status: "TRUNCATED" };
   while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_THREAT_INTEL_BYTES && findings.length > 0) findings.pop();
   while (utf8Bytes(JSON.stringify(result())) > MAX_REPOSITORY_THREAT_INTEL_BYTES && packagesInspected.length > 0) {
     packagesInspected.pop();
@@ -438,25 +475,26 @@ function fitRepositoryThreatIntelObservation(observation: RepositoryThreatIntelO
 
   const diagnostic = "threat_intel_observation_reduction_failed";
   const fallbackLimitations = boundedLimitations([...limitations, diagnostic]).values;
-  const fallback: RepositoryThreatIntelObservation = { ...observation, packagesInspected: [], findings: [], errors: [], limitations: fallbackLimitations };
+  const fallback: RepositoryThreatIntelObservation = { ...result(), packagesInspected: [], findings: [], errors: [], limitations: fallbackLimitations };
   if (utf8Bytes(JSON.stringify(fallback)) <= MAX_REPOSITORY_THREAT_INTEL_BYTES) return fallback;
 
-  return { status: observation.status, packagesInspected: [], findings: [], errors: [], limitations: [] };
+  return { ...result(), packagesInspected: [], findings: [], errors: [], limitations: [] };
 }
 
-function finalizeRepositoryThreatIntelObservation(status: RepositoryThreatIntelObservation["status"], packagesInspected: ExactDependencyCoordinate[], findings: RepositoryThreatIntelObservation["findings"], errors: string[], limitations: string[]): RepositoryThreatIntelObservation {
+function finalizeRepositoryThreatIntelObservation(status: RepositoryThreatIntelObservation["status"], packagesInspected: ExactDependencyCoordinate[], findings: RepositoryThreatIntelObservation["findings"], summary: RepositoryThreatIntelSummary, errors: string[], limitations: string[]): RepositoryThreatIntelObservation {
   const boundedErrors = boundedEntries(errors, MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES, "errors");
   const rawLimitations = [...limitations];
   if (boundedErrors.overflow) rawLimitations.push(`threat_intel_errors_truncated:${MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES}_of_${errors.length}`);
   if (boundedErrors.entryTruncated) rawLimitations.push("threat_intel_error_entry_truncated");
   if (rawLimitations.some(entry => utf8Bytes(entry) > MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES)) rawLimitations.push("threat_intel_limitation_entry_truncated");
   const bounded = boundedLimitations(rawLimitations);
-  return fitRepositoryThreatIntelObservation({ status, packagesInspected: [...packagesInspected], findings: uniqueSortedFindings(findings), errors: boundedErrors.values, limitations: bounded.values });
+  return fitRepositoryThreatIntelObservation({ status, packagesInspected: [...packagesInspected], findings: uniqueSortedFindings(findings), summary, errors: boundedErrors.values, limitations: bounded.values });
 }
 
 export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore, coordinates: ExactDependencyCoordinate[], deferred: number, selectedCount: number): Promise<RepositoryThreatIntelObservation> {
-  if (coordinates.length === 0) return finalizeRepositoryThreatIntelObservation("NOT_CHECKED", [], [], [], ["no_exact_dependencies_selected"]);
-  const findingsByCoordinate = new Map<string, RepositoryThreatIntelObservation["findings"]>();
+  if (coordinates.length === 0) return finalizeRepositoryThreatIntelObservation("NOT_CHECKED", [], [], repositoryThreatIntelSummary("NOT_CHECKED", []), [], ["no_exact_dependencies_selected"]);
+  const observedFindings: RepositoryThreatIntelObservation["findings"] = [];
+  const detailFindings: RepositoryThreatIntelObservation["findings"] = [];
   const errors: string[] = [];
   const limitations = deferred > 0 ? [`dependency_enrichment_limit_reached:${deferred}_of_${selectedCount}_deferred`] : [];
   let successfulLookups = 0;
@@ -481,6 +519,7 @@ export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore
       if (!item.result.checked) {
         unavailableLookups += 1;
         limitations.push(`threat_intel_unavailable:${item.coordinate.name}@${item.coordinate.version}`);
+        continue;
       } else successfulLookups += 1;
       const normalized: RepositoryThreatIntelObservation["findings"] = [];
       let fieldTruncated = false;
@@ -490,26 +529,28 @@ export async function collectRepositoryThreatIntel(threatIntel: ThreatIntelStore
         fieldTruncated ||= bounded.truncated;
       }
       const unique = uniqueSortedFindings(normalized);
+      observedFindings.push(...unique);
       if (fieldTruncated) limitations.push(`threat_intel_finding_field_truncated:${identity}`);
       if (unique.length > MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE) {
         limitations.push(`threat_intel_findings_truncated:${identity}:${MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE}_of_${unique.length}`);
-        findingsByCoordinate.set(identity, unique.slice(0, MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE));
-      } else findingsByCoordinate.set(identity, unique);
+      }
+      detailFindings.push(...unique.slice(0, MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE));
     }
   }
-  const allFindings = uniqueSortedFindings([...findingsByCoordinate.values()].flat());
+  const allFindings = uniqueSortedFindings(observedFindings);
   if (allFindings.length > MAX_REPOSITORY_THREAT_FINDINGS_TOTAL) limitations.push(`threat_intel_total_findings_truncated:${MAX_REPOSITORY_THREAT_FINDINGS_TOTAL}_of_${allFindings.length}`);
-  const retained = allFindings.slice(0, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL);
+  const retained = uniqueSortedFindings(detailFindings).slice(0, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL);
   const status = unavailableLookups === 0 ? "CHECKED" : successfulLookups === 0 ? "UNAVAILABLE" : "UNKNOWN";
-  return finalizeRepositoryThreatIntelObservation(status, coordinates, retained, errors, limitations);
+  const summaryStatus = successfulLookups === 0 ? "UNAVAILABLE" : limitations.some(threatIntelDetailWasTruncated) ? "TRUNCATED" : "VALID";
+  return finalizeRepositoryThreatIntelObservation(status, coordinates, retained, repositoryThreatIntelSummary(summaryStatus, allFindings), errors, limitations);
 }
 
 function repositoryThreatIntelDetail(observation: RepositoryThreatIntelObservation): Record<string, unknown> {
-  return { status: observation.status, packagesInspected: observation.packagesInspected, findings: observation.findings, errors: observation.errors, limitations: observation.limitations };
+  return { status: observation.status, packagesInspected: observation.packagesInspected, findings: observation.findings, summary: observation.summary, errors: observation.errors, limitations: observation.limitations };
 }
 
 function repositoryDependencyVulnerabilityDetail(observation: RepositoryDependencyVulnerabilityObservation): Record<string, unknown> {
-  return { status: observation.status, packagesInspected: observation.packagesInspected, findings: observation.findings, maliciousPackageObservations: observation.maliciousPackageObservations, cisaKev: observation.cisaKev, errors: observation.errors, limitations: observation.limitations };
+  return { status: observation.status, packagesInspected: observation.packagesInspected, findings: observation.findings, maliciousPackageObservations: observation.maliciousPackageObservations, summary: observation.summary, cisaKev: observation.cisaKev, errors: observation.errors, limitations: observation.limitations };
 }
 
 

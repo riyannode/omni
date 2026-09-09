@@ -22,7 +22,7 @@ export type RiskPolicy = {
   recommendationThresholds: { caution: number; manualReview: number; doNotProceed: number };
   score: { minimum: number; maximum: number; sourceErrorPenalty: number; sourceErrorPenaltyCap: number; zeroCoverageFloor: number; partialCoverageFloor: number };
   package: { deprecated: number; installScript: number; missingIntegrity: number; noMaintainer: number; knownExploitation: number };
-  repository: { scorecardMaximum: number; scorecardRiskMultiplier: number };
+  repository: { scorecardMaximum: number; scorecardRiskMultiplier: number; installLifecycleScript: number; mutableGithubActionRef: number; workflowWritePermission: number; downloadExecutePattern: number; provenanceSourceMismatch: number; provenanceCommitMismatch: number; knownExploitation: number; maliciousPackageObservation: number };
   threatIntel: Record<Exclude<RiskLevel, "unknown">, number>;
   endpoint: { unlisted: number; serverError: number; handshakeMissing: number; noSupportedPath: number };
   payment: { payToChange: number; networkChange: number; priceChange: number; schemaChange: number; providerChange: number };
@@ -46,7 +46,7 @@ export const DEFAULT_RISK_POLICY: ReadonlyRiskPolicy = deepFreeze({
   recommendationThresholds: { caution: 25, manualReview: 50, doNotProceed: 80 },
   score: { minimum: 0, maximum: 100, sourceErrorPenalty: 5, sourceErrorPenaltyCap: 20, zeroCoverageFloor: 50, partialCoverageFloor: 25 },
   package: { deprecated: 15, installScript: 10, missingIntegrity: 20, noMaintainer: 10, knownExploitation: 90 },
-  repository: { scorecardMaximum: 10, scorecardRiskMultiplier: 6 },
+  repository: { scorecardMaximum: 10, scorecardRiskMultiplier: 6, installLifecycleScript: 10, mutableGithubActionRef: 35, workflowWritePermission: 35, downloadExecutePattern: 60, provenanceSourceMismatch: 60, provenanceCommitMismatch: 60, knownExploitation: 90, maliciousPackageObservation: 100 },
   threatIntel: { low: 35, medium: 60, high: 85, critical: 100 },
   endpoint: { unlisted: 25, serverError: 25, handshakeMissing: 10, noSupportedPath: 30 },
   payment: { payToChange: 35, networkChange: 20, priceChange: 10, schemaChange: 10, providerChange: 20 }

@@ -58,9 +58,11 @@ Each NDJSON row:
 {"indicatorType":"wallet","indicator":"0xabc...","threatType":"reported_malicious","severity":"high","source":"licensed-feed","reference":"case-123"}
 ```
 
-If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant package assessments report that source as `UNAVAILABLE` under the versioned `package-coverage-v2` model. Repository assessments report the same missing feed under `repository-coverage-v1`; it contributes uncertainty and recommendation gating, but never observed repository risk.
+If no licensed feed is loaded, `/ready` reports `threatIntelligence: "unconfigured"` and relevant package assessments report that source as `UNAVAILABLE` under the versioned `package-coverage-v2` model. Repository assessments report the same missing feed under `repository-coverage-v1`; it contributes uncertainty and recommendation gating, not a direct risk penalty. Observed exact dependency matches can contribute deterministic repository threat-intelligence risk.
 
-OSV `MAL-*` records are returned separately as `maliciousPackageObservations`. They are not normal vulnerability findings, OMNI does not invent a severity for them, and they remain observation-only under the current `omni-risk-v3` policy; explicitly withdrawn MAL records are not returned as active observations.
+OSV `MAL-*` records are returned separately as `maliciousPackageObservations`. They are not normal vulnerability findings and OMNI does not invent an OSV severity for them. An active exact-version MAL observation can trigger the deterministic repository malicious-package policy risk; explicitly withdrawn MAL records are not returned as active observations.
+
+Repository risk uses the strongest-observed-risk model: security practices, dependency vulnerabilities, explicit CISA KEV matches, active MAL-* observations, and licensed dependency threat-intelligence matches are aggregated with `MAX`, not added by finding count. Missing evidence, provider failures, unresolved or deferred dependencies, and partial collection remain coverage/score-status uncertainty and do not directly increase `riskScore`; partial evidence can still gate the recommendation to `manual_review`.
 
 `RepositoryEvidence` is an internal typed evidence foundation used by the assessment implementation and journal. It is not a top-level field on the public `RiskAssessment` response.
 

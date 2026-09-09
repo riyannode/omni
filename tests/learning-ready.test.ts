@@ -52,6 +52,22 @@ describe("learning-ready deterministic boundaries", () => {
     expect(endpointFeatures.endpoint).toMatchObject({ present: true, listedOnCircle: true, supportsGateway: true, responseStatus: 402 });
   });
 
+  test("preserves parent package maximum severity semantics in v4", () => {
+    const make = (severities: Array<"low" | "high" | "critical" | "unknown">): RiskSnapshot => ({
+      subject: { type: "package", id: "npm:demo@1.0.0" },
+      vulnerabilities: severities.map((severity, index) => ({ id: `V-${index}`, severity, knownExploited: false, aliases: [] })),
+      evidence: []
+    });
+    expect(extractRiskFeatures(make([])).maximumVulnerabilitySeverity).toBeUndefined();
+    expect(extractRiskFeatures(make(["low"])).maximumVulnerabilitySeverity).toBe("low");
+    expect(extractRiskFeatures(make(["high"])).maximumVulnerabilitySeverity).toBe("high");
+    expect(extractRiskFeatures(make(["unknown"])).maximumVulnerabilitySeverity).toBe("unknown");
+    expect(extractRiskFeatures(make(["high", "unknown"])).maximumVulnerabilitySeverity).toBe("unknown");
+    expect(extractRiskFeatures(make(["critical", "unknown"])).maximumVulnerabilitySeverity).toBe("unknown");
+    expect(extractRiskFeatures(make(["low", "high"])).maximumVulnerabilitySeverity).toBe("high");
+    expect(extractRiskFeatures(make(["unknown", "high"])).maximumVulnerabilitySeverity).toBe("unknown");
+  });
+
   test("candidate policy is isolated from the default runtime", () => {
     const candidate = structuredClone(DEFAULT_RISK_POLICY) as RiskPolicy;
     candidate.package.deprecated = 40;

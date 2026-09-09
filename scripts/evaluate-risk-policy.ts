@@ -23,7 +23,7 @@ function validatePolicy(input: unknown): RiskPolicy {
     severityWeights: ["unknown", "low", "medium", "high", "critical"], severityRanks: ["unknown", "low", "medium", "high", "critical"],
     scoreLevelThresholds: ["medium", "high", "critical"], recommendationThresholds: ["caution", "manualReview", "doNotProceed"],
     score: ["minimum", "maximum", "sourceErrorPenalty", "sourceErrorPenaltyCap", "zeroCoverageFloor", "partialCoverageFloor"],
-    package: ["deprecated", "installScript", "missingIntegrity", "noMaintainer", "knownExploitation"], repository: ["scorecardMaximum", "scorecardRiskMultiplier"],
+    package: ["deprecated", "installScript", "missingIntegrity", "noMaintainer", "knownExploitation"], repository: ["scorecardMaximum", "scorecardRiskMultiplier", "installLifecycleScript", "mutableGithubActionRef", "workflowWritePermission", "downloadExecutePattern", "provenanceSourceMismatch", "provenanceCommitMismatch", "knownExploitation", "maliciousPackageObservation"],
     threatIntel: ["low", "medium", "high", "critical"], endpoint: ["unlisted", "serverError", "handshakeMissing", "noSupportedPath"],
     payment: ["payToChange", "networkChange", "priceChange", "schemaChange", "providerChange"]
   };
@@ -44,17 +44,16 @@ if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
 const candidatePath = process.argv[2];
 const policy = candidatePath ? validatePolicy(JSON.parse(await readFile(candidatePath, "utf8"))) : DEFAULT_RISK_POLICY;
 const rows = await createAssessmentJournal(process.env.DATABASE_URL).loadLabelled();
-// Replay compatibility: current-cohort rows always evaluate. Historical v1
-// package/x402/dependency_set rows are replayed because their feature extraction is
-// semantically unchanged (repositoryEvidence did not exist in v1 and is never read for
-// these subject kinds). v1 repository rows stay incompatible: replaying them under the
-// v2 extractor would reinterpret historical repository evidence with new optional
-// fields, so they are reported as skipped instead of silently re-scored.
+// Replay compatibility: current 4/4 rows always evaluate. Historical 3/3 and
+// v1 package/x402/dependency_set rows are replayed because their feature
+// extraction semantics are unchanged. Historical repository rows stay
+// incompatible so old repository evidence is never silently re-scored under
+// the v4 repository model.
 const cohorts = partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION);
 const engine = new RiskEngine(policy); let currentSchemaDrift = 0; let legacySchemaDrift = 0;
 const replayed = cohorts.compatible.map(row => {
   const freshFeatures = extractRiskFeatures(row.snapshot);
-  const drift = featuresEqualForCohort(freshFeatures, row.features, row.snapshotSchemaVersion);
+  const drift = featuresEqualForCohort(freshFeatures, row.features, row.snapshotSchemaVersion, row.subjectType);
   if (!drift.equal) { if (drift.comparison === "current-schema") currentSchemaDrift++; else legacySchemaDrift++; }
   return { ...row, assessment: engine.assessFeatures(row.snapshot, freshFeatures) };
 });

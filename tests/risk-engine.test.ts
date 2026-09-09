@@ -46,8 +46,24 @@ describe("RiskEngine", () => {
     const result = engine.assess({
       subject: { type: "repository", id: "github.com/a/b" },
       scorecard: 0,
-      threatIntelChecked: true,
-      threatFindings: [{ indicatorType: "hostname", indicator: "bad.example", threatType: "malware", severity: "critical", source: "licensed-feed" }],
+      repositoryEvidence: {
+        target: { repository: "github.com/a/b" },
+        securityFiles: [],
+        dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } },
+        dependencyObservations: [],
+        dependencyVulnerabilities: {
+          status: "UNKNOWN",
+          packagesInspected: [],
+          findings: [{ coordinate: { ecosystem: "NPM", name: "demo", version: "1.0.0", sourcePath: "package-lock.json", manifestPath: "package.json", workspacePath: "." }, vulnerability: { id: "CVE-2026-0001", severity: "critical", knownExploited: true, aliases: [] }, sources: ["CISA KEV", "OSV"] }],
+          maliciousPackageObservations: [],
+          summary: { status: "VALID", findingsObserved: 1, countsBySeverity: { unknown: 0, low: 0, medium: 0, high: 0, critical: 1 }, knownExploitedObserved: 1, maliciousPackageObservationsObserved: 0 },
+          cisaKev: { status: "CHECKED", correlatableCveIds: ["CVE-2026-0001"], matchedCveIds: ["CVE-2026-0001"] },
+          errors: [], limitations: []
+        },
+        dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], summary: { status: "NOT_CHECKED", findingsObserved: 0, countsBySeverity: { low: 0, medium: 0, high: 0, critical: 0 } }, errors: [], limitations: [] },
+        coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: [] },
+        sourceErrors: []
+      },
       coverage: {
         modelVersion: "repository-coverage-v1",
         sources: [
