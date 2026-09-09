@@ -9,15 +9,16 @@ export type SubjectKind = "package" | "repository" | "dependency_set" | "x402_en
 
 export type ReplayableRow = VersionedSchemaRow & { subjectType: SubjectKind };
 
-// v1 rows whose feature extraction is semantically identical under the current
-// extractor: package and x402_endpoint features never read repositoryEvidence,
-// so replaying them cannot reinterpret historical evidence.
+// Historical rows whose feature extraction is semantically identical under the
+// current extractor: supported non-repository subjects never read repository
+// evidence, so replaying them cannot reinterpret historical repository facts.
 const SAFE_REPLAY_SUBJECT_KINDS: readonly SubjectKind[] = ["package", "x402_endpoint", "dependency_set"];
 
 function isSafeReplay(row: ReplayableRow, snapshotSchemaVersion: number, featureSchemaVersion: number): boolean {
   if (row.snapshotSchemaVersion === snapshotSchemaVersion && row.featureSchemaVersion === featureSchemaVersion) return true;
-  if (row.snapshotSchemaVersion !== 1 || row.featureSchemaVersion !== 1) return false;
-  return SAFE_REPLAY_SUBJECT_KINDS.includes(row.subjectType);
+  if (row.snapshotSchemaVersion === 3 && row.featureSchemaVersion === 3) return SAFE_REPLAY_SUBJECT_KINDS.includes(row.subjectType);
+  if (row.snapshotSchemaVersion === 1 && row.featureSchemaVersion === 1) return SAFE_REPLAY_SUBJECT_KINDS.includes(row.subjectType);
+  return false;
 }
 
 export type EvaluationMetrics = {
@@ -58,13 +59,12 @@ export function featuresEqual(left: unknown, right: unknown): boolean {
 }
 
 // Cohort-aware drift accounting. Schema evolution must not count as feature
-// drift: v1 features legitimately lack the fields v2 added (schemaVersion and
-// the repository block), so a full-object comparison would report every safe
-// legacy replay as drifted. For v1 rows we project both sides down to the v1
-// feature surface (drop schemaVersion/repository) before comparing; current-
-// cohort rows are compared byte-exactly as before.
-export function featuresEqualForCohort(left: unknown, right: unknown, snapshotSchemaVersion: number): { equal: boolean; comparison: "current-schema" | "legacy-projected" } {
-  if (snapshotSchemaVersion === 1) {
+// drift: supported historical rows legitimately lack the fields introduced by
+// later feature schemas. Project those rows to their shared non-repository
+// surface; current-cohort rows remain byte-exact.
+export function featuresEqualForCohort(left: unknown, right: unknown, snapshotSchemaVersion: number, subjectType?: SubjectKind): { equal: boolean; comparison: "current-schema" | "legacy-projected" } {
+  const canProjectLegacySurface = subjectType === undefined ? snapshotSchemaVersion === 1 : SAFE_REPLAY_SUBJECT_KINDS.includes(subjectType);
+  if (snapshotSchemaVersion < 4 && canProjectLegacySurface) {
     return { equal: featuresEqual(projectLegacyFeatures(left), projectLegacyFeatures(right)), comparison: "legacy-projected" };
   }
   return { equal: featuresEqual(left, right), comparison: "current-schema" };

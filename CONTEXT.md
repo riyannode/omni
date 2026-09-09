@@ -8,8 +8,8 @@ OMNI is a pre-execution trust and risk layer for software packages, dependency s
 - **Snapshot**: normalized evidence for one subject at a point in time.
 - **Assessment**: deterministic scoring over a normalized evidence snapshot.
 - **Recommendation**: `proceed`, `proceed_with_caution`, `manual_review`, or `do_not_proceed`. This is advisory output from OMNI, not an authorization decision. A wallet/runtime may use it as an input to a fail-closed local policy.
-- **Risk score**: integer `0..100`; higher means OMNI observed more decision-relevant risk signals or evidence-source failures. It is not a probability of compromise.
-- **Evidence coverage**: `0..1` fraction of the evidence paths expected for that subject type that completed successfully. It is not statistical confidence or a probability of correctness.
+- **Risk score**: integer `0..100`; higher means OMNI observed more decision-relevant risk signals. For repository subjects, source failures and coverage loss are uncertainty, not observed risk. It is not a probability of compromise.
+- **Evidence coverage**: `0..1` fraction of applicable modeled evidence paths expected for that subject type that resolved. It is not statistical confidence or a probability of correctness.
 - **Health**: `/health` process-liveness response only; it does not assert upstream availability.
 - **Readiness**: `/ready` indicates that this replica can accept paid API requests. Non-blocking dependency status is reported separately under `dependencies`.
 - **Subject**: package, repository, dependency set, or x402 resource.

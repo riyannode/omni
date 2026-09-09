@@ -695,12 +695,16 @@ describe("paid request idempotency", () => {
     const maliciousValue = "pkg`<script>alert(1)</script>```";
     const markdown = renderRiskMarkdown({
       subject: { type: "package", id: maliciousValue },
+      policyVersion: "omni-risk-v3",
+      scoreStatus: "measured_partial",
       recommendation: "proceed",
       riskScore: 1,
       signals: [],
       sourceErrors: []
     });
     const fence = "`".repeat(4);
+    expect(markdown).toContain("Policy Version: `omni-risk-v3`");
+    expect(markdown).toContain("Score Status: `measured_partial`");
     expect(markdown).toContain(`${fence}${maliciousValue}${fence}`);
     expect(markdown).not.toContain("## Canonical JSON");
   });

@@ -1,4 +1,4 @@
-import type { Recommendation, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot } from "./risk.ts";
+import type { Recommendation, RepositoryDependencyVulnerabilityFinding, RepositoryThreatIntelFinding, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot, ScoreStatus } from "./risk.ts";
 import { extractRiskFeatures, type RiskFeatures } from "./risk-features.ts";
 import { DEFAULT_RISK_POLICY, type ReadonlyRiskPolicy } from "./risk-policy.ts";
 
@@ -8,16 +8,19 @@ function scoreLevel(score: number, policy: ReadonlyRiskPolicy): RiskLevel {
   if (score >= policy.scoreLevelThresholds.medium) return "medium";
   return "low";
 }
+
 function worstSeverity(levels: RiskLevel[], policy: ReadonlyRiskPolicy): RiskLevel {
-  const knownLevels = levels.filter(level => level !== "unknown");
-  return knownLevels.reduce<RiskLevel | undefined>((worst, current) => worst === undefined || policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, undefined) ?? "unknown";
+  return levels.filter(level => level !== "unknown").reduce<RiskLevel | undefined>((worst, current) => worst === undefined || policy.severityRanks[current] > policy.severityRanks[worst] ? current : worst, undefined) ?? "unknown";
 }
-function recommendation(score: number, policy: ReadonlyRiskPolicy): Recommendation {
+
+function recommendation(score: number, policy: ReadonlyRiskPolicy, status: ScoreStatus, subjectType: RiskSnapshot["subject"]["type"]): Recommendation {
   if (score >= policy.recommendationThresholds.doNotProceed) return "do_not_proceed";
+  if (subjectType === "repository" && status !== "measured") return "manual_review";
   if (score >= policy.recommendationThresholds.manualReview) return "manual_review";
   if (score >= policy.recommendationThresholds.caution) return "proceed_with_caution";
   return "proceed";
 }
+
 function push(signals: RiskSignal[], code: string, severity: Exclude<RiskLevel, "unknown">, source: string, detail: Record<string, unknown>) {
   signals.push({ code, severity, source, detail });
 }
@@ -25,11 +28,61 @@ function push(signals: RiskSignal[], code: string, severity: Exclude<RiskLevel, 
 function freshness(evidence: RiskSnapshot["evidence"]): RiskAssessment["freshness"] {
   const observedAt = evidence.map(item => item.observedAt).sort();
   const deadlines = evidence.flatMap(item => item.expiresAt ? [item.expiresAt] : []).sort();
-  return {
-    oldestEvidenceAt: observedAt[0] ?? null,
-    newestEvidenceAt: observedAt.at(-1) ?? null,
-    ...(deadlines[0] ? { expiresAt: deadlines[0] } : {})
-  };
+  return { oldestEvidenceAt: observedAt[0] ?? null, newestEvidenceAt: observedAt.at(-1) ?? null, ...(deadlines[0] ? { expiresAt: deadlines[0] } : {}) };
+}
+
+function scoreStatus(features: RiskFeatures): ScoreStatus {
+  if (features.coverage.expected === 0 || features.coverage.completed === 0) return "insufficient_evidence";
+  if (features.subject.type === "repository" && features.repository.present && (
+    (features.repository.dependencyVulnerabilityStatus !== undefined && features.repository.dependencyVulnerabilityStatus !== "NOT_CHECKED" && !features.repository.dependencyVulnerabilitySummaryValid)
+    || (features.repository.dependencyThreatIntelStatus !== undefined && features.repository.dependencyThreatIntelStatus !== "NOT_CHECKED" && !features.repository.dependencyThreatIntelSummaryValid)
+  )) return "measured_partial";
+  return features.coverage.completed === features.coverage.expected ? "measured" : "measured_partial";
+}
+
+function validSummaryStatus(status: RiskFeatures["repository"]["dependencyVulnerabilitySummaryStatus"]): boolean {
+  return status === "VALID" || status === "TRUNCATED";
+}
+
+function coordinateDetail(coordinate: { ecosystem: string; name: string; version: string }): Record<string, string> {
+  return { ecosystem: coordinate.ecosystem, name: coordinate.name, version: coordinate.version };
+}
+
+function compareRepositoryVulnerabilities(left: RepositoryDependencyVulnerabilityFinding, right: RepositoryDependencyVulnerabilityFinding): number {
+  const leftKey = `${left.coordinate.ecosystem}:${left.coordinate.name}@${left.coordinate.version}:${left.vulnerability.id}`;
+  const rightKey = `${right.coordinate.ecosystem}:${right.coordinate.name}@${right.coordinate.version}:${right.vulnerability.id}`;
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function compareRepositoryThreatIntel(left: RepositoryThreatIntelFinding, right: RepositoryThreatIntelFinding): number {
+  const leftKey = JSON.stringify(left);
+  const rightKey = JSON.stringify(right);
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function maximumVulnerabilityRisk(features: RiskFeatures, policy: ReadonlyRiskPolicy): number {
+  const repository = features.repository;
+  if (repository.dependencyVulnerabilitySummaryValid) {
+    return (Object.keys(repository.dependencyVulnerabilityCountsBySeverity) as RiskLevel[]).reduce((maximum, severity) => Math.max(maximum, repository.dependencyVulnerabilityCountsBySeverity[severity] > 0 ? policy.severityWeights[severity] : 0), 0);
+  }
+  return repository.retainedDependencyVulnerabilities.reduce((maximum, finding) => Math.max(maximum, policy.severityWeights[finding.vulnerability.severity]), 0);
+}
+
+function maximumThreatIntelRisk(features: RiskFeatures, policy: ReadonlyRiskPolicy): number {
+  const repository = features.repository;
+  if (repository.dependencyThreatIntelSummaryValid) {
+    return (Object.keys(repository.dependencyThreatIntelCountsBySeverity) as Array<Exclude<RiskLevel, "unknown">>).reduce((maximum, severity) => Math.max(maximum, repository.dependencyThreatIntelCountsBySeverity[severity] > 0 ? policy.threatIntel[severity] : 0), 0);
+  }
+  return repository.retainedDependencyThreatIntelFindings.reduce((maximum, item) => Math.max(maximum, policy.threatIntel[item.finding.severity]), 0);
+}
+
+function highestObservedVulnerabilitySeverity(features: RiskFeatures, policy: ReadonlyRiskPolicy): RiskLevel {
+  const repository = features.repository;
+  if (repository.dependencyVulnerabilitySummaryValid) {
+    const levels = (Object.keys(repository.dependencyVulnerabilityCountsBySeverity) as RiskLevel[]).filter(level => repository.dependencyVulnerabilityCountsBySeverity[level] > 0);
+    return worstSeverity(levels, policy);
+  }
+  return worstSeverity(repository.retainedDependencyVulnerabilities.map(item => item.vulnerability.severity), policy);
 }
 
 export class RiskEngine {
@@ -40,6 +93,7 @@ export class RiskEngine {
   assessFeatures(snapshot: RiskSnapshot, features: RiskFeatures): RiskAssessment {
     const policy = this.policy;
     const signals: RiskSignal[] = [];
+    const isRepository = snapshot.subject.type === "repository";
     const maxVulnScore = features.vulnerabilities?.reduce((max, vuln) => Math.max(max, policy.severityWeights[vuln.severity]), 0) ?? 0;
     const exploitedScore = features.knownExploitedVulnerabilityCount > 0 ? policy.package.knownExploitation : 0;
     for (const vuln of features.vulnerabilities ?? []) {
@@ -56,24 +110,91 @@ export class RiskEngine {
       if (features.package.maintainerCount === 0) { packageRisk += policy.package.noMaintainer; push(signals, "NO_MAINTAINER_METADATA", "low", "npm Registry", {}); }
     }
 
-    let repoRisk: number | undefined;
-    if (features.scorecard !== undefined) repoRisk = Math.round((policy.repository.scorecardMaximum - Math.max(0, Math.min(policy.repository.scorecardMaximum, features.scorecard))) * policy.repository.scorecardRiskMultiplier);
+    let repositorySecurityPracticeRisk: number | undefined;
+    let repositoryVulnerabilityRisk: number | undefined;
+    let repositoryKnownExploitationRisk: number | undefined;
+    let repositoryMaliciousPackageRisk: number | undefined;
+    let repositoryThreatIntelRisk: number | undefined;
+    let repositoryKnownVulnerabilities: RiskLevel = "unknown";
+    let repositoryKnownExploitation: RiskLevel = "unknown";
+    let repositorySecurityPractices: RiskLevel = "unknown";
+    let repositoryMaliciousInfrastructure: RiskLevel = "unknown";
 
-    // Observation-only evidence: never feed the current policy score, recommendation,
-    // generic source errors, or Scorecard-only repository coverage.
-    if (features.repository.present) {
+    if (isRepository) {
+      const practiceRisks: number[] = [];
       if (features.repository.partial) push(signals, "REPOSITORY_EVIDENCE_PARTIAL", "low", "GitHub repository evidence", {});
-      if (features.repository.installLifecycleScriptCount > 0) push(signals, "INSTALL_LIFECYCLE_SCRIPT_OBSERVED", "low", "GitHub repository evidence", { count: features.repository.installLifecycleScriptCount });
-      if (features.repository.downloadExecutePatternCount > 0) push(signals, "DOWNLOAD_EXECUTE_PATTERN_OBSERVED", "high", "GitHub repository evidence", { count: features.repository.downloadExecutePatternCount });
-      if (features.repository.mutableActionRefCount > 0) push(signals, "MUTABLE_GITHUB_ACTION_REF_OBSERVED", "medium", "GitHub repository evidence", { count: features.repository.mutableActionRefCount });
-      if (features.repository.workflowWritePermissionCount > 0) push(signals, "WORKFLOW_WRITE_PERMISSION_OBSERVED", "medium", "GitHub repository evidence", { count: features.repository.workflowWritePermissionCount });
+      if (features.scorecard !== undefined) {
+        practiceRisks.push(Math.round((policy.repository.scorecardMaximum - Math.max(0, Math.min(policy.repository.scorecardMaximum, features.scorecard))) * policy.repository.scorecardRiskMultiplier));
+      }
+      if (features.repository.inspectedSecurityFileCount > 0) practiceRisks.push(0);
+      if (features.repository.installLifecycleScriptCount > 0) { practiceRisks.push(policy.repository.installLifecycleScript); push(signals, "INSTALL_LIFECYCLE_SCRIPT_OBSERVED", "low", "GitHub repository evidence", { count: features.repository.installLifecycleScriptCount }); }
+      if (features.repository.downloadExecutePatternCount > 0) { practiceRisks.push(policy.repository.downloadExecutePattern); push(signals, "DOWNLOAD_EXECUTE_PATTERN_OBSERVED", "high", "GitHub repository evidence", { count: features.repository.downloadExecutePatternCount }); }
+      if (features.repository.mutableActionRefCount > 0) { practiceRisks.push(policy.repository.mutableGithubActionRef); push(signals, "MUTABLE_GITHUB_ACTION_REF_OBSERVED", "medium", "GitHub repository evidence", { count: features.repository.mutableActionRefCount }); }
+      if (features.repository.workflowWritePermissionCount > 0) { practiceRisks.push(policy.repository.workflowWritePermission); push(signals, "WORKFLOW_WRITE_PERMISSION_OBSERVED", "medium", "GitHub repository evidence", { count: features.repository.workflowWritePermissionCount }); }
       if (features.repository.unresolvedDependencyCount > 0) push(signals, "DEPENDENCY_RESOLUTION_PARTIAL", "low", "GitHub repository evidence", { count: features.repository.unresolvedDependencyCount });
-      if (features.repository.provenanceStates.VERIFIED_SOURCE_MISMATCH > 0) push(signals, "PROVENANCE_SOURCE_MISMATCH", "high", "deps.dev", { count: features.repository.provenanceStates.VERIFIED_SOURCE_MISMATCH });
-      if (features.repository.provenanceStates.VERIFIED_COMMIT_MISMATCH > 0) push(signals, "PROVENANCE_COMMIT_MISMATCH", "high", "deps.dev", { count: features.repository.provenanceStates.VERIFIED_COMMIT_MISMATCH });
+      if (features.repository.provenanceStates.VERIFIED_SOURCE_MISMATCH > 0) { practiceRisks.push(policy.repository.provenanceSourceMismatch); push(signals, "PROVENANCE_SOURCE_MISMATCH", "high", "deps.dev", { count: features.repository.provenanceStates.VERIFIED_SOURCE_MISMATCH }); }
+      if (features.repository.provenanceStates.VERIFIED_COMMIT_MISMATCH > 0) { practiceRisks.push(policy.repository.provenanceCommitMismatch); push(signals, "PROVENANCE_COMMIT_MISMATCH", "high", "deps.dev", { count: features.repository.provenanceStates.VERIFIED_COMMIT_MISMATCH }); }
+      if (practiceRisks.length > 0) repositorySecurityPracticeRisk = Math.max(...practiceRisks);
+
+      repositoryVulnerabilityRisk = maximumVulnerabilityRisk(features, policy);
+      const retainedVulnerabilities = [...features.repository.retainedDependencyVulnerabilities].sort(compareRepositoryVulnerabilities);
+      for (const item of retainedVulnerabilities) {
+        if (item.vulnerability.severity === "high" || item.vulnerability.severity === "critical") push(signals, "KNOWN_VULNERABILITY", item.vulnerability.severity, "OSV", { ...coordinateDetail(item.coordinate), id: item.vulnerability.id });
+      }
+      if (features.repository.dependencyVulnerabilitySummaryValid) {
+        const retainedBySeverity = retainedVulnerabilities.reduce<Record<RiskLevel, number>>((counts, item) => { counts[item.vulnerability.severity] += 1; return counts; }, { unknown: 0, low: 0, medium: 0, high: 0, critical: 0 });
+        const counts = features.repository.dependencyVulnerabilityCountsBySeverity;
+        const omittedHigh = counts.high > retainedBySeverity.high;
+        const omittedCritical = counts.critical > retainedBySeverity.critical;
+        if (omittedHigh || omittedCritical) push(signals, "KNOWN_VULNERABILITY", omittedCritical ? "critical" : "high", "OSV", { observedCountsBySeverity: counts, retainedDetailCount: retainedVulnerabilities.length, summaryStatus: features.repository.dependencyVulnerabilitySummaryStatus });
+      }
+      const retainedKnownExploited = retainedVulnerabilities.filter(item => item.vulnerability.knownExploited);
+      for (const item of retainedKnownExploited) push(signals, "KNOWN_EXPLOITED_VULNERABILITY", "critical", "CISA KEV", { ...coordinateDetail(item.coordinate), id: item.vulnerability.id });
+      const knownExploitedObserved = features.repository.dependencyVulnerabilitySummaryValid ? features.repository.knownExploitedDependencyVulnerabilityCount : 0;
+      if (knownExploitedObserved > 0 || features.repository.cisaKevMatchedCount > 0 || retainedKnownExploited.length > 0) {
+        repositoryKnownExploitationRisk = policy.repository.knownExploitation;
+        if (knownExploitedObserved > retainedKnownExploited.length || features.repository.cisaKevMatchedCount > retainedKnownExploited.length) push(signals, "KNOWN_EXPLOITED_VULNERABILITY", "critical", "CISA KEV", { observedCount: Math.max(knownExploitedObserved, features.repository.cisaKevMatchedCount), retainedDetailCount: retainedKnownExploited.length });
+      }
+      const maliciousObserved = features.repository.dependencyVulnerabilitySummaryValid ? features.repository.maliciousPackageObservationCount : 0;
+      const retainedMalicious = [...features.repository.retainedMaliciousPackageObservations].sort((left, right) => `${left.coordinate.ecosystem}:${left.coordinate.name}@${left.coordinate.version}:${left.id}`.localeCompare(`${right.coordinate.ecosystem}:${right.coordinate.name}@${right.coordinate.version}:${right.id}`));
+      if (maliciousObserved > 0 || retainedMalicious.length > 0) {
+        repositoryMaliciousPackageRisk = policy.repository.maliciousPackageObservation;
+        for (const item of retainedMalicious) push(signals, "MALICIOUS_PACKAGE_OBSERVED", "critical", "OSV", { ...coordinateDetail(item.coordinate), id: item.id });
+        if (maliciousObserved > retainedMalicious.length) push(signals, "MALICIOUS_PACKAGE_OBSERVED", "critical", "OSV", { observedCount: maliciousObserved, retainedDetailCount: retainedMalicious.length });
+      }
+
+      repositoryVulnerabilityRisk = Math.max(repositoryVulnerabilityRisk, 0);
+      repositoryKnownVulnerabilities = highestObservedVulnerabilitySeverity(features, policy);
+      const vulnerabilityStatus = features.repository.dependencyVulnerabilityStatus;
+      const summaryUsable = features.repository.dependencyVulnerabilitySummaryValid;
+      const retainedKnownSeverity = retainedVulnerabilities.some(item => item.vulnerability.severity !== "unknown");
+      if (!summaryUsable && !retainedKnownSeverity) repositoryKnownVulnerabilities = "unknown";
+      if (repositoryKnownVulnerabilities === "unknown" && vulnerabilityStatus === "CHECKED" && summaryUsable && features.repository.dependencyVulnerabilityCountsBySeverity.unknown === 0) repositoryKnownVulnerabilities = "low";
+      if (repositoryKnownVulnerabilities === "unknown" && vulnerabilityStatus === "NOT_CHECKED" && features.repository.exactDependencyCount === 0 && features.repository.unresolvedDependencyCount === 0 && features.repository.cisaKevStatus === "NOT_QUERIED") repositoryKnownVulnerabilities = "low";
+      const cisaComplete = vulnerabilityStatus === "CHECKED" && (features.repository.cisaKevStatus === "CHECKED" || features.repository.cisaKevStatus === "NOT_QUERIED");
+      if (repositoryKnownExploitationRisk !== undefined) repositoryKnownExploitation = "critical";
+      else if (cisaComplete && summaryUsable) repositoryKnownExploitation = "low";
+      else if (vulnerabilityStatus === "NOT_CHECKED" && features.repository.exactDependencyCount === 0 && features.repository.unresolvedDependencyCount === 0 && features.repository.cisaKevStatus === "NOT_QUERIED") repositoryKnownExploitation = "low";
+      else repositoryKnownExploitation = "unknown";
+
+      repositoryThreatIntelRisk = maximumThreatIntelRisk(features, policy);
+      const retainedThreatFindings = [...features.repository.retainedDependencyThreatIntelFindings].sort(compareRepositoryThreatIntel);
+      for (const item of retainedThreatFindings) push(signals, "THREAT_INTELLIGENCE_MATCH", item.finding.severity, item.finding.source, { ...coordinateDetail(item.coordinate), indicatorType: item.finding.indicatorType, threatType: item.finding.threatType, ...(item.finding.reference ? { reference: item.finding.reference } : {}) });
+      if (features.repository.dependencyThreatIntelSummaryValid) {
+        const retainedBySeverity = retainedThreatFindings.reduce<Record<Exclude<RiskLevel, "unknown">, number>>((counts, item) => { counts[item.finding.severity] += 1; return counts; }, { low: 0, medium: 0, high: 0, critical: 0 });
+        const counts = features.repository.dependencyThreatIntelCountsBySeverity;
+        const omittedCritical = counts.critical > retainedBySeverity.critical;
+        const omittedHigh = counts.high > retainedBySeverity.high;
+        if (omittedCritical || omittedHigh) push(signals, "THREAT_INTELLIGENCE_MATCH", omittedCritical ? "critical" : "high", "OMNI threat intelligence", { observedCountsBySeverity: counts, retainedDetailCount: retainedThreatFindings.length, summaryStatus: features.repository.dependencyThreatIntelSummaryStatus });
+      }
+      if (repositoryThreatIntelRisk > 0 || retainedThreatFindings.length > 0) repositoryMaliciousInfrastructure = scoreLevel(repositoryThreatIntelRisk, policy);
+      else if (features.repository.dependencyThreatIntelStatus === "CHECKED" && features.repository.dependencyThreatIntelSummaryValid) repositoryMaliciousInfrastructure = "low";
+      else repositoryMaliciousInfrastructure = "unknown";
+      if (repositorySecurityPracticeRisk !== undefined) repositorySecurityPractices = scoreLevel(repositorySecurityPracticeRisk, policy);
     }
 
     let maliciousInfrastructureRisk: number | undefined;
-    if (features.threatIntel.checked) {
+    if (!isRepository && features.threatIntel.checked) {
       maliciousInfrastructureRisk = 0;
       for (const finding of features.threatIntel.findings) {
         const weight = policy.threatIntel[finding.severity];
@@ -104,38 +225,40 @@ export class RiskEngine {
     }
 
     const coverage = features.coverage.expected === 0 ? 0 : features.coverage.completed / features.coverage.expected;
-    const sourcePenalty = Math.min(policy.score.sourceErrorPenaltyCap, features.sourceErrorCount * policy.score.sourceErrorPenalty);
-    let score = Math.min(policy.score.maximum, Math.max(policy.score.minimum, Math.max(maxVulnScore, exploitedScore, packageRisk ?? 0, repoRisk ?? 0, maliciousInfrastructureRisk ?? 0, identityRisk ?? 0, paymentRisk ?? 0, endpointRisk ?? 0) + sourcePenalty));
-    if (coverage === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
-    else if (snapshot.subject.type !== "package" && coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
-    else if (snapshot.subject.type === "package" && features.coverage.sources?.some(source => source.source === "OSV" && (source.status === "UNAVAILABLE" || source.status === "UNKNOWN"))) score = Math.max(score, policy.recommendationThresholds.manualReview);
+    const status = scoreStatus(features);
+    const sourcePenalty = isRepository ? 0 : Math.min(policy.score.sourceErrorPenaltyCap, features.sourceErrorCount * policy.score.sourceErrorPenalty);
+    const observedRisk = isRepository
+      ? Math.max(repositorySecurityPracticeRisk ?? 0, repositoryVulnerabilityRisk ?? 0, repositoryKnownExploitationRisk ?? 0, repositoryMaliciousPackageRisk ?? 0, repositoryThreatIntelRisk ?? 0)
+      : Math.max(maxVulnScore, exploitedScore, packageRisk ?? 0, maliciousInfrastructureRisk ?? 0, identityRisk ?? 0, paymentRisk ?? 0, endpointRisk ?? 0) + sourcePenalty;
+    let score = Math.min(policy.score.maximum, Math.max(policy.score.minimum, observedRisk));
+    if (!isRepository && coverage === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
+    else if (!isRepository && snapshot.subject.type !== "package" && coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
+    else if (!isRepository && snapshot.subject.type === "package" && features.coverage.sources?.some(source => source.source === "OSV" && (source.status === "UNAVAILABLE" || source.status === "UNKNOWN"))) score = Math.max(score, policy.recommendationThresholds.manualReview);
 
-    const knownVulnerabilities: RiskLevel = features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : worstSeverity(features.vulnerabilities.map(v => v.severity), policy);
-    const knownExploitation: RiskLevel = features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : features.exploitationChecked ? scoreLevel(exploitedScore, policy) : "unknown";
+    const knownVulnerabilities: RiskLevel = isRepository ? repositoryKnownVulnerabilities : features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : worstSeverity(features.vulnerabilities.map(v => v.severity), policy);
+    const knownExploitation: RiskLevel = isRepository ? repositoryKnownExploitation : features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : features.exploitationChecked ? scoreLevel(exploitedScore, policy) : "unknown";
     return {
       subject: snapshot.subject,
       policyVersion: policy.version,
-      recommendation: recommendation(score, policy),
+      scoreStatus: status,
+      recommendation: recommendation(score, policy, status, snapshot.subject.type),
       riskScore: score,
       evidenceCoverage: Number(coverage.toFixed(2)),
-      ...(features.coverage.modelVersion && features.coverage.sources ? {
-        coverage: {
-          modelVersion: features.coverage.modelVersion,
-          resolvedWeight: features.coverage.completed,
-          applicableWeight: features.coverage.expected,
-          sources: features.coverage.sources
-        }
-      } : {}),
+      ...(features.coverage.modelVersion && features.coverage.sources ? { coverage: { modelVersion: features.coverage.modelVersion, resolvedWeight: features.coverage.completed, applicableWeight: features.coverage.expected, sources: features.coverage.sources } } : {}),
       dimensions: {
-        knownVulnerabilities, knownExploitation,
-        packageSupplyChain: packageRisk === undefined ? "unknown" : scoreLevel(packageRisk, policy),
-        repositorySecurityPractices: repoRisk === undefined ? "unknown" : scoreLevel(repoRisk, policy),
-        maliciousInfrastructure: maliciousInfrastructureRisk === undefined ? "unknown" : scoreLevel(maliciousInfrastructureRisk, policy),
-        serviceIdentity: identityRisk === undefined ? "unknown" : scoreLevel(identityRisk, policy),
-        paymentConfigurationRisk: paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
-        endpointOperationalRisk: endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
+        knownVulnerabilities,
+        knownExploitation,
+        packageSupplyChain: isRepository ? "not_applicable" : packageRisk === undefined ? "unknown" : scoreLevel(packageRisk, policy),
+        repositorySecurityPractices: isRepository ? repositorySecurityPractices : features.scorecard === undefined ? "unknown" : scoreLevel(0, policy),
+        maliciousInfrastructure: isRepository ? repositoryMaliciousInfrastructure : maliciousInfrastructureRisk === undefined ? "unknown" : scoreLevel(maliciousInfrastructureRisk, policy),
+        serviceIdentity: isRepository ? "not_applicable" : identityRisk === undefined ? "unknown" : scoreLevel(identityRisk, policy),
+        paymentConfigurationRisk: isRepository ? "not_applicable" : paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
+        endpointOperationalRisk: isRepository ? "not_applicable" : endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
       },
-      signals, evidence: snapshot.evidence, sourceErrors: snapshot.sourceErrors ?? [], assessedAt: new Date().toISOString(),
+      signals,
+      evidence: snapshot.evidence,
+      sourceErrors: snapshot.sourceErrors ?? [],
+      assessedAt: new Date().toISOString(),
       ...(snapshot.maliciousPackageObservations ? { maliciousPackageObservations: snapshot.maliciousPackageObservations } : {}),
       freshness: freshness(snapshot.evidence)
     };

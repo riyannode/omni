@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { GitHubRepositoryProvider } from "../src/providers/github-repository.ts";
+import { resolveRepositoryDependencies } from "../src/providers/dependency-resolution.ts";
 import { DepsDevProvider, normalizeProvenance } from "../src/providers/deps-dev.ts";
 import { RiskEngine } from "../src/domain/risk-engine.ts";
 import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/risk-features.ts";
@@ -10,14 +11,14 @@ import { CachedLoader, type Cache } from "../src/data/cache.ts";
 import { OmniIntelligence, MAX_REPOSITORY_THREAT_FINDINGS_PER_PACKAGE, MAX_REPOSITORY_THREAT_FINDINGS_TOTAL, MAX_REPOSITORY_THREAT_INTEL_BYTES, MAX_REPOSITORY_THREAT_INTEL_ENTRY_BYTES, MAX_REPOSITORY_THREAT_INTEL_ERROR_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_INDICATOR_BYTES, MAX_REPOSITORY_THREAT_INTEL_LIMITATION_ENTRIES, MAX_REPOSITORY_THREAT_INTEL_REFERENCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_SOURCE_BYTES, MAX_REPOSITORY_THREAT_INTEL_THREAT_TYPE_BYTES } from "../src/services.ts";
 import type { ScorecardProviderResult } from "../src/providers/scorecard.ts";
 import { NoopAssessmentJournal, type AssessmentJournal } from "../src/data/assessment-journal.ts";
-import type { ExactDependencyCoordinate, RiskAssessment, RepositoryEvidence, ThreatFinding } from "../src/domain/risk.ts";
+import type { ExactDependencyCoordinate, ProvenanceState, RiskAssessment, RepositoryEvidence, ThreatFinding } from "../src/domain/risk.ts";
 
 function memoryCache(): Cache {
   const values = new Map<string, string>();
   return { async get(key) { return values.get(key) ?? null; }, async set(key, value) { values.set(key, value); } };
 }
 
-function fakeDepsDev(record: (coordinate: ExactDependencyCoordinate) => void): { packageVersion(coordinate: ExactDependencyCoordinate): Promise<{ observation: { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number }; provenance: Array<{ package: ExactDependencyCoordinate; state: "UNAVAILABLE"; source: "deps.dev" }> }; evidence: { source: string; kind: string; observedAt: string; detail: Record<string, never> } }> } {
+function fakeDepsDev(record: (coordinate: ExactDependencyCoordinate) => void): { packageVersion(coordinate: ExactDependencyCoordinate): Promise<{ observation: { coordinate: ExactDependencyCoordinate; licenses: string[]; advisoryIds: string[]; graph: { checked: boolean; nodeCount: number }; provenance: Array<{ package: ExactDependencyCoordinate; state: ProvenanceState; source: "deps.dev" }> }; evidence: { source: string; kind: string; observedAt: string; detail: Record<string, never> } }> } {
   return { async packageVersion(coordinate) {
     record(coordinate);
     return {
@@ -39,6 +40,7 @@ function repositoryEvidenceWith(exact: ExactDependencyCoordinate[]): RepositoryE
     securityFiles: [],
     dependencies: { exact, unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } },
     dependencyObservations: [],
+    dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: [] },
     dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] },
     coverage: { status: "complete", treeEntriesInspected: 1, filesInspected: 1, bytesInspected: 10, limitations: [] },
     sourceErrors: []
@@ -63,13 +65,15 @@ function capturingJournal(snapshots: RiskSnapshot[]) {
 
 type ScorecardStub = { repository(): Promise<ScorecardProviderResult> };
 
-function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: ReturnType<typeof threatIntelStore>, journal: AssessmentJournal = new NoopAssessmentJournal(), scorecard: ScorecardStub = staticScorecard) {
-  const github = {
+function repositoryOmni(repositoryEvidence: RepositoryEvidence, threatIntel: ReturnType<typeof threatIntelStore>, journal: AssessmentJournal = new NoopAssessmentJournal(), scorecard: ScorecardStub = staticScorecard, githubOverride?: { resolve(): Promise<unknown>; collectResolved(): Promise<RepositoryEvidence> }, depsDevOverride?: ReturnType<typeof fakeDepsDev>) {
+  const github = githubOverride ?? {
     async resolve() { return { repository: repositoryEvidence.target.repository, requestedRef: "main", resolvedCommitSha: commitSha, rootTreeSha: treeSha }; },
     async collectResolved() { return structuredClone(repositoryEvidence); }
   };
-  const depsDev = fakeDepsDev(() => {});
-  return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), {} as never, {} as never, scorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
+  const depsDev = depsDevOverride ?? fakeDepsDev(() => {});
+  const osv = { async packageVulnerabilities() { return { findings: [], maliciousPackageObservations: [], evidence: [] }; } };
+  const kev = { async mark() { return { exploited: new Set<string>(), evidence: { source: "CISA KEV", kind: "known_exploitation", observedAt: "2026-01-01T00:00:00.000Z", detail: { matched: [] } } }; } };
+  return new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), osv as never, kev as never, scorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, journal, github as never, depsDev as never);
 }
 
 async function repositoryObservation(repositoryEvidence: RepositoryEvidence, lookup: (coordinate: ExactDependencyCoordinate) => Promise<{ checked: boolean; findings: ThreatFinding[] }>) {
@@ -89,6 +93,7 @@ function evidenceOf(assessment: RiskAssessment): RepositoryEvidence {
     securityFiles: [],
     dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } },
     dependencyObservations: [],
+    dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: [] },
     dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] },
     coverage: { status: detail.coverage ?? "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: detail.limitations ?? [] },
     sourceErrors: detail.collectorErrors ?? []
@@ -104,6 +109,32 @@ const commitSha = "0123456789abcdef0123456789abcdef01234567";
 const treeSha = "abcdef0123456789abcdef0123456789abcdef01";
 const packageBlob = "1111111111111111111111111111111111111111";
 const workflowBlob = "2222222222222222222222222222222222222222";
+
+function resolveDependencies(files: Record<string, string>, candidatePaths = Object.keys(files)) {
+  return resolveRepositoryDependencies({ files: new Map(Object.entries(files)), candidatePaths, manifestDiscoveryComplete: true });
+}
+
+async function realGithubEvidence(tree: unknown[], contents: Record<string, string>, truncated = false, rawAccepts: string[] = []): Promise<RepositoryEvidence> {
+  const base = "https://api.github.com/repos/acme/demo";
+  const treeUrl = `${base}/git/trees/${treeSha}?recursive=1`;
+  const http = {
+    async request(url: string | URL, init?: RequestInit) {
+      const target = String(url);
+      if (target === base) return response({ full_name: "acme/demo", default_branch: "main" });
+      if (target === `${base}/commits/main`) return response({ sha: commitSha, commit: { tree: { sha: treeSha } } });
+      if (target === treeUrl) return response({ truncated, tree });
+      const accept = new Headers(init?.headers).get("accept") ?? "";
+      for (const [path, value] of Object.entries(contents)) {
+        if (target === `${base}/contents/${encodeURIComponent(path)}?ref=${commitSha}`) {
+          rawAccepts.push(accept);
+          return accept.includes("application/vnd.github.raw") ? new Response(value) : response(content(value));
+        }
+      }
+      return response({ message: "not found" }, 404);
+    }
+  };
+  return new GitHubRepositoryProvider(http as never).collect("acme", "demo");
+}
 
 describe("repository evidence foundation", () => {
   test("resolves a mutable branch once and binds every security file read to its immutable commit", async () => {
@@ -163,6 +194,7 @@ describe("repository evidence foundation", () => {
 
     expect(resolveCalls).toBe(2);
     expect(collectionCalls).toBe(1);
+    expect([...values.keys()]).toEqual(["assessment:repo:omni-risk-v3:repository-coverage-v1:github.com/acme/demo:0123456789abcdef0123456789abcdef01234567"]);
   });
 
   test("marks tree truncation and oversized files partial instead of claiming clean coverage", async () => {
@@ -190,7 +222,7 @@ describe("repository evidence foundation", () => {
         [`${base}/commits/main`]: { sha: commitSha, commit: { tree: { sha: treeSha } } },
         [`${base}/git/trees/${treeSha}?recursive=1`]: { truncated: false, tree: [{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }, { path: "bun.lock", type: "blob", sha: bunBlob, size: 100 }] },
         [`${base}/contents/package.json?ref=${commitSha}`]: content(JSON.stringify({ dependencies: { safe: "^1.2.0" } })),
-        [`${base}/contents/bun.lock?ref=${commitSha}`]: content('"safe": ["safe@1.2.3", "", {}, "sha512-example"]')
+        [`${base}/contents/bun.lock?ref=${commitSha}`]: content(JSON.stringify({ lockfileVersion: 1, workspaces: { "": { dependencies: { safe: "^1.2.0" } } }, packages: { safe: ["safe@1.2.3", "", {}, "sha512-example"] }}))
       };
       return response(fixtures[target] ?? {}, fixtures[target] === undefined ? 404 : 200);
     } };
@@ -225,7 +257,7 @@ describe("repository evidence foundation", () => {
     expect(normalizeProvenance({ verified: true, sourceRepository: "github.com/acme/demo", commit: "1111111111111111111111111111111111111111" }, { repository: "github.com/acme/demo", commit: commitSha }).state).toBe("VERIFIED_COMMIT_MISMATCH");
   });
 
-  test("keeps repository dependency threat intel observation-only across checked, failed, and not-checked states", async () => {
+  test("scores repository dependency threat intel while separating uncertainty states", async () => {
     const baseline = new RiskEngine().assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "Scorecard", kind: "score", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] });
     const coordinate = exactCoordinate("dangerous-package", "4.2.0");
     const finding: ThreatFinding = { indicatorType: "package", indicator: "npm:dangerous-package@4.2.0", threatType: "malicious_package", severity: "critical", source: "licensed-feed", reference: "https://intel.example/finding/1" };
@@ -234,7 +266,7 @@ describe("repository evidence foundation", () => {
     const checked = await repositoryOmni(repositoryEvidenceWith([coordinate]), threatIntelStore(async () => ({ checked: true, findings: [finding] })), capturingJournal(checkedSnapshots)).repositoryRisk("acme", "demo");
     const checkedSnapshot = checkedSnapshots[0]!;
     const checkedObservation = checkedSnapshot.repositoryEvidence?.dependencyThreatIntel;
-    expect({ riskScore: checked.riskScore, recommendation: checked.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    expect({ riskScore: checked.riskScore, recommendation: checked.recommendation }).toEqual({ riskScore: 100, recommendation: "do_not_proceed" });
     expect(checkedSnapshot).not.toHaveProperty("threatIntelChecked");
     expect(checkedSnapshot).not.toHaveProperty("threatFindings");
     expect(checkedSnapshot.sourceErrors ?? []).toEqual([]);
@@ -244,7 +276,7 @@ describe("repository evidence foundation", () => {
     const failedSnapshots: RiskSnapshot[] = [];
     const failed = await repositoryOmni(repositoryEvidenceWith([coordinate]), threatIntelStore(async () => { throw new Error("feed_timeout"); }), capturingJournal(failedSnapshots)).repositoryRisk("acme", "demo");
     const failedSnapshot = failedSnapshots[0]!;
-    expect({ riskScore: failed.riskScore, recommendation: failed.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    expect({ riskScore: failed.riskScore, recommendation: failed.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: "manual_review" });
     expect(failedSnapshot.sourceErrors ?? []).toEqual([]);
     expect(failedSnapshot.repositoryEvidence?.sourceErrors ?? []).toEqual([]);
     expect(failedSnapshot.repositoryEvidence?.dependencyThreatIntel).toMatchObject({ status: "UNAVAILABLE", packagesInspected: [coordinate], findings: [], errors: [`threat_intel NPM:${coordinate.name}@${coordinate.version}: feed_timeout`], limitations: [`threat_intel_lookup_failed:${coordinate.name}@${coordinate.version}`] });
@@ -258,6 +290,25 @@ describe("repository evidence foundation", () => {
     expect(zeroSnapshots[0]).not.toHaveProperty("threatIntelChecked");
     expect(zeroSnapshots[0]).not.toHaveProperty("threatFindings");
     expect(zeroSnapshots[0]?.repositoryEvidence?.dependencyThreatIntel).toMatchObject({ status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: ["no_exact_dependencies_selected"] });
+  });
+
+  test("aggregates repository threat-intel coverage by lookup outcome", async () => {
+    const coordinate = exactCoordinate("coverage-package", "1.0.0");
+    const finding: ThreatFinding = { indicatorType: "package", indicator: "npm:coverage-package@1.0.0", threatType: "malicious_package", severity: "high", source: "licensed-feed", reference: "https://intel.example/coverage" };
+    const coverage = async (lookup: (item: ExactDependencyCoordinate) => Promise<{ checked: boolean; findings: ThreatFinding[] }>) => {
+      const assessment = await repositoryOmni(repositoryEvidenceWith([coordinate]), threatIntelStore(lookup)).repositoryRisk("acme", "demo");
+      return assessment.coverage?.sources.find(source => source.source === "Threat Intelligence");
+    };
+
+    await expect(coverage(async () => ({ checked: true, findings: [] }))).resolves.toMatchObject({ execution: "QUERIED", status: "ABSENT" });
+    await expect(coverage(async () => ({ checked: true, findings: [finding] }))).resolves.toMatchObject({ execution: "QUERIED", status: "OBSERVED" });
+    await expect(coverage(async () => ({ checked: false, findings: [] }))).resolves.toMatchObject({ execution: "QUERIED", status: "UNAVAILABLE" });
+    const mixedCoordinates = [coordinate, exactCoordinate("coverage-failing", "1.0.0")];
+    const mixed = await repositoryOmni(repositoryEvidenceWith(mixedCoordinates), threatIntelStore(async item => item.name === coordinate.name ? { checked: true, findings: [] } : { checked: false, findings: [] })).repositoryRisk("acme", "demo");
+    expect(mixed.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const deferred = await repositoryOmni(repositoryEvidenceWith(Array.from({ length: 25 }, (_, index) => exactCoordinate(`coverage-deferred-${index}`))), threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(deferred.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
   });
 
   test("bounds repository threat-intel lookups to four concurrent calls and twenty-four total calls", async () => {
@@ -419,25 +470,27 @@ describe("repository evidence foundation", () => {
       await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => ({ checked: true, findings: oversized })),
       await repositoryObservation(repositoryEvidenceWith([coordinate]), async () => { throw new Error("feed_down"); })
     ];
-    for (const scenario of scenarios) {
-      expect({ riskScore: scenario.assessment.riskScore, recommendation: scenario.assessment.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    for (const [index, scenario] of scenarios.entries()) {
+      expect(scenario.assessment.riskScore).toBe(index === 0 ? baseline.riskScore : index === 3 ? baseline.riskScore : 100);
+      expect(scenario.assessment.recommendation).toBe(index === 1 || index === 2 ? "do_not_proceed" : index === 3 ? "manual_review" : baseline.recommendation);
       expect(scenario.snapshot.sourceErrors ?? []).toEqual([]);
     }
   });
 
   test("preserves repository score/recommendation with available or unavailable new evidence", () => {
     const base: RiskSnapshot = { subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "OpenSSF Scorecard", kind: "repository_security_practices", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] };
-    const evidence: RepositoryEvidence = { target: { repository: "github.com/acme/demo", requestedRef: "main", resolvedCommitSha: commitSha }, securityFiles: [{ path: "package.json", category: "manifest" as const, status: "inspected" as const, findings: ["INSTALL_LIFECYCLE_SCRIPT"] }], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: "complete" as const, treeEntriesInspected: 1, filesInspected: 1, bytesInspected: 10, limitations: [] }, sourceErrors: [] };
+    const evidence: RepositoryEvidence = { target: { repository: "github.com/acme/demo", requestedRef: "main", resolvedCommitSha: commitSha }, securityFiles: [{ path: "package.json", category: "manifest" as const, status: "inspected" as const, findings: ["INSTALL_LIFECYCLE_SCRIPT"] }], dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } }, dependencyObservations: [], dependencyVulnerabilities: { status: "NOT_CHECKED", packagesInspected: [], findings: [], maliciousPackageObservations: [], cisaKev: { status: "NOT_QUERIED", correlatableCveIds: [], matchedCveIds: [] }, errors: [], limitations: [] }, dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], errors: [], limitations: [] }, coverage: { status: "complete" as const, treeEntriesInspected: 1, filesInspected: 1, bytesInspected: 10, limitations: [] }, sourceErrors: [] };
     const unavailable = { ...evidence, coverage: { ...evidence.coverage, status: "partial" as const, limitations: ["github_rate_limited"] }, sourceErrors: ["GitHub: github_rate_limited"] };
     const engine = new RiskEngine();
     const before = engine.assess(base);
     const available = engine.assess({ ...base, repositoryEvidence: evidence });
     const partial = engine.assess({ ...base, repositoryEvidence: unavailable });
-    expect({ riskScore: available.riskScore, recommendation: available.recommendation }).toEqual({ riskScore: before.riskScore, recommendation: before.recommendation });
-    expect({ riskScore: partial.riskScore, recommendation: partial.recommendation }).toEqual({ riskScore: before.riskScore, recommendation: before.recommendation });
+    expect({ riskScore: available.riskScore, recommendation: available.recommendation }).toEqual({ riskScore: 10, recommendation: "proceed" });
+    expect({ riskScore: partial.riskScore, recommendation: partial.recommendation }).toEqual({ riskScore: 10, recommendation: "proceed" });
+
     expect(available.signals.map(signal => signal.code)).toContain("INSTALL_LIFECYCLE_SCRIPT_OBSERVED");
     expect(partial.signals.map(signal => signal.code)).toContain("REPOSITORY_EVIDENCE_PARTIAL");
-    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(3);
+    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(4);
     expect(extractRiskFeatures({ ...base, repositoryEvidence: evidence }).schemaVersion).toBe(RISK_FEATURE_SCHEMA_VERSION);
   });
 
@@ -446,12 +499,16 @@ describe("repository evidence foundation", () => {
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "package" as const, id: "old-package" },
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "x402_endpoint" as const, id: "old-endpoint" },
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "repository" as const, id: "old-repository" },
-      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "current-repository" }
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "package" as const, id: "historical-package" },
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "x402_endpoint" as const, id: "historical-endpoint" },
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "dependency_set" as const, id: "historical-dependencies" },
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "historical-repository" },
+      { snapshotSchemaVersion: 4, featureSchemaVersion: 4, subjectType: "repository" as const, id: "current-repository" }
     ];
     expect(partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION)).toEqual({
-      compatible: [rows[0]!, rows[1]!, rows[3]!],
-      incompatible: [rows[2]!],
-      schemaVersionsPresent: { snapshot: [1, 3], feature: [1, 3] }
+      compatible: [rows[0]!, rows[1]!, rows[3]!, rows[4]!, rows[5]!, rows[7]!],
+      incompatible: [rows[2]!, rows[6]!],
+      schemaVersionsPresent: { snapshot: [1, 3, 4], feature: [1, 3, 4] }
     });
   });
 
@@ -468,11 +525,13 @@ describe("repository evidence foundation", () => {
       // cohort-aware comparison must prove semantic equality instead.
       expect(featuresEqual(fresh, legacyRow)).toBe(false);
       expect(featuresEqualForCohort(fresh, legacyRow, 1)).toEqual({ equal: true, comparison: "legacy-projected" });
+      expect(featuresEqualForCohort(fresh, legacyRow, 3, snapshot.subject.type)).toEqual({ equal: true, comparison: "legacy-projected" });
+      expect(featuresEqualForCohort({ repository: { old: true } }, { repository: { old: false } }, 3, "repository")).toEqual({ equal: false, comparison: "current-schema" });
       // Real semantic change on the shared surface still counts as drift.
       const driftedLegacy = { ...legacyRow, vulnerabilityCount: 7 };
       expect(featuresEqualForCohort(fresh, driftedLegacy, 1)).toEqual({ equal: false, comparison: "legacy-projected" });
       // Current-cohort rows keep the strict byte-exact comparison.
-      expect(featuresEqualForCohort(fresh, structuredClone(fresh), 2)).toEqual({ equal: true, comparison: "current-schema" });
+      expect(featuresEqualForCohort(fresh, structuredClone(fresh), 2, snapshot.subject.type)).toEqual({ equal: true, comparison: "legacy-projected" });
       const mutatedCurrent = structuredClone(fresh) as unknown as Record<string, unknown>;
       mutatedCurrent.vulnerabilityCount = 3;
       expect(featuresEqualForCohort(fresh, mutatedCurrent, 2).equal).toBe(false);
@@ -481,7 +540,7 @@ describe("repository evidence foundation", () => {
 
   test("associates each workspace manifest with its own same-directory lock and preserves distinct coordinates", async () => {
     const base = "https://api.github.com/repos/acme/demo";
-    const lock = (entries: Record<string, string>) => JSON.stringify({ packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
+    const lock = (entries: Record<string, string>) => JSON.stringify({ lockfileVersion: 1, packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
     const http = { async request(url: string | URL) {
       const target = String(url);
       const fixtures: Record<string, unknown> = {
@@ -537,7 +596,7 @@ describe("repository evidence foundation", () => {
     expect(result.coverage.status).toBe("partial");
   });
 
-  test("reports detected but unsupported dependency ecosystems instead of claiming coverage", async () => {
+  test("handles detected PyPI and Go manifests as supported resolution paths", async () => {
     const base = "https://api.github.com/repos/acme/demo";
     const http = { async request(url: string | URL) {
       const target = String(url);
@@ -558,8 +617,11 @@ describe("repository evidence foundation", () => {
       return response(fixtures[target] ?? {}, fixtures[target] === undefined ? 404 : 200);
     } };
     const result = await new GitHubRepositoryProvider(http as never).collect("acme", "demo");
-    expect(result.coverage.limitations).toEqual(expect.arrayContaining(["dependency_resolution_unsupported:CARGO", "dependency_resolution_unsupported:GO", "dependency_resolution_unsupported:PYPI"]));
-    expect(result.coverage.status).toBe("partial");
+    expect(result.coverage.limitations).not.toContain("dependency_resolution_unsupported:GO");
+    expect(result.coverage.limitations).not.toContain("dependency_resolution_unsupported:PYPI");
+    expect(result.dependencies.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.0.0", sourcePath: "requirements-dev.txt", manifestPath: "requirements-dev.txt", workspacePath: "." }]);
+    expect(result.dependencies.unresolved).toEqual([]);
+    expect(result.coverage.status).toBe("complete");
   });
 
   test("fails closed on invalid commit identities, rate limits, timeouts, and oversized streamed bodies", async () => {
@@ -653,7 +715,7 @@ describe("repository evidence foundation", () => {
 
   test("bounds deps.dev enrichment deterministically instead of fanning out to every declared coordinate", async () => {
     const base = "https://api.github.com/repos/acme/demo";
-    const lock = (entries: Record<string, string>) => JSON.stringify({ packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
+    const lock = (entries: Record<string, string>) => JSON.stringify({ lockfileVersion: 1, packages: Object.fromEntries(Object.entries(entries).map(([name, version]) => [`node_modules/${name}`, { version }])) });
     // 40 distinct exact coordinates across two workspaces — above the enrichment limit.
     const rootEntries = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`pkg-${i}`, `1.0.${i}`]));
     const nestedEntries = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`nested-${i}`, `2.0.${i}`]));
@@ -688,8 +750,11 @@ describe("repository evidence foundation", () => {
     const evidence = evidenceOf(assessment);
 
     expect(enrichmentCalls).toBeLessThanOrEqual(24);
-    expect(evidence.coverage.status).toBe("partial");
-    expect(evidence.coverage.limitations).toEqual(expect.arrayContaining([expect.stringMatching(/^dependency_enrichment_limit_reached:\d+_of_40_deferred$/)]));
+    expect(evidence.coverage.status).toBe("complete");
+    expect(evidence.coverage.limitations).toEqual([]);
+    expect(assessment.scoreStatus).toBe("measured_partial");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
     // Deterministic selection: repeated runs select the same coordinates in the same order.
     const secondSeen: string[] = [];
     const again = fakeDepsDev(coordinate => { secondSeen.push(`${coordinate.name}@${coordinate.version}`); });
@@ -702,11 +767,153 @@ describe("repository evidence foundation", () => {
     const engine = new RiskEngine();
     const baselineEvidence = [{ source: "OpenSSF Scorecard", kind: "repository_security_practices", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }];
     const baseline = engine.assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: baselineEvidence });
-    expect({ riskScore: assessment.riskScore, recommendation: assessment.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
-    expect({ riskScore: second.riskScore, recommendation: second.recommendation }).toEqual({ riskScore: baseline.riskScore, recommendation: baseline.recommendation });
+    expect(assessment.riskScore).toBe(baseline.riskScore);
+    expect(assessment.recommendation).toBe("manual_review");
+    expect(second.riskScore).toBe(baseline.riskScore);
+    expect(second.recommendation).toBe("manual_review");
   });
 
-  test("keeps not_indexed Scorecard conservative without treating it as an outage", async () => {
+  test("maps complete, partial, and unavailable GitHub collection states independently", async () => {
+    const complete = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(complete.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const partialEvidence = repositoryEvidenceWith([]);
+    partialEvidence.coverage = { ...partialEvidence.coverage, status: "partial", limitations: ["github_tree_truncated"] };
+    const partial = await repositoryOmni(partialEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(partial.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partial.coverage?.resolvedWeight).toBe(1);
+    expect(partial.coverage?.applicableWeight).toBe(7);
+
+    const unavailableGithub = {
+      async resolve(): Promise<never> { throw new Error("github_timeout"); },
+      async collectResolved(): Promise<RepositoryEvidence> { throw new Error("unreachable"); }
+    };
+    const unavailable = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, unavailableGithub).repositoryRisk("acme", "demo");
+    expect(unavailable.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+    expect(unavailable.sourceErrors).toContain("GitHub: github_timeout");
+
+    const downstreamFailure = repositoryEvidenceWith([exactCoordinate("downstream-failure")]);
+    const downstreamDepsDev = fakeDepsDev(() => {});
+    downstreamDepsDev.packageVersion = async () => { throw new Error("deps_dev_timeout"); };
+    const completeWithDepsDevFailure = await repositoryOmni(downstreamFailure, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, downstreamDepsDev).repositoryRisk("acme", "demo");
+    expect(completeWithDepsDevFailure.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(completeWithDepsDevFailure.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+    const primaryDetail = completeWithDepsDevFailure.evidence.find(item => item.kind === "repository_primary_evidence")?.detail ?? {};
+    expect(primaryDetail.collectorErrors).toEqual([]);
+    expect(primaryDetail.limitations).toEqual([]);
+
+    const unsupportedEvidence = repositoryEvidenceWith([]);
+    unsupportedEvidence.coverage.limitations = ["dependency_resolution_unsupported:CARGO"];
+    const completeWithUnsupported = await repositoryOmni(unsupportedEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(completeWithUnsupported.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(completeWithUnsupported.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("aggregates deps.dev provenance states without confusing absence, observation, and uncertainty", async () => {
+    const coordinate = exactCoordinate("provenance-package", "1.0.0");
+    const withEvidence = (state: "PRESENT_UNVERIFIED" | "VERIFIED" | "VERIFIED_SOURCE_MISMATCH" | "VERIFIED_COMMIT_MISMATCH" | "VERIFIED_COMMIT_UNCONFIRMED") => {
+      const evidence = repositoryEvidenceWith([coordinate]);
+      const depsDev = fakeDepsDev(() => {});
+      depsDev.packageVersion = async item => ({
+        observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state, source: "deps.dev" }] },
+        evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+      });
+      return repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, depsDev);
+    };
+
+    const observed = await (await withEvidence("VERIFIED")).repositoryRisk("acme", "demo");
+    expect(observed.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    const unverified = await (await withEvidence("PRESENT_UNVERIFIED")).repositoryRisk("acme", "demo");
+    expect(unverified.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    const mismatch = await (await withEvidence("VERIFIED_SOURCE_MISMATCH")).repositoryRisk("acme", "demo");
+    expect(mismatch.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const mixedObservedAbsent = repositoryEvidenceWith([coordinate, exactCoordinate("provenance-absent")]);
+    const mixedObservedAbsentDepsDev = fakeDepsDev(() => {});
+    mixedObservedAbsentDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: item.name === "provenance-absent" ? "UNAVAILABLE" : "VERIFIED", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const mixedObservedAbsentAssessment = await repositoryOmni(mixedObservedAbsent, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedObservedAbsentDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedObservedAbsentAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const mixedUnverifiedAbsent = repositoryEvidenceWith([coordinate, exactCoordinate("provenance-absent")]);
+    const mixedUnverifiedAbsentDepsDev = fakeDepsDev(() => {});
+    mixedUnverifiedAbsentDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: item.name === "provenance-absent" ? "UNAVAILABLE" : "PRESENT_UNVERIFIED", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const mixedUnverifiedAbsentAssessment = await repositoryOmni(mixedUnverifiedAbsent, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedUnverifiedAbsentDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedUnverifiedAbsentAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const mixedError = repositoryEvidenceWith([coordinate, exactCoordinate("provenance-error")]);
+    const mixedErrorDepsDev = fakeDepsDev(() => {});
+    mixedErrorDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: item.name === "provenance-error" ? "ERROR" : "VERIFIED", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const mixedErrorAssessment = await repositoryOmni(mixedError, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedErrorDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedErrorAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const mixedProviderFailure = repositoryEvidenceWith([coordinate, exactCoordinate("provider-failure")]);
+    const mixedProviderFailureDepsDev = fakeDepsDev(() => {});
+    mixedProviderFailureDepsDev.packageVersion = async item => {
+      if (item.name === "provider-failure") throw new Error("deps_dev_timeout");
+      return { observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: "VERIFIED", source: "deps.dev" }] }, evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} } };
+    };
+    const mixedProviderFailureAssessment = await repositoryOmni(mixedProviderFailure, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, mixedProviderFailureDepsDev).repositoryRisk("acme", "demo");
+    expect(mixedProviderFailureAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const absent = repositoryEvidenceWith([coordinate]);
+    const absentDepsDev = fakeDepsDev(() => {});
+    absentDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: "UNAVAILABLE", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const absentAssessment = await repositoryOmni(absent, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, absentDepsDev).repositoryRisk("acme", "demo");
+    expect(absentAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "ABSENT", weight: 1 });
+
+    const error = repositoryEvidenceWith([coordinate]);
+    const errorDepsDev = fakeDepsDev(() => {});
+    errorDepsDev.packageVersion = async item => ({
+      observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, state: "ERROR", source: "deps.dev" }] },
+      evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+    });
+    const errorAssessment = await repositoryOmni(error, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, errorDepsDev).repositoryRisk("acme", "demo");
+    expect(errorAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const failed = repositoryEvidenceWith([coordinate]);
+    const failedDepsDev = fakeDepsDev(() => {});
+    failedDepsDev.packageVersion = async () => { throw new Error("deps_dev_timeout"); };
+    const failedAssessment = await repositoryOmni(failed, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, failedDepsDev).repositoryRisk("acme", "demo");
+    expect(failedAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+
+    const deferred = repositoryEvidenceWith(Array.from({ length: 25 }, (_, index) => exactCoordinate(`deferred-${index}`)));
+    const deferredAssessment = await repositoryOmni(deferred, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, undefined, fakeDepsDev(() => {})).repositoryRisk("acme", "demo");
+    expect(deferredAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("distinguishes resolver execution from unsupported and not-applicable states", async () => {
+    const successful = repositoryEvidenceWith([exactCoordinate("resolved")]);
+    const successfulAssessment = await repositoryOmni(successful, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(successfulAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+
+    const partial = repositoryEvidenceWith([]);
+    partial.dependencies.unresolved = [{ ecosystem: "NPM", name: "unresolved", requirement: "^1.0.0", manifestPath: "package.json", workspacePath: "." }];
+    partial.coverage.limitations = ["dependency_lock_missing:package.json"];
+    const partialAssessment = await repositoryOmni(partial, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const unsupported = repositoryEvidenceWith([]);
+    unsupported.coverage.limitations = ["dependency_resolution_unsupported:CARGO"];
+    const unsupportedAssessment = await repositoryOmni(unsupported, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(unsupportedAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const notApplicable = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(notApplicable.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+  });
+
+  test("keeps not_indexed Scorecard as partial uncertainty without inflating observed risk", async () => {
     const repositoryEvidence = repositoryEvidenceWith([]);
     const notIndexed = {
       async repository() {
@@ -725,12 +932,935 @@ describe("repository evidence foundation", () => {
     const assessment = await repositoryOmni(repositoryEvidence, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), notIndexed).repositoryRisk("acme", "demo");
 
     expect(assessment.dimensions.repositorySecurityPractices).toBe("unknown");
-    expect(assessment.evidenceCoverage).toBe(0);
-    expect(assessment.riskScore).toBe(50);
+    expect(assessment.evidenceCoverage).toBeGreaterThan(0);
+    expect(assessment.riskScore).toBe(0);
+    expect(assessment.scoreStatus).toBe("measured_partial");
     expect(assessment.recommendation).toBe("manual_review");
     expect(assessment.sourceErrors).toEqual(["OpenSSF Scorecard: not_indexed (missing_result; HTTP 404 api.scorecard.dev; mode=latest; repository=github.com/acme/demo)"]);
+    expect(assessment.coverage).toMatchObject({ modelVersion: "repository-coverage-v1", resolvedWeight: 1, applicableWeight: 2 });
+    expect(assessment.coverage?.sources).toEqual(expect.arrayContaining([
+      { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 },
+      { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNKNOWN", weight: 1 },
+      { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+      { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+      { source: "Threat Intelligence", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 }
+    ]));
     expect(assessment.evidence.some(item => item.kind === "repository_primary_evidence")).toBe(true);
     expect(assessment.evidence.some(item => item.kind === "repository_security_practices")).toBe(false);
+  });
+
+  test("keeps an OpenSSF outage outside the observed repository risk score", async () => {
+    const repositoryEvidence = repositoryEvidenceWith([]);
+    const unavailable = {
+      async repository() {
+        return {
+          status: "unavailable" as const,
+          diagnostic: {
+            host: "api.scorecard.dev",
+            mode: "latest" as const,
+            repository: repositoryEvidence.target.repository,
+            reason: "timeout"
+          }
+        };
+      }
+    };
+    const assessment = await repositoryOmni(repositoryEvidence, threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), unavailable).repositoryRisk("acme", "demo");
+
+    expect(assessment.riskScore).toBe(0);
+    expect(assessment.scoreStatus).toBe("measured_partial");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+  });
+
+  test("reports insufficient evidence and manual review when all applicable repository evidence is unavailable", () => {
+    const result = new RiskEngine().assess({
+      subject: { type: "repository", id: "github.com/acme/demo" },
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "Threat Intelligence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 }
+        ]
+      },
+      evidence: [],
+      sourceErrors: ["GitHub: unavailable", "OpenSSF Scorecard: timeout", "Threat intelligence: unavailable"]
+    });
+
+    expect(result.scoreStatus).toBe("insufficient_evidence");
+    expect(result.recommendation).toBe("manual_review");
+    expect(result.riskScore).toBe(0);
+    expect(result.evidenceCoverage).toBe(0);
+  });
+
+  test("uses not_applicable for repository-only dimensions and excludes it from coverage denominator", () => {
+    const result = new RiskEngine().assess({
+      subject: { type: "repository", id: "github.com/acme/demo" },
+      scorecard: 9.5,
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 2 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "ABSENT", weight: 3 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 5 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 7 },
+          { source: "Threat Intelligence", execution: "QUERIED", status: "UNAVAILABLE", weight: 11 }
+        ]
+      },
+      evidence: []
+    });
+
+    expect(result.coverage).toMatchObject({ resolvedWeight: 5, applicableWeight: 16 });
+    expect(result.evidenceCoverage).toBe(0.31);
+    expect(result.dimensions).toMatchObject({
+      packageSupplyChain: "not_applicable",
+      serviceIdentity: "not_applicable",
+      paymentConfigurationRisk: "not_applicable",
+      endpointOperationalRisk: "not_applicable",
+      repositorySecurityPractices: "low",
+      maliciousInfrastructure: "unknown"
+    });
+  });
+  test("maps real Cargo provider evidence without relabeling GitHub coverage", async () => {
+    const evidence = await realGithubEvidence([{ path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 }], { "Cargo.toml": "[dependencies]\nserde = \"1\"\n" });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    const detail = assessment.evidence.find(item => item.kind === "repository_primary_evidence")?.detail ?? {};
+    expect(detail.limitations).toEqual([]);
+    expect(detail.collectorErrors).toEqual([]);
+  });
+
+  test("maps a real npm manifest without its governing lockfile as resolver uncertainty", async () => {
+    const evidence = await realGithubEvidence([{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }) });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("maps a real complete repository with no dependency manifests as not applicable", async () => {
+    const evidence = await realGithubEvidence([{ path: "README.md", type: "blob", sha: packageBlob, size: 100 }], {});
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 });
+  });
+
+  test("does not claim no dependencies when the real GitHub tree is partial", async () => {
+    const evidence = await realGithubEvidence([{ path: "README.md", type: "blob", sha: packageBlob, size: 100 }], {}, true);
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("resolves direct Cargo dependencies from Cargo.lock, including renamed crates", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\nrenamed = { package = \"real-crate\", version = \"0.9\" }\nlocal-crate = { path = \"../local-crate\" }\n\n[dev-dependencies]\ntempfile = \"3\"\n",
+      "Cargo.lock": "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\ndependencies = [\n \"real-crate\",\n \"serde\",\n \"tempfile\",\n]\n\n[[package]]\nname = \"real-crate\"\nversion = \"0.9.4\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"tempfile\"\nversion = \"3.20.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+    });
+    expect(evidence.dependencies.exact).toEqual(expect.arrayContaining([
+      { ecosystem: "CARGO", name: "serde", version: "1.0.219", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." },
+      { ecosystem: "CARGO", name: "real-crate", version: "0.9.4", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." },
+      { ecosystem: "CARGO", name: "tempfile", version: "3.20.0", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." }
+    ]));
+    expect(evidence.dependencies.exact.some(item => item.name === "local-crate")).toBe(false);
+    expect(evidence.dependencies.unresolved).toEqual([]);
+  });
+
+  test("does not guess Cargo versions without Cargo.lock and excludes local crates", async () => {
+    const evidence = await realGithubEvidence([{ path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 }], {
+      "Cargo.toml": "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"\nlocal-crate = { path = \"../local-crate\" }\nworkspace-crate = { workspace = true }\n"
+    });
+    expect(evidence.dependencies.exact).toEqual([]);
+    expect(evidence.dependencies.unresolved).toEqual(expect.arrayContaining([
+      { ecosystem: "CARGO", name: "serde", requirement: "1", manifestPath: "Cargo.toml", workspacePath: "." },
+      { ecosystem: "CARGO", name: "workspace-crate", requirement: "<unspecified>", manifestPath: "Cargo.toml", workspacePath: "." }
+    ]));
+    expect(evidence.dependencies.unresolved.some(item => item.name === "local-crate")).toBe(false);
+    expect(evidence.coverage.limitations).toContain("dependency_lock_missing:Cargo.toml");
+  });
+
+  test("resolves Cargo workspace-inherited registry dependencies and excludes inherited local crates", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 },
+      { path: "crates/app/Cargo.toml", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[workspace]\nmembers = [\"crates/app\"]\n[workspace.dependencies]\nserde = \"1\"\nlocal-crate = { path = \"crates/local\" }\n",
+      "Cargo.lock": "version = 3\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"serde\",\n]\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+      "crates/app/Cargo.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nserde = { workspace = true }\nlocal-crate = { workspace = true }\n"
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "CARGO", name: "serde", version: "1.0.219", sourcePath: "Cargo.lock", manifestPath: "crates/app/Cargo.toml", workspacePath: "crates/app" }]);
+    expect(evidence.dependencies.unresolved.some(item => item.name === "local-crate")).toBe(false);
+  });
+
+  test("resolves nested npm workspaces from a governing root package-lock.json", async () => {
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: {
+      "": { workspaces: ["packages/*"] },
+      "packages/app": { dependencies: { demo: "^1.0.0" } },
+      "node_modules/demo": { version: "1.2.3" }
+    } });
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ workspaces: ["packages/*"] }),
+      "package-lock.json": lock,
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.2.3", sourcePath: "package-lock.json", manifestPath: "packages/app/package.json", workspacePath: "packages/app" }]);
+  });
+
+  test("supports npm-shrinkwrap.json as a governing lockfile", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "npm-shrinkwrap.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "npm-shrinkwrap.json": JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { demo: "^2.0.0" } }, "node_modules/demo": { version: "2.4.1" } } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "2.4.1", sourcePath: "npm-shrinkwrap.json", manifestPath: "package.json", workspacePath: "." }]);
+  });
+
+  test("resolves nested Bun workspace dependencies from the root bun.lock", async () => {
+    const bunLock = JSON.stringify({ lockfileVersion: 1, workspaces: {
+      "": { name: "demo", workspaces: ["packages/*"] },
+      "packages/app": { name: "app", dependencies: { demo: "^1.0.0" } }
+    }, packages: { demo: ["demo@1.3.0", "", {}, "sha512-demo"] } });
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "bun.lock", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ workspaces: ["packages/*"] }),
+      "bun.lock": bunLock,
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.3.0", sourcePath: "bun.lock", manifestPath: "packages/app/package.json", workspacePath: "packages/app" }]);
+  });
+
+  test("resolves nested pnpm importers and excludes workspace references", async () => {
+    const pnpmLock = "lockfileVersion: '9.0'\nimporters:\n  packages/app:\n    dependencies:\n      demo:\n        specifier: ^1.0.0\n        version: 1.4.0\n      local-package:\n        specifier: workspace:*\n        version: link:../local-package\npackages:\n  demo@1.4.0:\n    resolution: {integrity: sha512-demo}\nsnapshots:\n  demo@1.4.0: {}\n";
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "pnpm-lock.yaml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ workspaces: ["packages/*"] }),
+      "pnpm-lock.yaml": pnpmLock,
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0", "local-package": "workspace:*" } })
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.4.0", sourcePath: "pnpm-lock.yaml", manifestPath: "packages/app/package.json", workspacePath: "packages/app" }]);
+    expect(evidence.dependencies.exact.some(item => item.name === "local-package")).toBe(false);
+  });
+
+  test("resolves Yarn classic selectors, including multiple selectors and scoped names", async () => {
+    const yarnLock = "# yarn lockfile v1\n\"@scope/demo@^1.0.0\", \"@scope/demo@~1.0.0\":\n  version \"1.5.0\"\n  resolved \"https://registry.yarnpkg.com/@scope/demo/-/demo-1.5.0.tgz\"\n";
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "yarn.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { "@scope/demo": "^1.0.0" } }),
+      "yarn.lock": yarnLock
+    });
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "@scope/demo", version: "1.5.0", sourcePath: "yarn.lock", manifestPath: "package.json", workspacePath: "." }]);
+  });
+
+  test("fails closed for unsupported Yarn formats, ambiguous lock roots, malformed locks, and local workspace references", async () => {
+    const unsupportedYarn = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "yarn.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0", local: "workspace:*" } }),
+      "yarn.lock": "__metadata:\n  version: 6\n"
+    });
+    expect(unsupportedYarn.dependencies.exact).toEqual([]);
+    expect(unsupportedYarn.dependencies.unresolved).toEqual([{ ecosystem: "NPM", name: "demo", requirement: "^1.0.0", sourcePath: "yarn.lock", manifestPath: "package.json", workspacePath: "." }]);
+    expect(unsupportedYarn.coverage.limitations).toContain("dependency_lock_unsupported:yarn.lock");
+
+    const ambiguous = await realGithubEvidence([
+      { path: "packages/app/package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "packages/package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "packages/app/package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }),
+      "package-lock.json": JSON.stringify({ packages: { "node_modules/demo": { version: "1.0.0" } } }),
+      "packages/package-lock.json": JSON.stringify({ packages: { "node_modules/demo": { version: "2.0.0" } } })
+    });
+    expect(ambiguous.dependencies.exact).toEqual([]);
+    expect(ambiguous.coverage.limitations).toContain("dependency_lock_association_ambiguous:packages/app/package.json");
+
+    const malformed = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }), "package-lock.json": "{not-json" });
+    expect(malformed.dependencies.exact).toEqual([]);
+    expect(malformed.dependencies.unresolved[0]).toMatchObject({ ecosystem: "NPM", name: "demo" });
+
+    const local = await realGithubEvidence([{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }], {
+      "package.json": JSON.stringify({ dependencies: { local: "workspace:*", linked: "link:../linked", filed: "file:../filed" } })
+    });
+    expect(local.dependencies.exact).toEqual([]);
+    expect(local.dependencies.unresolved).toEqual([]);
+  });
+
+  test("resolves a valid lockfile above the security budget through GitHub raw media within the dependency budget", async () => {
+    const lock = JSON.stringify({ lockfileVersion: 3, metadata: "x".repeat(1_200_000), packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.9.0" } } });
+    const rawAccepts: string[] = [];
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: lock.length }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }), "package-lock.json": lock }, false, rawAccepts);
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "NPM", name: "demo", version: "1.9.0", sourcePath: "package-lock.json", manifestPath: "package.json", workspacePath: "." }]);
+    expect(rawAccepts).toContain("application/vnd.github.raw+json");
+    expect(evidence.securityFiles.find(file => file.path === "package-lock.json")?.status).toBe("oversized");
+    expect(evidence.coverage.limitations.some(item => item.startsWith("dependency_lock_oversized"))).toBe(false);
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+  });
+
+  test("fails closed when lock declarations or selectors do not bind to the current manifest", async () => {
+    const staleNpm = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "package-lock.json": JSON.stringify({ packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.9.0" } } })
+    });
+    expect(staleNpm.dependencies.exact).toEqual([]);
+    expect(staleNpm.dependencies.unresolved[0]).toMatchObject({ ecosystem: "NPM", name: "demo", requirement: "^2.0.0" });
+
+    const missingNpmMetadata = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "node_modules/demo": { version: "1.9.0" } } })
+    });
+    expect(missingNpmMetadata.dependencies.exact).toEqual([]);
+
+    const staleBun = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "bun.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "bun.lock": JSON.stringify({ lockfileVersion: 1, workspaces: { "": { dependencies: { demo: "^1.0.0" } } }, packages: { demo: ["demo@1.9.0", "", {}, "sha512-demo"] } })
+    });
+    expect(staleBun.dependencies.exact).toEqual([]);
+
+    const missingBunMetadata = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "bun.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "bun.lock": JSON.stringify({ lockfileVersion: 1, packages: { demo: ["demo@1.9.0", "", {}, "sha512-demo"] } })
+    });
+    expect(missingBunMetadata.dependencies.exact).toEqual([]);
+
+    const stalePnpm = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "pnpm-lock.yaml", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2" } }),
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      demo:\n        specifier: ^1\n        version: 1.9.0\npackages:\n  demo@1.9.0: {}\nsnapshots:\n  demo@1.9.0: {}\n"
+    });
+    expect(stalePnpm.dependencies.exact).toEqual([]);
+
+    const wrongYarn = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "yarn.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^2.0.0" } }),
+      "yarn.lock": "# yarn lockfile v1\n\"demo@^1.0.0\":\n  version \"1.9.0\"\n"
+    });
+    expect(wrongYarn.dependencies.exact).toEqual([]);
+    expect(wrongYarn.dependencies.unresolved[0]).toMatchObject({ name: "demo" });
+  });
+
+  test("requires Cargo direct edges and preserves actual renamed crate identity", async () => {
+    const transitiveOnly = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n",
+      "Cargo.lock": "version = 3\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+    });
+    expect(transitiveOnly.dependencies.exact).toEqual([]);
+    expect(transitiveOnly.dependencies.unresolved[0]).toMatchObject({ ecosystem: "CARGO", name: "serde" });
+
+    const renamed = await realGithubEvidence([
+      { path: "Cargo.toml", type: "blob", sha: packageBlob, size: 100 },
+      { path: "Cargo.lock", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "Cargo.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nserde_alias = { package = \"serde\", version = \"1\" }\n",
+      "Cargo.lock": "version = 3\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"serde\"]\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n"
+    });
+    expect(renamed.dependencies.exact).toEqual([{ ecosystem: "CARGO", name: "serde", version: "1.0.219", sourcePath: "Cargo.lock", manifestPath: "Cargo.toml", workspacePath: "." }]);
+  });
+
+  test("excludes non-registry NPM specifiers and reports unsupported requirements explicitly", async () => {
+    const evidence = await realGithubEvidence([{ path: "package.json", type: "blob", sha: packageBlob, size: 100 }], {
+      "package.json": JSON.stringify({ dependencies: {
+        local: "workspace:*",
+        linked: "portal:../linked",
+        gitDep: "git+https://github.com/acme/gitDep.git",
+        remote: "https://example.com/remote.tgz",
+        alias: "npm:real-package@1.2.3",
+        githubShort: "owner/repo#main"
+      } })
+    });
+    expect(evidence.dependencies.exact).toEqual([]);
+    expect(evidence.dependencies.unresolved.map(item => item.name).sort()).toEqual(["alias", "gitDep", "githubShort", "remote"]);
+    expect(evidence.coverage.limitations).toEqual(expect.arrayContaining([
+      "dependency_specifier_unsupported:package.json:alias",
+      "dependency_specifier_unsupported:package.json:gitDep",
+      "dependency_specifier_unsupported:package.json:githubShort",
+      "dependency_specifier_unsupported:package.json:remote"
+    ]));
+    expect(evidence.dependencyResolution?.applicableExternalDependencyCount).toBe(evidence.dependencies.exact.length + evidence.dependencies.unresolved.length);
+  });
+
+  test("resolves exact requirements variants as PyPI coordinates", async () => {
+    const evidence = await realGithubEvidence([{ path: "requirements-prod.txt", type: "blob", sha: packageBlob, size: 100 }], { "requirements-prod.txt": "requests==2.0.0\n" });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(evidence.dependencyResolution?.unsupportedEcosystems).toEqual([]);
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.0.0", sourcePath: "requirements-prod.txt", manifestPath: "requirements-prod.txt", workspacePath: "." }]);
+  });
+
+  test("bounds dependency files above the 2 MiB budget and keeps metadata counts consistent when lock content is unavailable", async () => {
+    const oversizedLock = "x".repeat(2 * 1024 * 1024 + 1);
+    const oversized = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: oversizedLock.length }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }), "package-lock.json": oversizedLock });
+    expect(oversized.dependencies.exact).toEqual([]);
+    expect(oversized.coverage.limitations).toContain("dependency_file_oversized:package-lock.json");
+    expect(oversized.dependencyResolution?.applicableExternalDependencyCount).toBe(oversized.dependencies.exact.length + oversized.dependencies.unresolved.length);
+
+    const unavailable = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], { "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }) });
+    expect(unavailable.dependencies.exact).toEqual([]);
+    expect(unavailable.dependencies.unresolved).toHaveLength(1);
+    expect(unavailable.dependencyResolution?.applicableExternalDependencyCount).toBe(unavailable.dependencies.exact.length + unavailable.dependencies.unresolved.length);
+  });
+
+  test("keeps partial-tree exact subsets unknown and attributes mixed supported/unsupported execution", async () => {
+    const partialEvidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }),
+      "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.2.0" } } })
+    }, true);
+    expect(partialEvidence.dependencies.exact).toHaveLength(1);
+    const partialAssessment = await repositoryOmni(partialEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(partialAssessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+
+    const mixedEvidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "go.mod", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { demo: "^1.0.0" } }),
+      "package-lock.json": JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { demo: "^1.0.0" } }, "node_modules/demo": { version: "1.2.0" } } }),
+      "go.mod": "module example.com/demo\n"
+    });
+    const mixedAssessment = await repositoryOmni(mixedEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(mixedAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+  });
+
+  test("propagates mixed real dependency resolution uncertainty to downstream sources", async () => {
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: { resolved: "^1.0.0", unresolved: "^2.0.0" } }, "node_modules/resolved": { version: "1.2.3" } } });
+    const evidence = await realGithubEvidence([
+      { path: "package.json", type: "blob", sha: packageBlob, size: 100 },
+      { path: "package-lock.json", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "package.json": JSON.stringify({ dependencies: { resolved: "^1.0.0", unresolved: "^2.0.0" } }),
+      "package-lock.json": lock
+    });
+    const depsDevCalls: string[] = [];
+    const threatIntelCalls: string[] = [];
+    const depsDev = fakeDepsDev(coordinate => { depsDevCalls.push(coordinate.name); });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async coordinate => {
+      threatIntelCalls.push(coordinate.name);
+      return { checked: true, findings: [] };
+    }), new NoopAssessmentJournal(), staticScorecard, undefined, depsDev).repositoryRisk("acme", "demo");
+
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "deps.dev Provenance", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(depsDevCalls).toEqual(["resolved"]);
+    expect(threatIntelCalls).toEqual(["resolved"]);
+  });
+
+  describe("Phase 3.5 exact PyPI and Go resolution", () => {
+    test("resolves exact requirements pins, extras, hashes, and deterministic PyPI names", () => {
+      const result = resolveDependencies({
+        "requirements-prod.txt": [
+          "Requests==2.32.5 --hash=sha256:abc",
+          "requests==2.32.5",
+          "requests[socks]==2.32.5",
+          "requests_toolbelt==1.1.0",
+          "requests-toolbelt==1.1.0"
+        ].join("\n")
+      });
+      expect(result.exact.map(item => item.name)).toEqual(["requests", "requests", "requests", "requests-toolbelt", "requests-toolbelt"]);
+      expect(result.exact.every(item => item.ecosystem === "PYPI" && item.sourcePath === "requirements-prod.txt")).toBe(true);
+      expect(result.unresolved).toEqual([]);
+      expect(result.metadata.unsupportedEcosystems).toEqual([]);
+      expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
+    });
+
+    test("fails closed for Python ranges, wildcards, markers, VCS, URLs, and excludes local inputs", () => {
+      const result = resolveDependencies({
+        "requirements.txt": [
+          "requests>=2",
+          "requests==2.*",
+          "requests==2.32.5; python_version >= '3.11'",
+          "git+https://github.com/acme/demo.git#egg=demo",
+          "https://example.com/demo.whl",
+          "owner/demo",
+          "./local-package",
+          "-e ./editable-package"
+        ].join("\n")
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved.map(item => item.requirement)).toEqual(expect.arrayContaining([
+        "requests>=2",
+        "requests==2.*",
+        "requests==2.32.5; python_version >= '3.11'",
+        "git+https://github.com/acme/demo.git#egg=demo",
+        "https://example.com/demo.whl",
+        "owner/demo"
+      ]));
+      expect(result.unresolved.some(item => item.name.includes("local"))).toBe(false);
+      expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
+    });
+
+    test("handles every requirements filename variant and requirement directives without inventing entries", () => {
+      const result = resolveDependencies({
+        "requirements-prod.txt": "requests==2.32.5\n-r requirements-base.txt\n",
+        "requirements-base.txt": "urllib3==2.5.0\n--requirement requirements-extra.txt\n",
+        "requirements-extra.txt": "idna==3.10\n"
+      });
+      expect(result.exact.map(item => item.name)).toEqual(["urllib3", "idna", "requests"]);
+      expect(result.metadata.supportedManifestCount).toBe(3);
+      expect(result.metadata.unsupportedEcosystems).toEqual([]);
+    });
+
+    test("keeps requirements exactness tied to public PyPI source directives", () => {
+      const publicIndex = resolveDependencies({ "requirements.txt": "--index-url https://pypi.org/simple/\nrequests==2.32.5\n" });
+      expect(publicIndex.exact).toHaveLength(1);
+      const privateIndex = resolveDependencies({ "requirements.txt": "--index-url https://private.example/simple\ninternal-agent==1.2.3\n" });
+      expect(privateIndex.exact).toEqual([]);
+      expect(privateIndex.unresolved).toHaveLength(1);
+      const extraIndex = resolveDependencies({ "requirements.txt": "--extra-index-url https://private.example/simple\nrequests==2.32.5\n" });
+      expect(extraIndex.exact).toEqual([]);
+      expect(extraIndex.unresolved).toHaveLength(1);
+      const noIndex = resolveDependencies({ "requirements.txt": "--no-index\nrequests==2.32.5\n" });
+      expect(noIndex.exact).toEqual([]);
+      expect(noIndex.unresolved).toHaveLength(1);
+    });
+
+    test("binds uv.lock to the project package and rejects stale or ambiguous lock evidence", () => {
+      const base = {
+        "pyproject.toml": `[project]
+name = "demo"
+dependencies = ["requests>=2,<3"]
+`,
+        "uv.lock": `version = 1
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "requests" }]
+[package.metadata]
+requires-dist = [{ name = "requests", specifier = ">=2,<3" }]
+[[package]]
+name = "requests"
+version = "2.32.5"
+source = { registry = "https://pypi.org/simple" }
+`
+      };
+      const resolved = resolveDependencies(base);
+      expect(resolved.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.32.5", sourcePath: "uv.lock", manifestPath: "pyproject.toml", workspacePath: "." }]);
+
+      const stale = resolveDependencies({ ...base, "uv.lock": base["uv.lock"].replace(">=2,<3", ">=1,<2") });
+      expect(stale.exact).toEqual([]);
+      expect(stale.unresolved).toHaveLength(1);
+
+      const ambiguous = resolveDependencies({ ...base, "uv.lock": `${base["uv.lock"]}\n[[package]]\nname = \\\"requests\\\"\nversion = \\\"2.31.0\\\"\nsource = { registry = \\\"https://pypi.org/simple\\\" }\n` });
+      expect(ambiguous.exact).toEqual([]);
+      expect(ambiguous.unresolved).toHaveLength(1);
+
+      const privateRegistry = resolveDependencies({ ...base, "pyproject.toml": `[project]
+name = "demo"
+dependencies = ["requests>=2,<3"]
+[tool.uv.sources]
+requests = { index = "private" }
+` });
+      expect(privateRegistry.exact).toEqual([]);
+      expect(privateRegistry.unresolved).toHaveLength(1);
+      const privateLockRegistry = resolveDependencies({ ...base, "uv.lock": base["uv.lock"].replace("https://pypi.org/simple", "https://private.example/simple") });
+      expect(privateLockRegistry.exact).toEqual([]);
+      expect(privateLockRegistry.unresolved).toHaveLength(1);
+    });
+
+    test("excludes local uv sources and refuses unrelated workspace lock association", () => {
+      const local = resolveDependencies({
+        "pyproject.toml": `[project]
+name = "demo"
+dependencies = ["localpkg"]
+[tool.uv.sources]
+localpkg = { path = "../localpkg" }
+`,
+        "uv.lock": `version = 1
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "localpkg" }]
+[[package]]
+name = "localpkg"
+version = "1.0.0"
+source = { editable = "../localpkg" }
+`
+      });
+      expect(local.exact).toEqual([]);
+      expect(local.unresolved).toEqual([]);
+
+      const unrelated = resolveDependencies({
+        "packages/app/pyproject.toml": `[project]
+name = "app"
+dependencies = ["requests>=2"]
+`,
+        "uv.lock": `version = 1
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { editable = "other" }
+dependencies = [{ name = "requests" }]
+[[package]]
+name = "requests"
+version = "2.32.5"
+source = { registry = "https://pypi.org/simple" }
+`
+      });
+      expect(unrelated.exact).toEqual([]);
+      expect(unrelated.unresolved).toHaveLength(1);
+    });
+
+    test("resolves Poetry lock packages with PEP 440-compatible Poetry constraints", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+python = ">=3.11"
+requests = "^2.32"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.32.5"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "c414ef5a86cc0899a8f397e9f8056be3d40fa729cc9299a60e197abda78cb797"
+`
+      });
+      expect(result.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.32.5", sourcePath: "poetry.lock", manifestPath: "pyproject.toml", workspacePath: "." }]);
+      const stale = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+requests = "^2.32"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "1.0.0"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "5130202313955b22eb79e9efa647984009e7aeb22160d3ca06cd0ff221b28e32"
+`
+      });
+      expect(stale.exact).toEqual([]);
+      expect(stale.unresolved).toHaveLength(1);
+      const staleCompatible = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+requests = "^2.32"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.32.4"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "190910cb2d3b8327d646e74d364df671151ed8fa2ced09cc7880acc0ba468048"
+`
+      });
+      expect(staleCompatible.exact).toEqual([]);
+      expect(staleCompatible.unresolved).toHaveLength(1);
+    });
+
+    test("resolves exact Poetry version declarations without treating them as project names", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+urllib3 = "2.5.0"
+`,
+        "poetry.lock": `[[package]]
+name = "urllib3"
+version = "2.5.0"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "2edee442e8a74b8940655e94bb761a8cb41e225846d784e6eb6a94034d9f29bc"
+`
+      });
+      expect(result.exact).toEqual([{ ecosystem: "PYPI", name: "urllib3", version: "2.5.0", sourcePath: "poetry.lock", manifestPath: "pyproject.toml", workspacePath: "." }]);
+    });
+
+    test("rejects ambiguous and non-registry Poetry dependencies", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+requests = "^2"
+local = { path = "../local" }
+gitdep = { git = "https://github.com/acme/gitdep.git" }
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.31.0"
+[[package]]
+name = "requests"
+version = "2.32.5"
+`
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved.map(item => item.name)).toEqual(["gitdep", "requests"]);
+      expect(result.unresolved.some(item => item.name === "local")).toBe(false);
+    });
+
+    test("rejects Poetry packages when a custom primary source disables implicit PyPI", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[[tool.poetry.source]]
+name = "private"
+url = "https://private.example/simple/"
+priority = "primary"
+[tool.poetry.dependencies]
+requests = "^2"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.32.5"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "53310bf86aa65a01c56dc12ac8d1a7df7574e060fd840e9bfbe9471765dd2c64"
+`
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved).toHaveLength(1);
+    });
+
+    test("keeps bare Go require minimums unresolved without selected-version proof", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/demo\ngo 1.23\nrequire example.com/one v1.2.3\nrequire (\n example.com/two v0.0.0-20250101112233-abcdefabcdef\n)"
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved.map(item => item.name)).toEqual(["example.com/one", "example.com/two"]);
+      expect(result.metadata.unsupportedEcosystems).toEqual([]);
+      expect(result.metadata.applicableExternalDependencyCount).toBe(2);
+    });
+
+    test("resolves selected Go versions from a consistent vendor/modules.txt snapshot", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/demo\ngo 1.23\nrequire example.com/one v1.2.3\nrequire example.com/two v0.0.0-20250101112233-abcdefabcdef\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\n## explicit\nexample.com/one\n# example.com/two v0.0.0-20250101112233-abcdefabcdef\n## explicit\nexample.com/two\n"
+      });
+      expect(result.exact).toEqual([
+        { ecosystem: "GO", name: "example.com/one", version: "v1.2.3", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." },
+        { ecosystem: "GO", name: "example.com/two", version: "v0.0.0-20250101112233-abcdefabcdef", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }
+      ]);
+      expect(result.unresolved).toEqual([]);
+      const inconsistent = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\n",
+        "vendor/modules.txt": "# example.com/one v1.1.0\nexample.com/one\n"
+      });
+      expect(inconsistent.exact).toEqual([]);
+      expect(inconsistent.unresolved).toHaveLength(1);
+      const higher = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\n",
+        "vendor/modules.txt": "# example.com/one v1.4.0\n## explicit\nexample.com/one\n"
+      });
+      expect(higher.exact).toEqual([]);
+      expect(higher.unresolved).toHaveLength(1);
+      const missingExplicit = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\nexample.com/one\n"
+      });
+      expect(missingExplicit.exact).toEqual([]);
+      expect(missingExplicit.unresolved).toHaveLength(1);
+      const markerBelongsElsewhere = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\nrequire example.com/two v1.0.0\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\nexample.com/one\n# example.com/two v1.0.0\n## explicit\nexample.com/two\n"
+      });
+      expect(markerBelongsElsewhere.exact).toEqual([{ ecosystem: "GO", name: "example.com/two", version: "v1.0.0", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }]);
+      expect(markerBelongsElsewhere.unresolved).toHaveLength(1);
+      const oneExplicit = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\nrequire example.com/two v1.0.0\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\n## explicit\nexample.com/one\n# example.com/two v1.0.0\nexample.com/two\n"
+      });
+      expect(oneExplicit.exact).toEqual([{ ecosystem: "GO", name: "example.com/one", version: "v1.2.3", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }]);
+      expect(oneExplicit.unresolved).toHaveLength(1);
+      expect(oneExplicit.metadata.applicableExternalDependencyCount).toBe(oneExplicit.exact.length + oneExplicit.unresolved.length);
+      const excluded = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\nexclude example.com/one v1.4.0\n",
+        "vendor/modules.txt": "# example.com/one v1.4.0\nexample.com/one\n"
+      });
+      expect(excluded.exact).toEqual([]);
+      expect(excluded.unresolved).toHaveLength(1);
+    });
+
+    test("attributes multiple go.mod manifests independently and ignores go.sum as a source of coordinates", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/root\nrequire example.com/rootdep v1.0.0\n",
+        "services/api/go.mod": "module example.com/api\nrequire example.com/apidep v1.2.3\n",
+        "vendor/modules.txt": "# example.com/rootdep v1.0.0\n## explicit\nexample.com/rootdep\n",
+        "services/api/vendor/modules.txt": "# example.com/apidep v1.2.3\n## explicit\nexample.com/apidep\n",
+        "go.sum": "example.com/not-a-dependency v9.9.9 h1:ignored\n"
+      });
+      expect(result.exact.map(item => [item.manifestPath, item.name, item.version])).toEqual([["go.mod", "example.com/rootdep", "v1.0.0"], ["services/api/go.mod", "example.com/apidep", "v1.2.3"]]);
+      expect(result.exact.some(item => item.name.includes("not-a-dependency"))).toBe(false);
+      const sumOnly = resolveDependencies({ "go.sum": "example.com/not-a-dependency v9.9.9 h1:ignored\n" });
+      expect(sumOnly.exact).toEqual([]);
+      expect(sumOnly.unresolved).toEqual([]);
+    });
+
+    test("handles local and remote Go replacements without emitting the old identity", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire (\n example.com/local v1.0.0\n example.com/old v1.1.0\n)\nreplace example.com/local => ../local\nreplace example.com/old => example.com/new v1.2.3\n",
+        "vendor/modules.txt": "# example.com/local v1.0.0 => ../local\n## explicit\nexample.com/local\n# example.com/old v1.1.0 => example.com/new v1.2.3\n## explicit\nexample.com/new\n"
+      });
+      expect(result.exact).toEqual([{ ecosystem: "GO", name: "example.com/new", version: "v1.2.3", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }]);
+      expect(result.unresolved).toEqual([]);
+      const mismatchedReplacement = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/old v1.1.0\nreplace example.com/old => example.com/new v1.2.3\n",
+        "vendor/modules.txt": "# example.com/old v1.1.0 => example.com/new v1.2.4\n## explicit\nexample.com/new\n"
+      });
+      expect(mismatchedReplacement.exact).toEqual([]);
+      expect(mismatchedReplacement.unresolved).toHaveLength(1);
+    });
+
+    test("fails closed on malformed Go replacements and invalid module versions", () => {
+      const malformed = resolveDependencies({ "go.mod": "module example.com/demo\nrequire example.com/demo v1.0.0\nreplace example.com/demo => example.com/new\n" });
+      expect(malformed.exact).toEqual([]);
+      expect(malformed.unresolved[0]).toMatchObject({ ecosystem: "GO", name: "example.com/demo", requirement: "v1.0.0" });
+      const invalid = resolveDependencies({ "go.mod": "module example.com/demo\nrequire example.com/demo 1.0.0\n" });
+      expect(invalid.exact).toEqual([]);
+      expect(invalid.unresolved).toHaveLength(1);
+    });
+
+    test("keeps malformed manifests counted when their external dependency is identifiable", () => {
+      const result = resolveDependencies({ "go.mod": "module example.com/demo\nrequire example.com/demo v1.0.0\nreplace example.com/demo => example.com/new\n" });
+      expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
+      expect(result.unresolved).toHaveLength(1);
+    });
+  });
+
+  test("maps a real complete PyPI and Go repository to observed dependency resolution", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "requirements-prod.txt", type: "blob", sha: packageBlob, size: 100 },
+      { path: "go.mod", type: "blob", sha: packageBlob, size: 100 },
+      { path: "vendor/modules.txt", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "requirements-prod.txt": "requests==2.32.5\n",
+      "go.mod": "module example.com/demo\nrequire example.com/demo v1.2.3\n",
+      "vendor/modules.txt": "# example.com/demo v1.2.3\n## explicit\nexample.com/demo\n"
+    });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(evidence.dependencies.exact).toHaveLength(2);
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OSV Dependency Vulnerabilities", execution: "QUERIED", status: "ABSENT", weight: 1 });
+  });
+
+  test("does not send a bare Go minimum requirement to OSV", async () => {
+    const evidence = await realGithubEvidence([{ path: "go.mod", type: "blob", sha: packageBlob, size: 100 }], {
+      "go.mod": "module example.com/demo\nrequire example.com/demo v1.0.0\n"
+    });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(evidence.dependencies.exact).toEqual([]);
+    expect(evidence.dependencies.unresolved).toHaveLength(1);
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OSV Dependency Vulnerabilities", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+
+  });
+
+  test("keeps mixed exact and unresolved PyPI/Go coverage unknown without false ABSENT", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "requirements.txt", type: "blob", sha: packageBlob, size: 100 },
+      { path: "go.mod", type: "blob", sha: packageBlob, size: 100 },
+      { path: "vendor/modules.txt", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "requirements.txt": "requests==2.32.5\n",
+      "go.mod": "module example.com/demo\nrequire example.com/demo v1.2.3\n",
+      "vendor/modules.txt": "# example.com/demo v1.2.4\n## explicit\nexample.com/demo\n"
+    });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(evidence.dependencies.exact).toHaveLength(1);
+    expect(evidence.dependencies.unresolved).toHaveLength(1);
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OSV Dependency Vulnerabilities", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("keeps repository resolution bounds unchanged for new ecosystems", () => {
+    const files = Object.fromEntries(Array.from({ length: 128 }, (_, index) => [`requirements-${index}.txt`, "requests==2.32.5\n"]));
+    const result = resolveDependencies(files);
+    expect(result.exact).toHaveLength(128);
+    expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
+  });
+
+  test("maps a real GitHub collection failure to unavailable", async () => {
+    const base = "https://api.github.com/repos/acme/demo";
+    const http = {
+      async request(url: string | URL) {
+        const target = String(url);
+        if (target === base) return response({ full_name: "acme/demo", default_branch: "main" });
+        if (target === `${base}/commits/main`) return response({ sha: commitSha, commit: { tree: { sha: treeSha } } });
+        return response({ message: "upstream unavailable" }, 503);
+      }
+    };
+    const provider = new GitHubRepositoryProvider(http as never);
+    const identity = await provider.resolve("acme", "demo");
+    const github = {
+      async resolve() { return identity; },
+      async collectResolved() { return provider.collectResolved("acme", "demo", identity); }
+    };
+    const assessment = await repositoryOmni(repositoryEvidenceWith([]), threatIntelStore(async () => ({ checked: true, findings: [] })), new NoopAssessmentJournal(), staticScorecard, github).repositoryRisk("acme", "demo");
+    expect(assessment.coverage?.sources).toContainEqual({ source: "GitHub Repository Evidence", execution: "QUERIED", status: "UNAVAILABLE", weight: 1 });
+    expect(assessment.sourceErrors).toContain("GitHub: github_http_503");
   });
 });
 

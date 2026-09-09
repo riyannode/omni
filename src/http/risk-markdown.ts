@@ -41,6 +41,7 @@ function renderRiskSummary(result: Record<string, unknown>, lines: string[]): vo
   lines.push("# OMNI Risk Assessment", "");
   if (subject) lines.push(`Subject: ${inline(subject.id)}`, `Subject Type: ${inline(subject.type)}`);
   if (result.policyVersion !== undefined) lines.push(`Policy Version: ${inline(result.policyVersion)}`);
+  if (result.scoreStatus !== undefined) lines.push(`Score Status: ${inline(result.scoreStatus)}`);
   if (result.recommendation !== undefined) lines.push(`Recommendation: ${inline(result.recommendation)}`);
   if (result.riskScore !== undefined) lines.push(`Risk Score: ${inline(result.riskScore)} / 100`);
   if (result.evidenceCoverage !== undefined) lines.push(`Evidence Coverage: ${coverage(result.evidenceCoverage)}`);

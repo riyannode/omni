@@ -42,6 +42,68 @@ describe("RiskEngine", () => {
     expect(result.recommendation).toBe("proceed_with_caution");
   });
 
+  test("does not downgrade observed do_not_proceed risk when repository coverage is partial", () => {
+    const result = engine.assess({
+      subject: { type: "repository", id: "github.com/a/b" },
+      scorecard: 0,
+      repositoryEvidence: {
+        target: { repository: "github.com/a/b" },
+        securityFiles: [],
+        dependencies: { exact: [], unresolved: [], resolvedGraph: { packagesChecked: 0, nodesObserved: 0, errors: [] } },
+        dependencyObservations: [],
+        dependencyVulnerabilities: {
+          status: "UNKNOWN",
+          packagesInspected: [],
+          findings: [{ coordinate: { ecosystem: "NPM", name: "demo", version: "1.0.0", sourcePath: "package-lock.json", manifestPath: "package.json", workspacePath: "." }, vulnerability: { id: "CVE-2026-0001", severity: "critical", knownExploited: true, aliases: [] }, sources: ["CISA KEV", "OSV"] }],
+          maliciousPackageObservations: [],
+          summary: { status: "VALID", findingsObserved: 1, countsBySeverity: { unknown: 0, low: 0, medium: 0, high: 0, critical: 1 }, knownExploitedObserved: 1, maliciousPackageObservationsObserved: 0 },
+          cisaKev: { status: "CHECKED", correlatableCveIds: ["CVE-2026-0001"], matchedCveIds: ["CVE-2026-0001"] },
+          errors: [], limitations: []
+        },
+        dependencyThreatIntel: { status: "NOT_CHECKED", packagesInspected: [], findings: [], summary: { status: "NOT_CHECKED", findingsObserved: 0, countsBySeverity: { low: 0, medium: 0, high: 0, critical: 0 } }, errors: [], limitations: [] },
+        coverage: { status: "partial", treeEntriesInspected: 0, filesInspected: 0, bytesInspected: 0, limitations: [] },
+        sourceErrors: []
+      },
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNKNOWN", weight: 1 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "Threat Intelligence", execution: "QUERIED", status: "OBSERVED", weight: 1 }
+        ]
+      },
+      evidence: []
+    });
+
+    expect(result.scoreStatus).toBe("measured_partial");
+    expect(result.riskScore).toBeGreaterThanOrEqual(80);
+    expect(result.recommendation).toBe("do_not_proceed");
+  });
+
+  test("gates low observed repository risk with partial coverage to manual review", () => {
+    const result = engine.assess({
+      subject: { type: "repository", id: "github.com/a/b" },
+      scorecard: 9.5,
+      coverage: {
+        modelVersion: "repository-coverage-v1",
+        sources: [
+          { source: "GitHub Repository Evidence", execution: "QUERIED", status: "OBSERVED", weight: 1 },
+          { source: "OpenSSF Scorecard", execution: "QUERIED", status: "UNKNOWN", weight: 1 },
+          { source: "Dependency Resolution", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "deps.dev Provenance", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 },
+          { source: "Threat Intelligence", execution: "NOT_QUERIED", status: "NOT_APPLICABLE", weight: 1 }
+        ]
+      },
+      evidence: []
+    });
+
+    expect(result.scoreStatus).toBe("measured_partial");
+    expect(result.riskScore).toBe(3);
+    expect(result.recommendation).toBe("manual_review");
+  });
+
   test("returns at least proceed_with_caution for an unlisted endpoint", () => {
     const result = engine.assess({
       subject: { type: "x402_endpoint", id: "https://example.com/paid" },
@@ -53,6 +115,7 @@ describe("RiskEngine", () => {
     });
     expect(result.recommendation).toBe("proceed_with_caution");
   });
+
 
   test("reports full evidence coverage for a successful repository assessment", () => {
     const result = engine.assess({
