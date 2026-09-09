@@ -95,6 +95,8 @@ export type GeneratedRequest = {
   curl: string;
 };
 
+export type RequestRepresentation = "application/json" | "text/markdown";
+
 function trim(value: string): string {
   return value.trim();
 }
@@ -103,22 +105,22 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function makeGetRequest(url: string): GeneratedRequest {
+function makeGetRequest(url: string, representation: RequestRepresentation): GeneratedRequest {
   return {
     method: "GET",
     url,
-    display: `GET ${url}\nAccept: application/json`,
-    curl: `curl -sS -X GET ${shellQuote(url)} -H 'Accept: application/json'`,
+    display: `GET ${url}\nAccept: ${representation}`,
+    curl: `curl -sS -X GET ${shellQuote(url)} -H 'Accept: ${representation}'`,
   };
 }
 
-function makePostRequest(url: string, body: unknown): GeneratedRequest {
+function makePostRequest(url: string, body: unknown, representation: RequestRepresentation): GeneratedRequest {
   const json = JSON.stringify(body, null, 2);
   return {
     method: "POST",
     url,
-    display: `POST ${url}\nAccept: application/json\nContent-Type: application/json\n\n${json}`,
-    curl: `curl -sS -X POST ${shellQuote(url)} -H 'Accept: application/json' -H 'Content-Type: application/json' --data-raw ${shellQuote(JSON.stringify(body))}`,
+    display: `POST ${url}\nAccept: ${representation}\nContent-Type: application/json\n\n${json}`,
+    curl: `curl -sS -X POST ${shellQuote(url)} -H 'Accept: ${representation}' -H 'Content-Type: application/json' --data-raw ${shellQuote(JSON.stringify(body))}`,
   };
 }
 
@@ -175,14 +177,14 @@ export function validateInspection(input: InspectionInput): string | null {
   return null;
 }
 
-export function buildRequest(input: InspectionInput): GeneratedRequest {
+export function buildRequest(input: InspectionInput, representation: RequestRepresentation = "application/json"): GeneratedRequest {
   if (input.endpointId === "package") {
     const query = new URLSearchParams({
       ecosystem: trim(input.values.ecosystem),
       name: trim(input.values.name),
       version: trim(input.values.version),
     });
-    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/package/risk?${query.toString()}`);
+    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/package/risk?${query.toString()}`, representation);
   }
 
   if (input.endpointId === "repo") {
@@ -190,7 +192,7 @@ export function buildRequest(input: InspectionInput): GeneratedRequest {
       owner: trim(input.values.owner),
       repo: trim(input.values.repo),
     });
-    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/repo/risk?${query.toString()}`);
+    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/repo/risk?${query.toString()}`, representation);
   }
 
   if (input.endpointId === "dependencies") {
@@ -201,11 +203,11 @@ export function buildRequest(input: InspectionInput): GeneratedRequest {
         version: trim(version),
       })),
     };
-    return makePostRequest(`${OMNI_API_BASE_URL}/v1/dependencies/risk`, body);
+    return makePostRequest(`${OMNI_API_BASE_URL}/v1/dependencies/risk`, body, representation);
   }
 
   const query = new URLSearchParams({ url: trim(input.values.url) });
-  return makeGetRequest(`${OMNI_API_BASE_URL}/v1/x402/endpoint/preflight?${query.toString()}`);
+  return makeGetRequest(`${OMNI_API_BASE_URL}/v1/x402/endpoint/preflight?${query.toString()}`, representation);
 }
 
 function targetDescription(input: InspectionInput): string {
@@ -246,7 +248,7 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
   const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-testnet"];
-  const request = buildRequest(input);
+  const request = buildRequest(input, "text/markdown");
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
@@ -268,11 +270,9 @@ Never expose OTP, wallet, signing, or payment authorization secrets.
 ${preflightRule}
 
 OUTPUT
-After HTTP 200:
-1. Choose one representation for the task: application/json for machine decisions or text/markdown for a human summary.
-2. Request only that representation. Do not expect an artifact or a second copy of the result.
-3. Use JSON fields for decisions; use Markdown only for human-readable reporting.
-Missing content: report and stop; no more paid requests.`;
+After HTTP 200, show the OMNI Markdown Report exactly as returned.
+If the Markdown body is missing, report it and stop.
+Do not request another representation or make another paid request.`;
 }
 
 export async function copyText(value: string): Promise<void> {

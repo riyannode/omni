@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AGENT_QUICK_TEST_PROMPT } from "../frontend/src/agent-quick-test.ts";
-import { buildAgentInspectionPrompt, buildRequest, type InspectionInput } from "../frontend/src/agent-inspection-prompt.ts";
+import { API_ENDPOINTS, buildAgentInspectionPrompt, buildRequest, type InspectionInput } from "../frontend/src/agent-inspection-prompt.ts";
 
 const packageInput: InspectionInput = { endpointId: "package", values: { ecosystem: "npm", name: "express", version: "5.2.1" } };
 const genericInputs: readonly InspectionInput[] = [
@@ -12,6 +12,7 @@ const genericInputs: readonly InspectionInput[] = [
 
 describe("agent inspection prompt profiles", () => {
   test("homepage quick test is Arc Testnet only", () => {
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Accept: text/markdown");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("ARC TESTNET ONLY:");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("eip155:5042002");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("never enumerate/use another chain");
@@ -24,6 +25,7 @@ describe("agent inspection prompt profiles", () => {
   test("all API endpoint builders keep generic TESTNET behavior", () => {
     for (const input of genericInputs) {
       const prompt = buildAgentInspectionPrompt(input);
+      expect(prompt).toContain("Accept: text/markdown");
       expect(prompt).toContain("TESTNET only:");
       expect(prompt).toContain("acceptable TESTNET option");
       expect(prompt).toContain("If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not fall back to another chain.");
@@ -105,6 +107,63 @@ describe("agent inspection prompt profiles", () => {
     }
   });
 
+  test("agent prompts preserve every endpoint request and price", () => {
+    const expectedRequests: readonly { input: InspectionInput; request: string; price: string }[] = [
+      {
+        input: packageInput,
+        request: "GET https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1",
+        price: "5000 atomic units / 0.005000 USDC",
+      },
+      {
+        input: genericInputs[1]!,
+        request: "GET https://api.askomni.xyz/v1/repo/risk?owner=expressjs&repo=express",
+        price: "10000 atomic units / 0.010000 USDC",
+      },
+      {
+        input: genericInputs[2]!,
+        request: "POST https://api.askomni.xyz/v1/dependencies/risk",
+        price: "50000 atomic units / 0.050000 USDC",
+      },
+      {
+        input: genericInputs[3]!,
+        request: "GET https://api.askomni.xyz/v1/x402/endpoint/preflight?url=https%3A%2F%2Fexample.com%2Fpaid",
+        price: "10000 atomic units / 0.010000 USDC",
+      },
+    ];
+    expect(expectedRequests).toHaveLength(API_ENDPOINTS.length);
+
+    for (const expected of expectedRequests) {
+      const prompt = buildAgentInspectionPrompt(expected.input);
+      expect(prompt).toContain(expected.request);
+      expect(prompt).toContain(expected.price);
+      expect(prompt).toContain("new URL(challengeResource, originalRequestUrl)");
+      expect(prompt).toContain("same HTTPS origin, pathname, and query names/values");
+      if (expected.input.endpointId === "dependencies") {
+        expect(prompt).toContain("Content-Type: application/json");
+        expect(prompt).toContain('"packages": [');
+        expect(prompt).toContain('"ecosystem": "npm"');
+        expect(prompt).toContain('"name": "express"');
+        expect(prompt).toContain('"version": "5.2.1"');
+      } else {
+        expect(prompt).not.toContain("Content-Type: application/json");
+      }
+    }
+  });
+
+  test("COPY REQUEST remains JSON while agent prompts request Markdown", () => {
+    for (const input of genericInputs) {
+      const request = buildRequest(input);
+      expect(request.display).toContain("Accept: application/json");
+      expect(request.display).not.toContain("Accept: text/markdown");
+      expect(request.curl).toContain("Accept: application/json");
+      expect(request.curl).not.toContain("Accept: text/markdown");
+
+      const prompt = buildAgentInspectionPrompt(input);
+      expect(prompt).toContain("Accept: text/markdown");
+      expect(prompt).not.toContain("Accept: application/json");
+    }
+  });
+
   test("preflight never pays the inspected target", () => {
     const prompt = buildAgentInspectionPrompt({ endpointId: "preflight", values: { url: "https://example.com/paid" } });
     expect(prompt).toContain("OMNI is the service being paid");
@@ -118,25 +177,38 @@ describe("agent inspection prompt profiles", () => {
     expect(request.url).not.toContain("name=circle-fin%2Fx402-batching");
   });
 
-  test("output renders JSON then the human-readable markdown report and stops when content is missing", () => {
+  test("output shows the Markdown report and stops when it is missing", () => {
     const expectedOutput = [
       "OUTPUT",
-      "After HTTP 200:",
-      "1. Choose one representation for the task: application/json for machine decisions or text/markdown for a human summary.",
-      "2. Request only that representation. Do not expect an artifact or a second copy of the result.",
-      "3. Use JSON fields for decisions; use Markdown only for human-readable reporting.",
-      "Missing content: report and stop; no more paid requests.",
+      "After HTTP 200, show the OMNI Markdown Report exactly as returned.",
+      "If the Markdown body is missing, report it and stop.",
+      "Do not request another representation or make another paid request.",
     ].join("\n");
 
     for (const prompt of [AGENT_QUICK_TEST_PROMPT, buildAgentInspectionPrompt(packageInput)]) {
       expect(prompt).toContain(expectedOutput);
       expect(prompt.match(/^OUTPUT$/gm)).toHaveLength(1);
+      expect(prompt.match(/^TASK$/gm)).toHaveLength(1);
+      expect(prompt.match(/^REQUEST$/gm)).toHaveLength(1);
+      expect(prompt.match(/^PAYMENT$/gm)).toHaveLength(1);
     }
   });
 
-  test("copied prompts keep a bounded word count after explicit output expansion", () => {
+  test("agent prompts omit legacy representation and replay instructions", () => {
+    for (const prompt of [AGENT_QUICK_TEST_PROMPT, ...genericInputs.map((input) => buildAgentInspectionPrompt(input))]) {
+      expect(prompt).not.toContain("artifact.content");
+      expect(prompt).not.toContain("Choose one representation");
+      expect(prompt).not.toContain("request JSON then Markdown");
+      expect(prompt).not.toContain("replay for Markdown");
+      expect(prompt).not.toContain("expect an artifact");
+      expect(prompt).not.toContain("second paid request");
+      expect(prompt).not.toContain("second copy of the result");
+    }
+  });
+
+  test("copied prompts stay materially below the previous size", () => {
     const wordCount = (value: string) => value.trim().split(/\s+/).filter(Boolean).length;
-    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBe(219);
-    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBe(222);
+    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBeLessThan(200);
+    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBeLessThan(200);
   });
 });
