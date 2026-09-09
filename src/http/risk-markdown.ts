@@ -122,10 +122,18 @@ function renderLimitations(result: CompactRiskAssessment, lines: string[]): void
   const summary = result.repositorySummary;
   if (summary && summary.dependencies.unresolved > 0) limitations.push(`${summary.dependencies.unresolved} dependencies could not be resolved exactly.`);
   if (summary && ["UNAVAILABLE", "UNKNOWN", "NOT_CHECKED"].includes(summary.threatIntelligence.status)) limitations.push(`Threat-intelligence source ${summary.threatIntelligence.status.toLowerCase()}.`);
-  if (limitations.length === 0) return;
+  const omissions = result.omissions;
+  const omissionLines = [
+    omissions.evidenceDetailsOmitted > 0 ? `${omissions.evidenceDetailsOmitted} evidence details omitted from this public report.` : undefined,
+    omissions.dependencyDetailsOmitted > 0 ? `${omissions.dependencyDetailsOmitted} dependency details omitted from this public report.` : undefined,
+    omissions.sourceErrorsOmitted !== undefined && omissions.sourceErrorsOmitted > 0 ? `${omissions.sourceErrorsOmitted} source errors omitted from this public report.` : undefined,
+    omissions.coverageSourcesOmitted !== undefined && omissions.coverageSourcesOmitted > 0 ? `${omissions.coverageSourcesOmitted} coverage sources omitted from this public report.` : undefined,
+    omissions.paymentOptionsOmitted !== undefined && omissions.paymentOptionsOmitted > 0 ? `${omissions.paymentOptionsOmitted} payment options omitted from this public report.` : undefined
+  ].filter((line): line is string => line !== undefined);
+  if (limitations.length === 0 && omissionLines.length === 0) return;
   lines.push("", "## Limitations", "");
   for (const limitation of [...new Set(limitations)].slice(0, 8)) lines.push(`- ${inline(limitation)}`);
-  if ((result.omissions.sourceErrorsOmitted ?? 0) > 0) lines.push(`- ${inline(result.omissions.sourceErrorsOmitted)} additional source errors omitted from this report.`);
+  for (const omission of omissionLines) lines.push(`- ${inline(omission)}`);
 }
 
 function renderAssessment(result: CompactRiskAssessment): string {
@@ -143,6 +151,8 @@ function renderAssessment(result: CompactRiskAssessment): string {
   lines.push("", "## Why this score", "");
   if (signals.length === 0) lines.push("- No scoring-relevant signals observed.");
   else for (const signal of signals) lines.push(`- ${signal}`);
+  const signalOmitted = (result.omissions.signalsOmitted ?? 0) + Math.max(0, result.signals.length - signals.length);
+  if (signalOmitted > 0) lines.push(`- ${inline(signalOmitted)} scoring signals omitted from this report.`);
 
   if (result.maliciousPackageObservations) {
     lines.push("", "## Malicious Package Observations", "", `- MAL-* observations: ${inline(result.maliciousPackageObservations.observed)}`);
@@ -187,6 +197,12 @@ function renderDependencies(result: Record<string, unknown>): string {
   }
   const omissions = object(result.omissions);
   if (omissions?.packagesOmitted !== undefined) lines.push(`- ${inline(omissions.packagesOmitted)} additional package details omitted.`);
+  if (omissions) {
+    for (const [key, label] of [["evidenceDetailsOmitted", "evidence details"], ["dependencyDetailsOmitted", "dependency details"], ["signalsOmitted", "scoring signals"], ["sourceErrorsOmitted", "source errors"], ["coverageSourcesOmitted", "coverage sources"], ["paymentOptionsOmitted", "payment options"]] as const) {
+      const count = typeof omissions[key] === "number" ? omissions[key] : 0;
+      if (count > 0) lines.push(`- ${inline(count)} ${label} omitted from this report.`);
+    }
+  }
   lines.push("", "## Assessment", "", `Assessed: ${inline(result.assessedAt)}`);
   return lines.join("\n");
 }

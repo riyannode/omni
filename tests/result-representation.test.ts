@@ -132,4 +132,43 @@ describe("compact HTTP representations", () => {
     sendResult(markdownCapture.response, 200, result, "markdown", "repository");
     expect(markdownCapture.state).toEqual({ status: 500, body: { error: "response_representation_too_large", retryable: false } });
   });
+
+  test("reports coverage and payment-option truncation in JSON and Markdown", () => {
+    const result = repositoryResult() as unknown as Record<string, any>;
+    result.coverage.sources = Array.from({ length: 20 }, (_, index) => ({ source: `source-${index}`, execution: "QUERIED", status: "OBSERVED", weight: 1 }));
+    result.subject = { type: "x402_endpoint", id: "https://example.com/paid" };
+    result.preflightContext = {
+      resource: "https://example.com/paid",
+      paymentOptions: Array.from({ length: 10 }, (_, index) => ({ scheme: "exact", network: `network-${index}`, amount: "5000", asset: "USDC", payTo: "0x1111111111111111111111111111111111111111" }))
+    };
+    const compact = compactResultForHttp(result) as Record<string, any>;
+    expect(compact.omissions).toMatchObject({ coverageSourcesOmitted: 4, paymentOptionsOmitted: 2 });
+    expect(compact.preflightContext.paymentOptions).toHaveLength(8);
+    const markdown = renderRiskMarkdown(result);
+    expect(markdown).toContain("4 coverage sources omitted");
+    expect(markdown).toContain("2 payment options omitted");
+  });
+
+  test("preserves omission metadata and MAL IDs when compacted twice", () => {
+    const result = repositoryResult() as unknown as Record<string, any>;
+    result.maliciousPackageObservations = Array.from({ length: 20 }, (_, index) => ({ id: `MAL-${index}`, package: {}, queriedVersion: "1.0.0" }));
+    const once = compactResultForHttp(result) as Record<string, any>;
+    const twice = compactResultForHttp(once) as Record<string, any>;
+    expect(twice.maliciousPackageObservations).toEqual(once.maliciousPackageObservations);
+    expect(twice.omissions).toEqual(once.omissions);
+  });
+
+  test("Markdown discloses evidence, dependency, signal, and package omissions", () => {
+    const markdown = renderRiskMarkdown(repositoryResult());
+    expect(markdown).toContain("40 evidence details omitted");
+    expect(markdown).toContain("45 dependency details omitted");
+    expect(markdown).toContain("`42` scoring signals omitted");
+
+    const dependencyResult = {
+      packages: Array.from({ length: 20 }, (_, index) => ({ ...repositoryResult(), subject: { type: "package", id: `npm:pkg-${index}@1.0.0` } })),
+      summary: { count: 20, worstRiskScore: 60, recommendations: { manual_review: 20 } },
+      assessedAt: "2026-09-10T00:00:00.000Z"
+    };
+    expect(renderRiskMarkdown(dependencyResult)).toContain("`4` additional package details omitted");
+  });
 });

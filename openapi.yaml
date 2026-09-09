@@ -633,9 +633,10 @@ components:
         signalsOmitted: { type: integer, minimum: 0 }
         sourceErrorsOmitted: { type: integer, minimum: 0 }
         packagesOmitted: { type: integer, minimum: 0 }
-    RiskAssessmentResponse:
+        coverageSourcesOmitted: { type: integer, minimum: 0 }
+        paymentOptionsOmitted: { type: integer, minimum: 0 }
+    CompactRiskAssessmentFields:
       type: object
-      unevaluatedProperties: false
       required: [subject, policyVersion, scoreStatus, recommendation, riskScore, evidenceCoverage, dimensions, signals, sourceErrors, omissions, assessedAt, freshness]
       properties:
         subject: { $ref: '#/components/schemas/Subject' }
@@ -676,6 +677,10 @@ components:
             oldestEvidenceAt: { type: [string, 'null'], format: date-time }
             newestEvidenceAt: { type: [string, 'null'], format: date-time }
             expiresAt: { type: string, format: date-time }
+    RiskAssessmentResponse:
+      allOf:
+        - $ref: '#/components/schemas/CompactRiskAssessmentFields'
+      unevaluatedProperties: false
       description: Compact machine-readable JSON response. Raw evidence, provider payloads, Markdown, and full dependency details are intentionally omitted; omission counts are explicit.
     ObservedPaymentRequirement:
       type: object
@@ -704,11 +709,12 @@ components:
         resource: { type: string, format: uri }
         paymentOptions:
           type: array
+          maxItems: 8
           items: { $ref: '#/components/schemas/ObservedPaymentRequirement' }
     X402EndpointPreflight:
       type: object
       allOf:
-        - $ref: '#/components/schemas/RiskAssessmentResponse'
+        - $ref: '#/components/schemas/CompactRiskAssessmentFields'
         - type: object
           required: [preflightContext]
           properties:

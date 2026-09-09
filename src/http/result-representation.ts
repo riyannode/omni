@@ -31,6 +31,8 @@ export type PublicOmissions = {
   signalsOmitted?: number;
   sourceErrorsOmitted?: number;
   packagesOmitted?: number;
+  coverageSourcesOmitted?: number;
+  paymentOptionsOmitted?: number;
 };
 
 export type CompactRiskAssessment = Omit<RiskAssessment, "evidence" | "maliciousPackageObservations" | "signals" | "sourceErrors"> & {
@@ -103,20 +105,21 @@ function compactSignals(value: unknown): { signals: CompactSignal[]; omitted: nu
   return { signals: compact.slice(0, MAX_PUBLIC_SIGNALS).map(item => item.signal), omitted: invalid + Math.max(0, compact.length - MAX_PUBLIC_SIGNALS) };
 }
 
-function compactCoverage(value: unknown): CompactRiskAssessment["coverage"] {
-  if (!isRecord(value)) return undefined;
-  const sourceValues = Array.isArray(value.sources) ? value.sources.filter(isRecord).slice(0, 16).flatMap(source => {
+function compactCoverage(value: unknown): { coverage: CompactRiskAssessment["coverage"]; omitted: number } {
+  if (!isRecord(value)) return { coverage: undefined, omitted: 0 };
+  const rawSources = Array.isArray(value.sources) ? value.sources : [];
+  const sourceValues = rawSources.filter(isRecord).slice(0, 16).flatMap(source => {
     const name = text(source.source);
     const execution = source.execution === "QUERIED" || source.execution === "NOT_QUERIED" ? source.execution as "QUERIED" | "NOT_QUERIED" : undefined;
     const status = typeof source.status === "string" && COVERAGE_STATUSES.has(source.status) ? source.status as NonNullable<CompactRiskAssessment["coverage"]>["sources"][number]["status"] : undefined;
     const weight = typeof source.weight === "number" && Number.isFinite(source.weight) && source.weight >= 0 ? source.weight : undefined;
     return name && execution && status && weight !== undefined ? [{ source: name, execution, status, weight }] : [];
-  }) : [];
+  });
   const modelVersion = text(value.modelVersion);
   const resolvedWeight = typeof value.resolvedWeight === "number" ? value.resolvedWeight : undefined;
   const applicableWeight = typeof value.applicableWeight === "number" ? value.applicableWeight : undefined;
-  if (!modelVersion || resolvedWeight === undefined || applicableWeight === undefined) return undefined;
-  return { modelVersion, resolvedWeight, applicableWeight, sources: sourceValues };
+  if (!modelVersion || resolvedWeight === undefined || applicableWeight === undefined) return { coverage: undefined, omitted: rawSources.length };
+  return { coverage: { modelVersion, resolvedWeight, applicableWeight, sources: sourceValues }, omitted: Math.max(0, rawSources.length - sourceValues.length) };
 }
 
 function compactRepositorySummary(value: unknown): RepositoryRiskSummary | undefined {
@@ -166,18 +169,27 @@ function compactRiskAssessment(value: Record<string, unknown>): CompactRiskAsses
     freshness: value.freshness as CompactRiskAssessment["freshness"]
   };
   const coverage = compactCoverage(value.coverage);
-  if (coverage !== undefined) result.coverage = coverage;
+  if (coverage.coverage !== undefined) result.coverage = coverage.coverage;
+  const coverageSourcesOmitted = Math.max(coverage.omitted, integer(existingOmissions.coverageSourcesOmitted));
+  if (coverageSourcesOmitted > 0) result.omissions.coverageSourcesOmitted = coverageSourcesOmitted;
   if (summary !== undefined) result.repositorySummary = summary;
   const rawMaliciousObservations = Array.isArray(value.maliciousPackageObservations) ? value.maliciousPackageObservations : [];
+  const compactMaliciousObservations = isRecord(value.maliciousPackageObservations) ? value.maliciousPackageObservations : undefined;
   const maliciousObservations = rawMaliciousObservations.length > 0
     ? rawMaliciousObservations.length
-    : isRecord(value.maliciousPackageObservations) ? integer(value.maliciousPackageObservations.observed) : 0;
-  const maliciousIds = [...new Set(rawMaliciousObservations.flatMap(item => isRecord(item) ? [text(item.id)].filter((id): id is string => id !== undefined) : []))].sort();
-  if (maliciousObservations > 0) result.maliciousPackageObservations = { observed: maliciousObservations, ids: maliciousIds.slice(0, 16), ...(maliciousIds.length > 16 ? { idsOmitted: maliciousIds.length - 16 } : {}) };
+    : integer(compactMaliciousObservations?.observed);
+  const maliciousIds = rawMaliciousObservations.length > 0
+    ? [...new Set(rawMaliciousObservations.flatMap(item => isRecord(item) ? [text(item.id)].filter((id): id is string => id !== undefined) : []))].sort()
+    : (Array.isArray(compactMaliciousObservations?.ids) ? compactMaliciousObservations.ids.map(item => text(item)).filter((item): item is string => item !== undefined).slice(0, 16) : []);
+  const maliciousIdsOmitted = rawMaliciousObservations.length > 0
+    ? Math.max(0, maliciousIds.length - 16)
+    : integer(compactMaliciousObservations?.idsOmitted);
+  if (maliciousObservations > 0) result.maliciousPackageObservations = { observed: maliciousObservations, ids: maliciousIds.slice(0, 16), ...(maliciousIdsOmitted > 0 ? { idsOmitted: maliciousIdsOmitted } : {}) };
   const preflight = isRecord(value.preflightContext) ? value.preflightContext : undefined;
   if (preflight) {
     const resource = text(preflight.resource, 2048);
-    const paymentOptions = Array.isArray(preflight.paymentOptions) ? preflight.paymentOptions.filter(isRecord).slice(0, 8).flatMap(option => {
+    const rawPaymentOptions = Array.isArray(preflight.paymentOptions) ? preflight.paymentOptions : [];
+    const paymentOptions = rawPaymentOptions.filter(isRecord).slice(0, 8).flatMap(option => {
       const compactOption: Record<string, unknown> = {};
       for (const key of ["scheme", "network", "amount", "asset", "payTo"]) {
         const item = text(option[key]);
@@ -185,7 +197,9 @@ function compactRiskAssessment(value: Record<string, unknown>): CompactRiskAsses
       }
       if (typeof option.maxTimeoutSeconds === "number" && Number.isSafeInteger(option.maxTimeoutSeconds)) compactOption.maxTimeoutSeconds = option.maxTimeoutSeconds;
       return Object.keys(compactOption).length > 0 ? [compactOption] : [];
-    }) : [];
+    });
+    const paymentOptionsOmitted = Math.max(rawPaymentOptions.length - paymentOptions.length, integer(existingOmissions.paymentOptionsOmitted));
+    if (paymentOptionsOmitted > 0) result.omissions.paymentOptionsOmitted = paymentOptionsOmitted;
     if (resource !== undefined) (result as Record<string, unknown>).preflightContext = { resource, paymentOptions };
   }
   return result;
@@ -204,6 +218,8 @@ function compactDependencyAssessment(value: Record<string, unknown>): Record<str
     recommendations: isRecord(value.summary.recommendations) ? Object.fromEntries(Object.entries(value.summary.recommendations).filter(([, count]) => Number.isSafeInteger(count) && (count as number) >= 0).sort(([left], [right]) => left.localeCompare(right))) : {}
   } : { count: packages.length, worstRiskScore: 0, recommendations: {} };
   const existingOmissions = isRecord(value.omissions) ? value.omissions : {};
+  const existingPackagesOmitted = integer(existingOmissions.packagesOmitted);
+  const packagesOmitted = Math.max(existingPackagesOmitted, packages.length > MAX_PUBLIC_PACKAGES ? packages.length - MAX_PUBLIC_PACKAGES : 0);
   return {
     packages: compactPackages.slice(0, MAX_PUBLIC_PACKAGES).map(item => item.item),
     summary,
@@ -211,7 +227,7 @@ function compactDependencyAssessment(value: Record<string, unknown>): Record<str
     omissions: {
       evidenceDetailsOmitted: integer(existingOmissions.evidenceDetailsOmitted) + compactPackages.reduce((total, entry) => total + integer((entry.item.omissions as Record<string, unknown> | undefined)?.evidenceDetailsOmitted), 0),
       dependencyDetailsOmitted: Math.max(packages.length, integer(existingOmissions.dependencyDetailsOmitted)),
-      ...(packages.length > MAX_PUBLIC_PACKAGES ? { packagesOmitted: packages.length - MAX_PUBLIC_PACKAGES } : {})
+      ...(packagesOmitted > 0 ? { packagesOmitted } : {})
     }
   };
 }
