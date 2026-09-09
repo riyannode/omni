@@ -72,7 +72,7 @@ async function json<T>(http: Http, url: string, headers: HeadersInit): Promise<T
 
 function category(path: string): RepositorySecurityFile["category"] | undefined {
   const value = path.toLowerCase();
-  if (/(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pyproject\.toml|cargo\.toml|cargo\.lock|go\.mod|go\.sum|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lock)$/.test(value) || /(^|\/)requirements[^/]*\.txt$/.test(value)) return "manifest";
+  if (/(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pyproject\.toml|cargo\.toml|cargo\.lock|go\.mod|go\.sum|vendor\/modules\.txt|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lock)$/.test(value) || /(^|\/)requirements[^/]*\.txt$/.test(value)) return "manifest";
   if (/^\.github\/workflows\/.*\.ya?ml$/.test(value)) return "workflow";
   if (/(^|\/)dockerfile[^/]*$/.test(value) || /(^|\/)(docker-)?compose\.ya?ml$/.test(value)) return "build";
   if (/(^|\/)(action\.ya?ml)$/.test(value) || value.includes("release") || value.includes("publish")) return "release";

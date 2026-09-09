@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { GitHubRepositoryProvider } from "../src/providers/github-repository.ts";
+import { resolveRepositoryDependencies } from "../src/providers/dependency-resolution.ts";
 import { DepsDevProvider, normalizeProvenance } from "../src/providers/deps-dev.ts";
 import { RiskEngine } from "../src/domain/risk-engine.ts";
 import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/risk-features.ts";
@@ -108,6 +109,10 @@ const commitSha = "0123456789abcdef0123456789abcdef01234567";
 const treeSha = "abcdef0123456789abcdef0123456789abcdef01";
 const packageBlob = "1111111111111111111111111111111111111111";
 const workflowBlob = "2222222222222222222222222222222222222222";
+
+function resolveDependencies(files: Record<string, string>, candidatePaths = Object.keys(files)) {
+  return resolveRepositoryDependencies({ files: new Map(Object.entries(files)), candidatePaths, manifestDiscoveryComplete: true });
+}
 
 async function realGithubEvidence(tree: unknown[], contents: Record<string, string>, truncated = false, rawAccepts: string[] = []): Promise<RepositoryEvidence> {
   const base = "https://api.github.com/repos/acme/demo";
@@ -584,7 +589,7 @@ describe("repository evidence foundation", () => {
     expect(result.coverage.status).toBe("partial");
   });
 
-  test("reports detected but unsupported dependency ecosystems instead of claiming coverage", async () => {
+  test("handles detected PyPI and Go manifests as supported resolution paths", async () => {
     const base = "https://api.github.com/repos/acme/demo";
     const http = { async request(url: string | URL) {
       const target = String(url);
@@ -605,8 +610,11 @@ describe("repository evidence foundation", () => {
       return response(fixtures[target] ?? {}, fixtures[target] === undefined ? 404 : 200);
     } };
     const result = await new GitHubRepositoryProvider(http as never).collect("acme", "demo");
-    expect(result.coverage.limitations).toEqual(expect.arrayContaining(["dependency_resolution_unsupported:GO", "dependency_resolution_unsupported:PYPI"]));
-    expect(result.coverage.status).toBe("partial");
+    expect(result.coverage.limitations).not.toContain("dependency_resolution_unsupported:GO");
+    expect(result.coverage.limitations).not.toContain("dependency_resolution_unsupported:PYPI");
+    expect(result.dependencies.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.0.0", sourcePath: "requirements-dev.txt", manifestPath: "requirements-dev.txt", workspacePath: "." }]);
+    expect(result.dependencies.unresolved).toEqual([]);
+    expect(result.coverage.status).toBe("complete");
   });
 
   test("fails closed on invalid commit identities, rate limits, timeouts, and oversized streamed bodies", async () => {
@@ -1316,11 +1324,12 @@ describe("repository evidence foundation", () => {
     expect(evidence.dependencyResolution?.applicableExternalDependencyCount).toBe(evidence.dependencies.exact.length + evidence.dependencies.unresolved.length);
   });
 
-  test("classifies every requirements variant as unsupported PyPI", async () => {
+  test("resolves exact requirements variants as PyPI coordinates", async () => {
     const evidence = await realGithubEvidence([{ path: "requirements-prod.txt", type: "blob", sha: packageBlob, size: 100 }], { "requirements-prod.txt": "requests==2.0.0\n" });
     const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
-    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
-    expect(evidence.dependencyResolution?.unsupportedEcosystems).toEqual(["PYPI"]);
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(evidence.dependencyResolution?.unsupportedEcosystems).toEqual([]);
+    expect(evidence.dependencies.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.0.0", sourcePath: "requirements-prod.txt", manifestPath: "requirements-prod.txt", workspacePath: "." }]);
   });
 
   test("bounds dependency files above the 2 MiB budget and keeps metadata counts consistent when lock content is unavailable", async () => {
@@ -1367,7 +1376,7 @@ describe("repository evidence foundation", () => {
       "go.mod": "module example.com/demo\n"
     });
     const mixedAssessment = await repositoryOmni(mixedEvidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
-    expect(mixedAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(mixedAssessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
   });
 
   test("propagates mixed real dependency resolution uncertainty to downstream sources", async () => {
@@ -1392,6 +1401,438 @@ describe("repository evidence foundation", () => {
     expect(assessment.coverage?.sources).toContainEqual({ source: "Threat Intelligence", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
     expect(depsDevCalls).toEqual(["resolved"]);
     expect(threatIntelCalls).toEqual(["resolved"]);
+  });
+
+  describe("Phase 3.5 exact PyPI and Go resolution", () => {
+    test("resolves exact requirements pins, extras, hashes, and deterministic PyPI names", () => {
+      const result = resolveDependencies({
+        "requirements-prod.txt": [
+          "Requests==2.32.5 --hash=sha256:abc",
+          "requests==2.32.5",
+          "requests[socks]==2.32.5",
+          "requests_toolbelt==1.1.0",
+          "requests-toolbelt==1.1.0"
+        ].join("\n")
+      });
+      expect(result.exact.map(item => item.name)).toEqual(["requests", "requests", "requests", "requests-toolbelt", "requests-toolbelt"]);
+      expect(result.exact.every(item => item.ecosystem === "PYPI" && item.sourcePath === "requirements-prod.txt")).toBe(true);
+      expect(result.unresolved).toEqual([]);
+      expect(result.metadata.unsupportedEcosystems).toEqual([]);
+      expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
+    });
+
+    test("fails closed for Python ranges, wildcards, markers, VCS, URLs, and excludes local inputs", () => {
+      const result = resolveDependencies({
+        "requirements.txt": [
+          "requests>=2",
+          "requests==2.*",
+          "requests==2.32.5; python_version >= '3.11'",
+          "git+https://github.com/acme/demo.git#egg=demo",
+          "https://example.com/demo.whl",
+          "owner/demo",
+          "./local-package",
+          "-e ./editable-package"
+        ].join("\n")
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved.map(item => item.requirement)).toEqual(expect.arrayContaining([
+        "requests>=2",
+        "requests==2.*",
+        "requests==2.32.5; python_version >= '3.11'",
+        "git+https://github.com/acme/demo.git#egg=demo",
+        "https://example.com/demo.whl",
+        "owner/demo"
+      ]));
+      expect(result.unresolved.some(item => item.name.includes("local"))).toBe(false);
+      expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
+    });
+
+    test("handles every requirements filename variant and requirement directives without inventing entries", () => {
+      const result = resolveDependencies({
+        "requirements-prod.txt": "requests==2.32.5\n-r requirements-base.txt\n",
+        "requirements-base.txt": "urllib3==2.5.0\n--requirement requirements-extra.txt\n",
+        "requirements-extra.txt": "idna==3.10\n"
+      });
+      expect(result.exact.map(item => item.name)).toEqual(["urllib3", "idna", "requests"]);
+      expect(result.metadata.supportedManifestCount).toBe(3);
+      expect(result.metadata.unsupportedEcosystems).toEqual([]);
+    });
+
+    test("keeps requirements exactness tied to public PyPI source directives", () => {
+      const publicIndex = resolveDependencies({ "requirements.txt": "--index-url https://pypi.org/simple/\nrequests==2.32.5\n" });
+      expect(publicIndex.exact).toHaveLength(1);
+      const privateIndex = resolveDependencies({ "requirements.txt": "--index-url https://private.example/simple\ninternal-agent==1.2.3\n" });
+      expect(privateIndex.exact).toEqual([]);
+      expect(privateIndex.unresolved).toHaveLength(1);
+      const extraIndex = resolveDependencies({ "requirements.txt": "--extra-index-url https://private.example/simple\nrequests==2.32.5\n" });
+      expect(extraIndex.exact).toEqual([]);
+      expect(extraIndex.unresolved).toHaveLength(1);
+      const noIndex = resolveDependencies({ "requirements.txt": "--no-index\nrequests==2.32.5\n" });
+      expect(noIndex.exact).toEqual([]);
+      expect(noIndex.unresolved).toHaveLength(1);
+    });
+
+    test("binds uv.lock to the project package and rejects stale or ambiguous lock evidence", () => {
+      const base = {
+        "pyproject.toml": `[project]
+name = "demo"
+dependencies = ["requests>=2,<3"]
+`,
+        "uv.lock": `version = 1
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "requests" }]
+[package.metadata]
+requires-dist = [{ name = "requests", specifier = ">=2,<3" }]
+[[package]]
+name = "requests"
+version = "2.32.5"
+source = { registry = "https://pypi.org/simple" }
+`
+      };
+      const resolved = resolveDependencies(base);
+      expect(resolved.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.32.5", sourcePath: "uv.lock", manifestPath: "pyproject.toml", workspacePath: "." }]);
+
+      const stale = resolveDependencies({ ...base, "uv.lock": base["uv.lock"].replace(">=2,<3", ">=1,<2") });
+      expect(stale.exact).toEqual([]);
+      expect(stale.unresolved).toHaveLength(1);
+
+      const ambiguous = resolveDependencies({ ...base, "uv.lock": `${base["uv.lock"]}\n[[package]]\nname = \\\"requests\\\"\nversion = \\\"2.31.0\\\"\nsource = { registry = \\\"https://pypi.org/simple\\\" }\n` });
+      expect(ambiguous.exact).toEqual([]);
+      expect(ambiguous.unresolved).toHaveLength(1);
+
+      const privateRegistry = resolveDependencies({ ...base, "pyproject.toml": `[project]
+name = "demo"
+dependencies = ["requests>=2,<3"]
+[tool.uv.sources]
+requests = { index = "private" }
+` });
+      expect(privateRegistry.exact).toEqual([]);
+      expect(privateRegistry.unresolved).toHaveLength(1);
+      const privateLockRegistry = resolveDependencies({ ...base, "uv.lock": base["uv.lock"].replace("https://pypi.org/simple", "https://private.example/simple") });
+      expect(privateLockRegistry.exact).toEqual([]);
+      expect(privateLockRegistry.unresolved).toHaveLength(1);
+    });
+
+    test("excludes local uv sources and refuses unrelated workspace lock association", () => {
+      const local = resolveDependencies({
+        "pyproject.toml": `[project]
+name = "demo"
+dependencies = ["localpkg"]
+[tool.uv.sources]
+localpkg = { path = "../localpkg" }
+`,
+        "uv.lock": `version = 1
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "localpkg" }]
+[[package]]
+name = "localpkg"
+version = "1.0.0"
+source = { editable = "../localpkg" }
+`
+      });
+      expect(local.exact).toEqual([]);
+      expect(local.unresolved).toEqual([]);
+
+      const unrelated = resolveDependencies({
+        "packages/app/pyproject.toml": `[project]
+name = "app"
+dependencies = ["requests>=2"]
+`,
+        "uv.lock": `version = 1
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { editable = "other" }
+dependencies = [{ name = "requests" }]
+[[package]]
+name = "requests"
+version = "2.32.5"
+source = { registry = "https://pypi.org/simple" }
+`
+      });
+      expect(unrelated.exact).toEqual([]);
+      expect(unrelated.unresolved).toHaveLength(1);
+    });
+
+    test("resolves Poetry lock packages with PEP 440-compatible Poetry constraints", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+python = ">=3.11"
+requests = "^2.32"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.32.5"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "c414ef5a86cc0899a8f397e9f8056be3d40fa729cc9299a60e197abda78cb797"
+`
+      });
+      expect(result.exact).toEqual([{ ecosystem: "PYPI", name: "requests", version: "2.32.5", sourcePath: "poetry.lock", manifestPath: "pyproject.toml", workspacePath: "." }]);
+      const stale = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+requests = "^2.32"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "1.0.0"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "5130202313955b22eb79e9efa647984009e7aeb22160d3ca06cd0ff221b28e32"
+`
+      });
+      expect(stale.exact).toEqual([]);
+      expect(stale.unresolved).toHaveLength(1);
+      const staleCompatible = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+requests = "^2.32"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.32.4"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "190910cb2d3b8327d646e74d364df671151ed8fa2ced09cc7880acc0ba468048"
+`
+      });
+      expect(staleCompatible.exact).toEqual([]);
+      expect(staleCompatible.unresolved).toHaveLength(1);
+    });
+
+    test("resolves exact Poetry version declarations without treating them as project names", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+urllib3 = "2.5.0"
+`,
+        "poetry.lock": `[[package]]
+name = "urllib3"
+version = "2.5.0"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "2edee442e8a74b8940655e94bb761a8cb41e225846d784e6eb6a94034d9f29bc"
+`
+      });
+      expect(result.exact).toEqual([{ ecosystem: "PYPI", name: "urllib3", version: "2.5.0", sourcePath: "poetry.lock", manifestPath: "pyproject.toml", workspacePath: "." }]);
+    });
+
+    test("rejects ambiguous and non-registry Poetry dependencies", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[tool.poetry.dependencies]
+requests = "^2"
+local = { path = "../local" }
+gitdep = { git = "https://github.com/acme/gitdep.git" }
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.31.0"
+[[package]]
+name = "requests"
+version = "2.32.5"
+`
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved.map(item => item.name)).toEqual(["gitdep", "requests"]);
+      expect(result.unresolved.some(item => item.name === "local")).toBe(false);
+    });
+
+    test("rejects Poetry packages when a custom primary source disables implicit PyPI", () => {
+      const result = resolveDependencies({
+        "pyproject.toml": `[tool.poetry]
+name = "demo"
+[[tool.poetry.source]]
+name = "private"
+url = "https://private.example/simple/"
+priority = "primary"
+[tool.poetry.dependencies]
+requests = "^2"
+`,
+        "poetry.lock": `[[package]]
+name = "requests"
+version = "2.32.5"
+
+[metadata]
+lock-version = "2.0"
+content-hash = "53310bf86aa65a01c56dc12ac8d1a7df7574e060fd840e9bfbe9471765dd2c64"
+`
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved).toHaveLength(1);
+    });
+
+    test("keeps bare Go require minimums unresolved without selected-version proof", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/demo\ngo 1.23\nrequire example.com/one v1.2.3\nrequire (\n example.com/two v0.0.0-20250101112233-abcdefabcdef\n)"
+      });
+      expect(result.exact).toEqual([]);
+      expect(result.unresolved.map(item => item.name)).toEqual(["example.com/one", "example.com/two"]);
+      expect(result.metadata.unsupportedEcosystems).toEqual([]);
+      expect(result.metadata.applicableExternalDependencyCount).toBe(2);
+    });
+
+    test("resolves selected Go versions from a consistent vendor/modules.txt snapshot", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/demo\ngo 1.23\nrequire example.com/one v1.2.3\nrequire example.com/two v0.0.0-20250101112233-abcdefabcdef\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\n## explicit\nexample.com/one\n# example.com/two v0.0.0-20250101112233-abcdefabcdef\n## explicit\nexample.com/two\n"
+      });
+      expect(result.exact).toEqual([
+        { ecosystem: "GO", name: "example.com/one", version: "v1.2.3", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." },
+        { ecosystem: "GO", name: "example.com/two", version: "v0.0.0-20250101112233-abcdefabcdef", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }
+      ]);
+      expect(result.unresolved).toEqual([]);
+      const inconsistent = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\n",
+        "vendor/modules.txt": "# example.com/one v1.1.0\nexample.com/one\n"
+      });
+      expect(inconsistent.exact).toEqual([]);
+      expect(inconsistent.unresolved).toHaveLength(1);
+      const higher = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\n",
+        "vendor/modules.txt": "# example.com/one v1.4.0\n## explicit\nexample.com/one\n"
+      });
+      expect(higher.exact).toEqual([]);
+      expect(higher.unresolved).toHaveLength(1);
+      const missingExplicit = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\nexample.com/one\n"
+      });
+      expect(missingExplicit.exact).toEqual([]);
+      expect(missingExplicit.unresolved).toHaveLength(1);
+      const markerBelongsElsewhere = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\nrequire example.com/two v1.0.0\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\nexample.com/one\n# example.com/two v1.0.0\n## explicit\nexample.com/two\n"
+      });
+      expect(markerBelongsElsewhere.exact).toEqual([{ ecosystem: "GO", name: "example.com/two", version: "v1.0.0", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }]);
+      expect(markerBelongsElsewhere.unresolved).toHaveLength(1);
+      const oneExplicit = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\nrequire example.com/two v1.0.0\n",
+        "vendor/modules.txt": "# example.com/one v1.2.3\n## explicit\nexample.com/one\n# example.com/two v1.0.0\nexample.com/two\n"
+      });
+      expect(oneExplicit.exact).toEqual([{ ecosystem: "GO", name: "example.com/one", version: "v1.2.3", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }]);
+      expect(oneExplicit.unresolved).toHaveLength(1);
+      expect(oneExplicit.metadata.applicableExternalDependencyCount).toBe(oneExplicit.exact.length + oneExplicit.unresolved.length);
+      const excluded = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/one v1.2.3\nexclude example.com/one v1.4.0\n",
+        "vendor/modules.txt": "# example.com/one v1.4.0\nexample.com/one\n"
+      });
+      expect(excluded.exact).toEqual([]);
+      expect(excluded.unresolved).toHaveLength(1);
+    });
+
+    test("attributes multiple go.mod manifests independently and ignores go.sum as a source of coordinates", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/root\nrequire example.com/rootdep v1.0.0\n",
+        "services/api/go.mod": "module example.com/api\nrequire example.com/apidep v1.2.3\n",
+        "vendor/modules.txt": "# example.com/rootdep v1.0.0\n## explicit\nexample.com/rootdep\n",
+        "services/api/vendor/modules.txt": "# example.com/apidep v1.2.3\n## explicit\nexample.com/apidep\n",
+        "go.sum": "example.com/not-a-dependency v9.9.9 h1:ignored\n"
+      });
+      expect(result.exact.map(item => [item.manifestPath, item.name, item.version])).toEqual([["go.mod", "example.com/rootdep", "v1.0.0"], ["services/api/go.mod", "example.com/apidep", "v1.2.3"]]);
+      expect(result.exact.some(item => item.name.includes("not-a-dependency"))).toBe(false);
+      const sumOnly = resolveDependencies({ "go.sum": "example.com/not-a-dependency v9.9.9 h1:ignored\n" });
+      expect(sumOnly.exact).toEqual([]);
+      expect(sumOnly.unresolved).toEqual([]);
+    });
+
+    test("handles local and remote Go replacements without emitting the old identity", () => {
+      const result = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire (\n example.com/local v1.0.0\n example.com/old v1.1.0\n)\nreplace example.com/local => ../local\nreplace example.com/old => example.com/new v1.2.3\n",
+        "vendor/modules.txt": "# example.com/local v1.0.0 => ../local\n## explicit\nexample.com/local\n# example.com/old v1.1.0 => example.com/new v1.2.3\n## explicit\nexample.com/new\n"
+      });
+      expect(result.exact).toEqual([{ ecosystem: "GO", name: "example.com/new", version: "v1.2.3", sourcePath: "vendor/modules.txt", manifestPath: "go.mod", workspacePath: "." }]);
+      expect(result.unresolved).toEqual([]);
+      const mismatchedReplacement = resolveDependencies({
+        "go.mod": "module example.com/demo\nrequire example.com/old v1.1.0\nreplace example.com/old => example.com/new v1.2.3\n",
+        "vendor/modules.txt": "# example.com/old v1.1.0 => example.com/new v1.2.4\n## explicit\nexample.com/new\n"
+      });
+      expect(mismatchedReplacement.exact).toEqual([]);
+      expect(mismatchedReplacement.unresolved).toHaveLength(1);
+    });
+
+    test("fails closed on malformed Go replacements and invalid module versions", () => {
+      const malformed = resolveDependencies({ "go.mod": "module example.com/demo\nrequire example.com/demo v1.0.0\nreplace example.com/demo => example.com/new\n" });
+      expect(malformed.exact).toEqual([]);
+      expect(malformed.unresolved[0]).toMatchObject({ ecosystem: "GO", name: "example.com/demo", requirement: "v1.0.0" });
+      const invalid = resolveDependencies({ "go.mod": "module example.com/demo\nrequire example.com/demo 1.0.0\n" });
+      expect(invalid.exact).toEqual([]);
+      expect(invalid.unresolved).toHaveLength(1);
+    });
+
+    test("keeps malformed manifests counted when their external dependency is identifiable", () => {
+      const result = resolveDependencies({ "go.mod": "module example.com/demo\nrequire example.com/demo v1.0.0\nreplace example.com/demo => example.com/new\n" });
+      expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
+      expect(result.unresolved).toHaveLength(1);
+    });
+  });
+
+  test("maps a real complete PyPI and Go repository to observed dependency resolution", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "requirements-prod.txt", type: "blob", sha: packageBlob, size: 100 },
+      { path: "go.mod", type: "blob", sha: packageBlob, size: 100 },
+      { path: "vendor/modules.txt", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "requirements-prod.txt": "requests==2.32.5\n",
+      "go.mod": "module example.com/demo\nrequire example.com/demo v1.2.3\n",
+      "vendor/modules.txt": "# example.com/demo v1.2.3\n## explicit\nexample.com/demo\n"
+    });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(evidence.dependencies.exact).toHaveLength(2);
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "OBSERVED", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OSV Dependency Vulnerabilities", execution: "QUERIED", status: "ABSENT", weight: 1 });
+  });
+
+  test("does not send a bare Go minimum requirement to OSV", async () => {
+    const evidence = await realGithubEvidence([{ path: "go.mod", type: "blob", sha: packageBlob, size: 100 }], {
+      "go.mod": "module example.com/demo\nrequire example.com/demo v1.0.0\n"
+    });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(evidence.dependencies.exact).toEqual([]);
+    expect(evidence.dependencies.unresolved).toHaveLength(1);
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OSV Dependency Vulnerabilities", execution: "NOT_QUERIED", status: "UNKNOWN", weight: 1 });
+
+  });
+
+  test("keeps mixed exact and unresolved PyPI/Go coverage unknown without false ABSENT", async () => {
+    const evidence = await realGithubEvidence([
+      { path: "requirements.txt", type: "blob", sha: packageBlob, size: 100 },
+      { path: "go.mod", type: "blob", sha: packageBlob, size: 100 },
+      { path: "vendor/modules.txt", type: "blob", sha: packageBlob, size: 100 }
+    ], {
+      "requirements.txt": "requests==2.32.5\n",
+      "go.mod": "module example.com/demo\nrequire example.com/demo v1.2.3\n",
+      "vendor/modules.txt": "# example.com/demo v1.2.4\n## explicit\nexample.com/demo\n"
+    });
+    const assessment = await repositoryOmni(evidence, threatIntelStore(async () => ({ checked: true, findings: [] }))).repositoryRisk("acme", "demo");
+    expect(evidence.dependencies.exact).toHaveLength(1);
+    expect(evidence.dependencies.unresolved).toHaveLength(1);
+    expect(assessment.coverage?.sources).toContainEqual({ source: "Dependency Resolution", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+    expect(assessment.coverage?.sources).toContainEqual({ source: "OSV Dependency Vulnerabilities", execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+  });
+
+  test("keeps repository resolution bounds unchanged for new ecosystems", () => {
+    const files = Object.fromEntries(Array.from({ length: 128 }, (_, index) => [`requirements-${index}.txt`, "requests==2.32.5\n"]));
+    const result = resolveDependencies(files);
+    expect(result.exact).toHaveLength(128);
+    expect(result.metadata.applicableExternalDependencyCount).toBe(result.exact.length + result.unresolved.length);
   });
 
   test("maps a real GitHub collection failure to unavailable", async () => {

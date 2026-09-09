@@ -1,5 +1,6 @@
 import type { Evidence, MaliciousPackageIndicators, MaliciousPackageObservation, OsvAdvisoryEvidence, OsvAffectedPackage, OsvAffectedRange, OsvCwe, OsvRangeEvent, RiskLevel, VulnerabilityFinding } from "../domain/risk.ts";
 import { MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION } from "../domain/risk.ts";
+import { compare as comparePep440, valid as validPep440 } from "@renovatebot/pep440";
 import { UpstreamHttp } from "./http.ts";
 
 type OsvRawRangeEvent = { introduced?: string; fixed?: string; last_affected?: string; limit?: string };
@@ -60,9 +61,18 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-export function repositoryOsvEcosystem(ecosystem: string): "npm" | "crates.io" | undefined {
+function sameOsvPackage(item: OsvAffectedPackage, ecosystem: string, name: string): boolean {
+  if (item.package.ecosystem.toLowerCase() !== ecosystem.toLowerCase()) return false;
+  return ecosystem.toLowerCase() === "pypi"
+    ? item.package.name.toLowerCase().replace(/[._-]+/g, "-") === name.toLowerCase().replace(/[._-]+/g, "-")
+    : item.package.name === name;
+}
+
+export function repositoryOsvEcosystem(ecosystem: string): "npm" | "crates.io" | "PyPI" | "Go" | undefined {
   if (ecosystem === "NPM") return "npm";
   if (ecosystem === "CARGO") return "crates.io";
+  if (ecosystem === "PYPI") return "PyPI";
+  if (ecosystem === "GO") return "Go";
   return undefined;
 }
 
@@ -106,12 +116,56 @@ function compareSemver(left: Semver, right: Semver): number {
   return 0;
 }
 
+const GO_VERSION = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+function parseGoVersion(value: string): Semver | undefined {
+  if (value === "0") return { major: 0, minor: 0, patch: 0, prerelease: [] };
+  if (!GO_VERSION.test(value)) return undefined;
+  return parseSemver(value.slice(1).replace(/\+incompatible$/u, ""));
+}
+
+function validQueryVersion(ecosystem: string, version: string): boolean {
+  const normalized = ecosystem.toLowerCase();
+  if (normalized === "pypi") return validPep440(version) !== null;
+  if (normalized === "go") return parseGoVersion(version) !== undefined;
+  return parseSemver(version) !== undefined;
+}
+
+function versionInOrderedRange<T>(version: string, range: OsvAffectedRange, parse: (value: string) => T | undefined, compare: (left: T, right: T) => number): boolean {
+  const requested = parse(version);
+  if (requested === undefined) return false;
+  let active = false;
+  for (const event of range.events) {
+    if (event.introduced !== undefined) {
+      const introduced = parse(event.introduced);
+      if (introduced === undefined) return false;
+      active = compare(requested, introduced) >= 0;
+    }
+    for (const [field, inclusive] of [["fixed", false], ["lastAffected", true], ["limit", false]] as const) {
+      const value = event[field];
+      if (value === undefined) continue;
+      const endpoint = parse(value);
+      if (endpoint === undefined) return false;
+      const comparison = compare(requested, endpoint);
+      if (active && (inclusive ? comparison <= 0 : comparison < 0)) return true;
+      active = false;
+    }
+  }
+  return active;
+}
+
 function versionInRange(version: string, range: OsvAffectedRange, ecosystem: string): boolean {
   const rangeType = range.type.toUpperCase();
   // OSV ECOSYSTEM ranges for npm and crates.io use their proven
   // semver-compatible package-version ordering. GIT ranges remain
   // commit-only and must not be guessed from a package version.
   const normalizedEcosystem = ecosystem.toLowerCase();
+  if (normalizedEcosystem === "pypi") {
+    return rangeType === "ECOSYSTEM" && versionInOrderedRange(version, range, value => validPep440(value) ?? undefined, comparePep440);
+  }
+  if (normalizedEcosystem === "go") {
+    return rangeType === "ECOSYSTEM" && versionInOrderedRange(version, range, parseGoVersion, compareSemver);
+  }
   if (rangeType !== "SEMVER" && !(rangeType === "ECOSYSTEM" && (normalizedEcosystem === "npm" || normalizedEcosystem === "crates.io"))) return false;
   const requested = parseSemver(version);
   if (!requested) return false;
@@ -136,7 +190,7 @@ function versionInRange(version: string, range: OsvAffectedRange, ecosystem: str
 
 function affectedVersionMatch(affected: OsvAffectedPackage[], ecosystem: string, name: string, version: string): boolean {
   return affected.some(item => {
-    if (item.package.ecosystem.toLowerCase() !== ecosystem.toLowerCase() || item.package.name !== name) return false;
+    if (!sameOsvPackage(item, ecosystem, name)) return false;
     if (item.versions.includes(version)) return true;
     return item.ranges.some(range => versionInRange(version, range, ecosystem));
   });
@@ -231,7 +285,7 @@ function normalizeOrigins(origins: OsvOrigin[] | undefined): MaliciousPackageObs
 
 function advisoryEvidence(vulnerability: OsvVuln, ecosystem: string, name: string, version: string): OsvAdvisoryEvidence {
   const affected = normalizeAffected(vulnerability.affected, { ecosystem, name });
-  const matchingPackage = affected.some(item => item.package.ecosystem.toLowerCase() === ecosystem.toLowerCase() && item.package.name === name);
+  const matchingPackage = affected.some(item => sameOsvPackage(item, ecosystem, name));
   const matchedVersion = affectedVersionMatch(affected, ecosystem, name, version);
   const databaseSeverity = stringOrUndefined(vulnerability.database_specific?.severity);
   const ecosystemSeverity = stringOrUndefined(vulnerability.ecosystem_specific?.severity);
@@ -417,6 +471,7 @@ export class OsvProvider {
   constructor(private readonly http: UpstreamHttp) {}
 
   async packageVulnerabilities(ecosystem: string, name: string, version: string): Promise<{ findings: VulnerabilityFinding[]; maliciousPackageObservations: MaliciousPackageObservation[]; evidence: Evidence[] }> {
+    if (!validQueryVersion(ecosystem, version)) throw new Error("osv_version_invalid");
     const body = { package: { ecosystem, name }, version };
     const data = await this.http.json<OsvResponse>("https://api.osv.dev/v1/query", {
       method: "POST",

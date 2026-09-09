@@ -56,8 +56,9 @@ export type MaliciousPackageObservation = {
 export type EndpointHistory = { observationCount: number; firstSeenAt?: string; lastSeenAt?: string; payToChangeCount: number; priceChangeCount: number; networkChangeCount: number; schemaChangeCount: number; providerChangeCount: number; relatedResourcesByPayTo: number };
 export type RiskSignal = { code: string; severity: Exclude<RiskLevel, "unknown">; source: string; detail: Record<string, unknown> };
 
-export type ExactDependencyCoordinate = { ecosystem: "NPM" | "CARGO"; name: string; version: string; sourcePath: string; manifestPath: string; workspacePath: string };
-export type UnresolvedDependency = { ecosystem: "NPM" | "CARGO"; name: string; requirement: string; sourcePath?: string; manifestPath: string; workspacePath: string };
+export type DependencyEcosystem = "NPM" | "CARGO" | "PYPI" | "GO";
+export type ExactDependencyCoordinate = { ecosystem: DependencyEcosystem; name: string; version: string; sourcePath: string; manifestPath: string; workspacePath: string };
+export type UnresolvedDependency = { ecosystem: DependencyEcosystem; name: string; requirement: string; sourcePath?: string; manifestPath: string; workspacePath: string };
 export type RepositoryDependencyResolution = {
   manifestDiscoveryComplete: boolean;
   supportedManifestCount: number;

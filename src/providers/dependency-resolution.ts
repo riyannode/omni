@@ -1,24 +1,29 @@
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
-import type { ExactDependencyCoordinate, RepositoryDependencyResolution, UnresolvedDependency } from "../domain/risk.ts";
+import { satisfies as satisfiesPep440, valid as validPep440, validRange as validPep440Range } from "@renovatebot/pep440";
+import { createHash } from "node:crypto";
+import type { DependencyEcosystem, ExactDependencyCoordinate, RepositoryDependencyResolution, UnresolvedDependency } from "../domain/risk.ts";
 
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const VERSION_WITH_PEERS = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:\([^)]*\))?$/;
 const NPM_LOCK_NAMES = new Set(["package-lock.json", "npm-shrinkwrap.json", "bun.lock", "pnpm-lock.yaml", "yarn.lock"]);
 const CARGO_LOCK_NAME = "cargo.lock";
+const PYPI_LOCK_NAMES = new Set(["uv.lock", "poetry.lock"]);
 const NPM_MANIFEST_NAME = "package.json";
 const CARGO_MANIFEST_NAME = "cargo.toml";
-const UNSUPPORTED_MANIFESTS: Record<string, string> = {
-  "go.mod": "GO",
-  "go.sum": "GO",
-  "pyproject.toml": "PYPI"
-};
+const PYPROJECT_MANIFEST_NAME = "pyproject.toml";
+const GO_MANIFEST_NAME = "go.mod";
+const GO_VENDOR_MANIFEST = /(^|\/)vendor\/modules\.txt$/i;
 
 type JsonRecord = Record<string, unknown>;
-type DirectDependency = { name: string; requirement: string; local: boolean; workspace?: boolean; registryEligible?: boolean; packageName?: string };
-type ParsedManifest = { path: string; ecosystem: "NPM" | "CARGO"; dependencies: DirectDependency[]; malformed: boolean; packageName?: string };
+type DirectDependency = { name: string; requirement: string; local: boolean; workspace?: boolean; registryEligible?: boolean; packageName?: string; specifier?: string; exactVersion?: string };
+type ParsedManifest = { path: string; ecosystem: DependencyEcosystem; dependencies: DirectDependency[]; malformed: boolean; packageName?: string; poetryContentHash?: string };
 type Selection = { path?: string; reason?: "missing" | "ambiguous" };
 type LockCache = Map<string, unknown | Error>;
+type GoReplacement = { oldName: string; oldVersion?: string; local: boolean; name?: string; version?: string };
+type GoExclude = { name: string; version: string };
+type GoParsedDependencies = { requires: DirectDependency[]; replacements: GoReplacement[]; excludes: GoExclude[]; malformed: boolean };
+type GoVendorModule = { name: string; version?: string; explicit: boolean; hasPackage: boolean; replacementName?: string; replacementVersion?: string; localReplacement?: string };
 
 export type DependencyResolutionInput = {
   files: ReadonlyMap<string, string>;
@@ -56,16 +61,17 @@ function relativePath(root: string, path: string): string | undefined {
 function isAncestor(root: string, path: string): boolean { return relativePath(root, path) !== undefined; }
 export function isDependencyResolutionPath(path: string): boolean {
   const name = basename(path).toLowerCase();
-  return name === NPM_MANIFEST_NAME || name === CARGO_MANIFEST_NAME || NPM_LOCK_NAMES.has(name) || name === CARGO_LOCK_NAME || name === "pnpm-workspace.yaml" || name === "go.mod" || name === "go.sum" || name === "pyproject.toml" || /^requirements[^/]*\.txt$/.test(name);
+  return name === NPM_MANIFEST_NAME || name === CARGO_MANIFEST_NAME || NPM_LOCK_NAMES.has(name) || PYPI_LOCK_NAMES.has(name) || name === CARGO_LOCK_NAME || name === "pnpm-workspace.yaml" || name === GO_MANIFEST_NAME || name === "go.sum" || name === PYPROJECT_MANIFEST_NAME || GO_VENDOR_MANIFEST.test(path) || /^requirements[^/]*\.txt$/.test(name);
 }
-function isManifestPath(path: string): boolean { return basename(path).toLowerCase() === NPM_MANIFEST_NAME || basename(path).toLowerCase() === CARGO_MANIFEST_NAME; }
-function unsupportedEcosystemForPath(path: string): string | undefined {
+function isManifestPath(path: string): boolean {
   const name = basename(path).toLowerCase();
-  return /^requirements[^/]*\.txt$/.test(name) ? "PYPI" : UNSUPPORTED_MANIFESTS[name];
+  return name === NPM_MANIFEST_NAME || name === CARGO_MANIFEST_NAME || name === GO_MANIFEST_NAME || name === PYPROJECT_MANIFEST_NAME || /^requirements[^/]*\.txt$/.test(name);
 }
-function lockKind(path: string): "NPM" | "CARGO" | undefined {
+function isRequirementsPath(path: string): boolean { return /^requirements[^/]*\.txt$/.test(basename(path).toLowerCase()); }
+function lockKind(path: string): DependencyEcosystem | undefined {
   const name = basename(path).toLowerCase();
   if (NPM_LOCK_NAMES.has(name)) return "NPM";
+  if (PYPI_LOCK_NAMES.has(name)) return "PYPI";
   if (name === CARGO_LOCK_NAME) return "CARGO";
   return undefined;
 }
@@ -78,6 +84,448 @@ function localReference(requirement: string): boolean {
 
 function unsupportedRegistryReference(requirement: string): boolean {
   return /^(?:npm:|git:|git\+|git@|github:|gitlab:|bitbucket:|https?:)/i.test(requirement) || /^(?!@)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#.*)?$/.test(requirement);
+}
+
+function normalizePythonPackageName(name: string): string { return name.trim().toLowerCase().replace(/[._-]+/g, "-"); }
+function validPythonVersion(value: string): boolean { return validPep440(value) !== null; }
+function validPythonSpecifier(value: string): boolean { return value.length > 0 && validPep440Range(value); }
+function pythonLocalReference(value: string): boolean { return /^(?:file:|\.{0,2}\/|\/|~\/|[A-Za-z]:[\\/])/u.test(value.trim()); }
+function pythonRemoteReference(value: string): boolean { return /^(?:git\+|git:|git@|github:|https?:)/i.test(value.trim()) || /\s+@\s+(?:https?|git\+):/i.test(value); }
+function isPublicPyPIIndex(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "pypi.org" && url.port === "" && url.username === "" && url.password === "" && url.search === "" && url.hash === "" && url.pathname.replace(/\/+$/u, "") === "/simple";
+  } catch { return false; }
+}
+function pythonJsonStringify(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value).replace(/[\u0080-\uffff]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  if (typeof value === "number" || typeof value === "boolean") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(pythonJsonStringify).join(", ")}]`;
+  if (typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map(key => `${pythonJsonStringify(key)}: ${pythonJsonStringify(object[key])}`).join(", ")}}`;
+  }
+  return "null";
+}
+function poetryContentHash(data: JsonRecord, withDependencyGroups = true): string {
+  const project = record(data.project) ?? {};
+  const group = withDependencyGroups ? data["dependency-groups"] : undefined;
+  const poetry = record(record(data.tool)?.poetry) ?? {};
+  const relevantProject: JsonRecord = {};
+  for (const key of ["requires-python", "dependencies", "optional-dependencies"]) if (project[key] !== undefined) relevantProject[key] = project[key];
+  const legacyKeys = ["dependencies", "source", "extras", "dev-dependencies"];
+  const relevantPoetry: JsonRecord = {};
+  const hasProject = Object.keys(relevantProject).length > 0;
+  const hasGroups = record(group) !== undefined && Object.keys(record(group)!).length > 0;
+  for (const key of [...legacyKeys, "group"]) {
+    const value = poetry[key];
+    if (value === undefined && (!legacyKeys.includes(key) || hasProject || hasGroups)) continue;
+    relevantPoetry[key] = value ?? null;
+  }
+  const relevant: JsonRecord = {};
+  if (hasProject) relevant.project = relevantProject;
+  if (hasGroups) relevant["dependency-groups"] = group;
+  if (Object.keys(relevant).length > 0) relevant.tool = { poetry: relevantPoetry };
+  else return createHash("sha256").update(pythonJsonStringify(relevantPoetry)).digest("hex");
+  return createHash("sha256").update(pythonJsonStringify(relevant)).digest("hex");
+}
+function poetryPublicPyPIConfigured(poetry: JsonRecord | undefined): boolean {
+  const sources = poetry?.source;
+  if (!Array.isArray(sources)) return true;
+  let primaryCustom = false;
+  let explicitPyPI = false;
+  for (const value of sources) {
+    const source = record(value);
+    const name = stringValue(source?.name)?.toLowerCase();
+    if (!name) return false;
+    if (name === "pypi") {
+      if (source?.url !== undefined) return false;
+      explicitPyPI = true;
+      continue;
+    }
+    const priority = stringValue(source?.priority)?.toLowerCase() ?? "primary";
+    if (priority !== "supplemental" && priority !== "explicit") primaryCustom = true;
+  }
+  return !primaryCustom || explicitPyPI;
+}
+function pythonRequirementName(value: string): string | undefined {
+  return value.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)/)?.[1];
+}
+
+function poetrySpecifier(value: string): string | undefined {
+  const raw = value.trim();
+  if (!raw || raw === "*") return undefined;
+  if (/^\^\s*\d/.test(raw)) {
+    const version = raw.slice(1).trim();
+    if (!/^\d+(?:\.\d+){0,2}$/u.test(version)) return undefined;
+    const parts = version.split(".").map(Number);
+    if (parts.length < 1 || parts.some(part => !Number.isSafeInteger(part) || part < 0)) return undefined;
+    const [major = 0, minor = 0, patch = 0] = parts;
+    const upper = major > 0 ? `${major + 1}.0.0` : minor > 0 ? `0.${minor + 1}.0` : `0.0.${patch + 1}`;
+    return `>=${version},<${upper}`;
+  }
+  if (/^~\s*\d/.test(raw)) {
+    const version = raw.slice(1).trim();
+    if (!/^\d+(?:\.\d+){0,2}$/u.test(version)) return undefined;
+    const parts = version.split(".").map(Number);
+    if (parts.length < 1 || parts.some(part => !Number.isSafeInteger(part) || part < 0)) return undefined;
+    const [major, minor = 0] = parts;
+    return `>=${version},<${major}.${minor + 1}`;
+  }
+  const normalized = /^\d/.test(raw) ? `==${raw}` : raw;
+  return validPythonSpecifier(normalized) ? normalized : undefined;
+}
+
+function pythonDependencyFromRequirement(value: string, poetry = false): DirectDependency | undefined {
+  const requirement = value.trim();
+  if (!requirement || requirement.startsWith("#") || /^(?:--?(?:requirement|constraint)\b|-r\b|-c\b|--(?:index-url|extra-index-url|trusted-host|no-index|require-hashes)\b)/i.test(requirement)) return undefined;
+  if (/^-{1,2}e(?:ditable)?\s+/i.test(requirement)) {
+    const target = requirement.replace(/^-{1,2}e(?:ditable)?\s+/i, "").trim();
+    const egg = target.match(/[#&]egg=([^&\s]+)/i)?.[1];
+    const name = egg ? normalizePythonPackageName(egg) : "<editable>";
+    return { name, requirement, local: pythonLocalReference(target), registryEligible: false };
+  }
+  const markerIndex = requirement.indexOf(";");
+  const base = (markerIndex >= 0 ? requirement.slice(0, markerIndex) : requirement).trim();
+  const hasEnvironmentMarker = markerIndex >= 0 && requirement.slice(markerIndex + 1).trim().length > 0;
+  const direct = base.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)\s*@\s*(\S+)$/);
+  const shorthand = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9_.-]+(?:#.*)?$/u.test(base);
+  if (!direct && (pythonRemoteReference(base) || shorthand)) return { name: base, requirement, local: false, registryEligible: false };
+  const packagePrefix = base.match(/^([A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]+\])?)/u);
+  const name = direct?.[1] ?? packagePrefix?.[1]?.replace(/\[[^\]]+\]$/u, "") ?? pythonRequirementName(base);
+  if (!name) {
+    if (pythonRemoteReference(base)) return { name: base, requirement, local: false, registryEligible: false };
+    return undefined;
+  }
+  const canonicalName = normalizePythonPackageName(name);
+  const target = direct?.[2] ?? base.slice(direct ? base.indexOf(direct[2]!) : packagePrefix?.[1]?.length ?? name.length).trim();
+  const local = pythonLocalReference(target);
+  const remote = pythonRemoteReference(target);
+  const specifier = poetry ? poetrySpecifier(target) : target || undefined;
+  const exact = !poetry && target.match(/^==\s*([^\s]+)$/)?.[1];
+  const exactVersion = exact && !exact.includes("*") && validPythonVersion(exact) ? exact : undefined;
+  return {
+    name: canonicalName,
+    requirement,
+    local,
+    registryEligible: !local && !remote && !hasEnvironmentMarker,
+    ...(specifier ? { specifier } : {}),
+    ...(exactVersion ? { exactVersion } : {})
+  };
+}
+
+function requirementsDependencies(value: string): { dependencies: DirectDependency[]; malformed: boolean } {
+  const dependencies: DirectDependency[] = [];
+  const lines = value.split(/\r?\n/u);
+  let sourceAmbiguous = false;
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+#.*$/u, "").trim();
+    const sourceDirective = line.match(/^--(index-url|extra-index-url|find-links)(?:=|\s+)(\S+)$/i);
+    if (sourceDirective && (sourceDirective[1]!.toLowerCase() !== "index-url" || !isPublicPyPIIndex(sourceDirective[2]!))) sourceAmbiguous = true;
+    if (!sourceDirective && /^--(?:index-url|extra-index-url|find-links)(?:\s|=|$)/i.test(line)) sourceAmbiguous = true;
+    if (/^--no-index(?:\s|=|$)/i.test(line)) sourceAmbiguous = true;
+  }
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+#.*$/u, "").trim();
+    if (!line || line.startsWith("#") || /^--hash(?:=|\s)/i.test(line)) continue;
+    const sourceDirective = line.match(/^--(index-url|extra-index-url|find-links)(?:=|\s+)(\S+)$/i);
+    if (sourceDirective) {
+      if (sourceDirective[1]!.toLowerCase() !== "index-url" || !isPublicPyPIIndex(sourceDirective[2]!)) sourceAmbiguous = true;
+      continue;
+    }
+    if (/^--no-index(?:\s|=|$)/i.test(line)) { sourceAmbiguous = true; continue; }
+    if (/^(?:-r|--requirement|-c|--constraint)\b/i.test(line)) continue;
+    const withoutHashes = line.replace(/\s+--hash(?:=|\s+)\S+/gi, "").trim();
+    const dependency = pythonDependencyFromRequirement(withoutHashes);
+    if (dependency) dependencies.push(sourceAmbiguous && !dependency.local ? { ...dependency, registryEligible: false } : dependency);
+  }
+  return { dependencies, malformed: false };
+}
+
+function pythonDependencyFromPoetry(name: string, value: unknown): DirectDependency | undefined {
+  if (name.toLowerCase() === "python") return undefined;
+  const declaration = record(value);
+  if (typeof value === "string") return pythonDependencyFromRequirement(`${name} ${value}`, true);
+  if (!declaration) return { name: normalizePythonPackageName(name), requirement: "<invalid>", local: false, registryEligible: false };
+  const rawVersion = stringValue(declaration.version) ?? "<unspecified>";
+  const local = typeof declaration.path === "string";
+  const remote = typeof declaration.git === "string" || typeof declaration.url === "string" || (typeof declaration.source === "string" && declaration.source.toLowerCase() !== "pypi");
+  const specifier = rawVersion === "<unspecified>" ? undefined : poetrySpecifier(rawVersion);
+  return { name: normalizePythonPackageName(name), requirement: rawVersion, local, registryEligible: !local && !remote, ...(specifier ? { specifier } : {}) };
+}
+
+function pyprojectDependencies(value: string): { dependencies: DirectDependency[]; malformed: boolean; packageName?: string } {
+  try {
+    const data = record(parseToml(value) as unknown);
+    if (!data) return { dependencies: [], malformed: true };
+    const dependencies: DirectDependency[] = [];
+    const project = record(data.project);
+    const projectName = stringValue(project?.name);
+    const projectDependencies = project?.dependencies;
+    if (Array.isArray(projectDependencies)) for (const item of projectDependencies) if (typeof item === "string") {
+      const dependency = pythonDependencyFromRequirement(item);
+      if (dependency) dependencies.push(dependency);
+    }
+    const optional = record(project?.["optional-dependencies"]);
+    for (const values of Object.values(optional ?? {})) if (Array.isArray(values)) for (const item of values) if (typeof item === "string") {
+      const dependency = pythonDependencyFromRequirement(item);
+      if (dependency) dependencies.push(dependency);
+    }
+    const tool = record(data.tool);
+    const poetry = record(tool?.poetry);
+    for (const [name, declaration] of Object.entries(record(poetry?.dependencies) ?? {})) {
+      const dependency = pythonDependencyFromPoetry(name, declaration);
+      if (dependency) dependencies.push(dependency);
+    }
+    for (const group of Object.values(record(poetry?.group) ?? {})) for (const [name, declaration] of Object.entries(record(record(group)?.dependencies) ?? {})) {
+      const dependency = pythonDependencyFromPoetry(name, declaration);
+      if (dependency) dependencies.push(dependency);
+    }
+    const uvSources = record(record(tool?.uv)?.sources);
+    const poetryPublicPyPI = poetryPublicPyPIConfigured(poetry);
+    const adjusted = dependencies.map(item => {
+      const sourceEntry = Object.entries(uvSources ?? {}).find(([name]) => normalizePythonPackageName(name) === item.name);
+      const source = record(sourceEntry?.[1]);
+      if (!source) return poetryPublicPyPI ? item : { ...item, registryEligible: false };
+      const local = typeof source.path === "string" || typeof source.workspace === "string" || typeof source.editable === "string";
+      const remote = typeof source.git === "string" || typeof source.url === "string" || typeof source.index === "string";
+      return { ...item, local: item.local || local, registryEligible: item.registryEligible !== false && !local && !remote && poetryPublicPyPI };
+    });
+    const seen = new Set<string>();
+    return { dependencies: adjusted.filter(item => { const key = `${item.name}:${item.requirement}:${item.local}:${item.registryEligible}`; if (seen.has(key)) return false; seen.add(key); return true; }), malformed: false, ...(projectName ? { packageName: normalizePythonPackageName(projectName) } : poetry?.name && typeof poetry.name === "string" ? { packageName: normalizePythonPackageName(poetry.name) } : {}), ...(poetry ? { poetryContentHash: poetryContentHash(data) } : {}) };
+  } catch {
+    return { dependencies: [], malformed: true };
+  }
+}
+
+const GO_VERSION = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+
+type ParsedGoVersion = { major: number; minor: number; patch: number; prerelease: string[] };
+
+function parseGoVersion(value: string): ParsedGoVersion | undefined {
+  const match = value.match(GO_VERSION);
+  if (!match) return undefined;
+  const numbers = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (numbers.some(number => !Number.isSafeInteger(number))) return undefined;
+  return { major: numbers[0]!, minor: numbers[1]!, patch: numbers[2]!, prerelease: match[4]?.split(".") ?? [] };
+}
+
+function validGoModuleVersion(value: string): boolean { return parseGoVersion(value) !== undefined; }
+function goLocalReference(value: string): boolean { return /^(?:\.{0,2}\/|\/|[A-Za-z]:[\\/])/u.test(value); }
+
+function parseGoRequireLine(line: string): DirectDependency | undefined {
+  const fields = line.trim().split(/\s+/u);
+  if (fields.length !== 2 || !fields[0] || !validGoModuleVersion(fields[1]!)) return undefined;
+  return { name: fields[0], requirement: fields[1]!, local: false, registryEligible: true };
+}
+
+function parseGoExcludeLine(line: string): GoExclude | undefined {
+  const fields = line.trim().split(/\s+/u);
+  if (fields.length !== 2 || !fields[0] || !validGoModuleVersion(fields[1]!)) return undefined;
+  return { name: fields[0]!, version: fields[1]! };
+}
+
+function parseGoReplacementLine(line: string): GoReplacement | undefined {
+  const parts = line.split("=>");
+  if (parts.length !== 2) return undefined;
+  const left = parts[0]!.trim().split(/\s+/u);
+  const right = parts[1]!.trim().split(/\s+/u);
+  if ((left.length !== 1 && left.length !== 2) || (right.length !== 1 && right.length !== 2) || !left[0] || !right[0]) return undefined;
+  const oldVersion = left[1];
+  if (oldVersion !== undefined && !validGoModuleVersion(oldVersion)) return undefined;
+  if (goLocalReference(right[0]!)) return { oldName: left[0]!, ...(oldVersion ? { oldVersion } : {}), local: true };
+  if (right.length !== 2 || !validGoModuleVersion(right[1]!)) return undefined;
+  return { oldName: left[0]!, ...(oldVersion ? { oldVersion } : {}), local: false, name: right[0]!, version: right[1]! };
+}
+
+function parseGoDependencies(value: string): GoParsedDependencies {
+  const requires: DirectDependency[] = [];
+  const replacements: GoReplacement[] = [];
+  const excludes: GoExclude[] = [];
+  let section: "require" | "replace" | "exclude" | undefined;
+  let malformed = false;
+  for (const rawLine of value.split(/\r?\n/u)) {
+    const line = rawLine.replace(/\s+\/\/.*$/u, "").trim();
+    if (!line) continue;
+    const start = line.match(/^(require|replace|exclude)\s*\($/u);
+    if (start) { section = start[1] as "require" | "replace" | "exclude"; continue; }
+    if (line === ")") { if (!section) malformed = true; section = undefined; continue; }
+    const standalone = line.match(/^(require|replace|exclude)\s+(.+)$/u);
+    if (standalone && !section) {
+      const item = standalone[1] === "require" ? parseGoRequireLine(standalone[2]!) : standalone[1] === "replace" ? parseGoReplacementLine(standalone[2]!) : parseGoExcludeLine(standalone[2]!);
+      if (!item) malformed = true;
+      else if (standalone[1] === "require") requires.push(item as DirectDependency);
+      else if (standalone[1] === "replace") replacements.push(item as GoReplacement);
+      else excludes.push(item as GoExclude);
+      continue;
+    }
+    const item = section === "require" ? parseGoRequireLine(line) : section === "replace" ? parseGoReplacementLine(line) : section === "exclude" ? parseGoExcludeLine(line) : undefined;
+    if (section && !item) malformed = true;
+    else if (section === "require") requires.push(item as DirectDependency);
+    else if (section === "replace") replacements.push(item as GoReplacement);
+    else if (section === "exclude") excludes.push(item as GoExclude);
+  }
+  if (section !== undefined) malformed = true;
+  return { requires, replacements, excludes, malformed };
+}
+
+function goDependencies(value: string): { dependencies: DirectDependency[]; malformed: boolean } {
+  const parsed = parseGoDependencies(value);
+  const dependencies = parsed.requires.map(item => {
+    const matching = parsed.replacements.filter(candidate => candidate.oldName === item.name && (candidate.oldVersion === undefined || candidate.oldVersion === item.requirement));
+    if (matching.length === 0) return item;
+    if (matching.length > 1) return { ...item, registryEligible: false };
+    const replacement = matching[0]!;
+    if (replacement.local) return { ...item, local: true, registryEligible: false };
+    return { ...item, name: replacement.name!, packageName: replacement.name!, requirement: replacement.version!, specifier: replacement.version! };
+  });
+  return { dependencies, malformed: parsed.malformed };
+}
+
+function parseGoVendorModules(value: string): Map<string, GoVendorModule[]> | Error {
+  const modules = new Map<string, GoVendorModule[]>();
+  let current: GoVendorModule | undefined;
+  for (const rawLine of value.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("## ")) {
+      if (current && line.slice(3).split(";").map(item => item.trim()).includes("explicit")) current.explicit = true;
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      const body = line.slice(1).trim();
+      const match = body.match(/^(\S+)(?:\s+(v\S+))?(?:\s+=>\s+(\S+)(?:\s+(v\S+))?)?$/u);
+      if (!match || (match[2] !== undefined && !validGoModuleVersion(match[2])) || (match[4] !== undefined && !validGoModuleVersion(match[4]))) return new Error("dependency_vendor_malformed");
+      if (!match[2] && !match[3]) { current = undefined; continue; }
+      const module: GoVendorModule = { name: match[1]!, explicit: false, hasPackage: false };
+      if (match[2]) module.version = match[2];
+      if (match[3]) {
+        if (goLocalReference(match[3])) module.localReplacement = match[3];
+        else {
+          if (!match[4]) return new Error("dependency_vendor_malformed");
+          module.replacementName = match[3]; module.replacementVersion = match[4];
+        }
+      }
+      current = module;
+      modules.set(module.name, [...(modules.get(module.name) ?? []), module]);
+      continue;
+    }
+    if (line.startsWith("#")) return new Error("dependency_vendor_malformed");
+    if (current) {
+      if (line.split(/\s+/u).length !== 1) return new Error("dependency_vendor_malformed");
+      current.hasPackage = true;
+    }
+  }
+  return modules;
+}
+
+function goVendorPathForManifest(manifestPath: string, candidatePaths: readonly string[]): string | undefined {
+  const manifestDirectory = directory(manifestPath);
+  const candidates = candidatePaths.filter(path => GO_VENDOR_MANIFEST.test(path) && directory(directory(path)) === manifestDirectory).sort();
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function goVendorConsistent(parsed: GoParsedDependencies, vendor: Map<string, GoVendorModule[]>): boolean {
+  const directRecords = new Set<GoVendorModule>();
+  for (const item of parsed.requires) {
+    const replacements = parsed.replacements.filter(candidate => candidate.oldName === item.name && (candidate.oldVersion === undefined || candidate.oldVersion === item.requirement));
+    if (replacements.length > 1) return false;
+    const records = (vendor.get(item.name) ?? []).filter(record => record.version === item.requirement);
+    if (records.length !== 1) continue;
+    const record = records[0]!;
+    directRecords.add(record);
+    const replacement = replacements[0];
+    if (!replacement) {
+      if (record.replacementName !== undefined || record.localReplacement !== undefined) return false;
+      continue;
+    }
+    if (replacement.local) {
+      if (record.localReplacement === undefined || record.replacementName !== undefined) return false;
+    } else if (record.replacementName !== replacement.name || record.replacementVersion !== replacement.version || record.localReplacement !== undefined) return false;
+  }
+  for (const replacement of parsed.replacements) {
+    const records = (vendor.get(replacement.oldName) ?? []).filter(record => replacement.oldVersion === undefined || record.version === replacement.oldVersion);
+    if (records.length !== 1) return false;
+    const record = records[0]!;
+    if (!directRecords.has(record)) return false;
+    if (replacement.local ? record.localReplacement === undefined : record.replacementName !== replacement.name || record.replacementVersion !== replacement.version) return false;
+  }
+  for (const exclude of parsed.excludes) {
+    const records = vendor.get(exclude.name) ?? [];
+    if (records.some(record => record.version === exclude.version && directRecords.has(record))) return false;
+  }
+  for (const records of vendor.values()) for (const record of records) {
+    if (record.explicit && !directRecords.has(record)) return false;
+  }
+  return true;
+}
+
+function goVendorDependency(item: DirectDependency, parsed: GoParsedDependencies, vendor: Map<string, GoVendorModule[]>): DirectDependency {
+  const replacements = parsed.replacements.filter(candidate => candidate.oldName === item.name && (candidate.oldVersion === undefined || candidate.oldVersion === item.requirement));
+  if (replacements.length > 1) return { ...item, registryEligible: false };
+  const replacement = replacements[0];
+  const records = (vendor.get(item.name) ?? []).filter(record => record.version === item.requirement);
+  if (records.length !== 1) return { ...item, registryEligible: false };
+  const record = records[0]!;
+  if (!record.explicit || !record.hasPackage) return { ...item, registryEligible: false };
+  if (replacement?.local) return { ...item, local: record.localReplacement !== undefined, registryEligible: false };
+  if (replacement && !replacement.local) {
+    if (record.replacementName !== replacement.name || record.replacementVersion !== replacement.version) return { ...item, registryEligible: false };
+    if (parsed.excludes.some(exclude => exclude.name === replacement.name && exclude.version === replacement.version)) return { ...item, registryEligible: false };
+    return { ...item, name: replacement.name!, packageName: replacement.name!, requirement: replacement.version!, specifier: replacement.version! };
+  }
+  if (!record.version || record.version !== item.requirement) return { ...item, registryEligible: false };
+  if (parsed.excludes.some(exclude => exclude.name === item.name && exclude.version === record.version)) return { ...item, registryEligible: false };
+  return { ...item, name: record.name, packageName: record.name, requirement: record.version, specifier: record.version };
+}
+
+function pythonPackageRecords(lock: unknown): JsonRecord[] {
+  const packages = record(lock)?.package;
+  return Array.isArray(packages) ? packages.map(record).filter((item): item is JsonRecord => item !== undefined) : [];
+}
+
+function pythonLockVersionMatches(item: DirectDependency, version: string): boolean {
+  return item.specifier !== undefined && validPythonSpecifier(item.specifier) && validPythonVersion(version) && satisfiesPep440(version, item.specifier);
+}
+
+function normalizePath(value: string): string { return value.replaceAll("\\", "/").replace(/^\.\//u, "").replace(/\/$/u, "") || "."; }
+
+function uvRootPackage(lock: JsonRecord, lockPath: string, manifest: ParsedManifest): JsonRecord | undefined {
+  if (!manifest.packageName) return undefined;
+  const root = relativePath(directory(lockPath), directory(manifest.path));
+  if (root === undefined) return undefined;
+  const candidates = pythonPackageRecords(lock).filter(item => {
+    const editable = stringValue(record(item.source)?.editable);
+    return normalizePythonPackageName(stringValue(item.name) ?? "") === manifest.packageName && editable !== undefined && normalizePath(editable) === normalizePath(root);
+  });
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function uvPackageVersion(lock: JsonRecord, lockPath: string, manifest: ParsedManifest, item: DirectDependency): string | undefined {
+  const root = uvRootPackage(lock, lockPath, manifest);
+  if (!root) return undefined;
+  const direct = Array.isArray(root.dependencies) ? root.dependencies.filter(value => normalizePythonPackageName(stringValue(record(value)?.name) ?? "") === item.name) : [];
+  if (direct.length !== 1) return undefined;
+  const requiresDist = Array.isArray(record(root.metadata)?.["requires-dist"]) ? record(root.metadata)!["requires-dist"] as unknown[] : [];
+  const metadataMatches = requiresDist.filter(value => normalizePythonPackageName(stringValue(record(value)?.name) ?? "") === item.name);
+  if (metadataMatches.length > 1) return undefined;
+  if (metadataMatches.length === 1 && stringValue(record(metadataMatches[0])?.specifier) !== item.specifier) return undefined;
+  const versions = pythonPackageRecords(lock).filter(candidate => normalizePythonPackageName(stringValue(candidate.name) ?? "") === item.name && isPublicPyPIIndex(stringValue(record(candidate.source)?.registry) ?? "") && exactPythonVersion(stringValue(candidate.version))).map(candidate => stringValue(candidate.version)!);
+  const unique = [...new Set(versions)];
+  return unique.length === 1 && pythonLockVersionMatches(item, unique[0]!) ? unique[0] : undefined;
+}
+
+function exactPythonVersion(value: string | undefined): value is string { return value !== undefined && validPythonVersion(value); }
+
+function poetryPackageVersion(lock: JsonRecord, manifest: ParsedManifest, item: DirectDependency): string | undefined {
+  const metadata = record(lock.metadata);
+  const lockVersion = stringValue(metadata?.["lock-version"]);
+  const contentHash = stringValue(metadata?.["content-hash"]);
+  if ((lockVersion !== "2.0" && lockVersion !== "2.1") || !contentHash || !/^[a-f0-9]{64}$/u.test(contentHash) || manifest.poetryContentHash !== contentHash) return undefined;
+  const versions = pythonPackageRecords(lock).filter(candidate => normalizePythonPackageName(stringValue(candidate.name) ?? "") === item.name && candidate.source === undefined && exactPythonVersion(stringValue(candidate.version))).map(candidate => stringValue(candidate.version)!);
+  const unique = [...new Set(versions)];
+  return unique.length === 1 && pythonLockVersionMatches(item, unique[0]!) ? unique[0] : undefined;
 }
 
 function npmDependencies(value: string): { dependencies: DirectDependency[]; malformed: boolean } {
@@ -150,12 +598,18 @@ function cargoDependencies(value: string): { dependencies: DirectDependency[]; m
 }
 
 function parseManifest(path: string, value: string): ParsedManifest {
-  if (basename(path).toLowerCase() === NPM_MANIFEST_NAME) {
+  const name = basename(path).toLowerCase();
+  if (name === NPM_MANIFEST_NAME) {
     const parsed = npmDependencies(value);
     return { path, ecosystem: "NPM", ...parsed };
   }
-  const parsed = cargoDependencies(value);
-  return { path, ecosystem: "CARGO", ...parsed };
+  if (name === CARGO_MANIFEST_NAME) {
+    const parsed = cargoDependencies(value);
+    return { path, ecosystem: "CARGO", ...parsed };
+  }
+  if (name === GO_MANIFEST_NAME) return { path, ecosystem: "GO", ...goDependencies(value) };
+  if (name === PYPROJECT_MANIFEST_NAME) return { path, ecosystem: "PYPI", ...pyprojectDependencies(value) };
+  return { path, ecosystem: "PYPI", ...requirementsDependencies(value) };
 }
 
 function parseJsonRelaxed(value: string): unknown {
@@ -234,6 +688,20 @@ function cargoWorkspaceOwns(root: string, manifestPath: string, files: ReadonlyM
   } catch { return false; }
 }
 
+function pythonWorkspaceOwns(root: string, manifestPath: string, files: ReadonlyMap<string, string>): boolean {
+  const workspacePath = relativePath(root, directory(manifestPath));
+  if (!workspacePath || workspacePath === ".") return true;
+  const rootManifest = root === "." ? PYPROJECT_MANIFEST_NAME : `${root}/${PYPROJECT_MANIFEST_NAME}`;
+  const value = files.get(rootManifest);
+  if (!value) return false;
+  try {
+    const data = record(parseToml(value) as unknown);
+    const workspace = record(record(data?.tool)?.uv)?.workspace;
+    const members = Array.isArray(record(workspace)?.members) ? record(workspace)!.members as unknown[] : [];
+    return members.filter((item): item is string => typeof item === "string").some(member => workspacePatternMatches(member, workspacePath));
+  } catch { return false; }
+}
+
 function bunWorkspaceOwns(lockValue: string, root: string, manifestPath: string): boolean {
   try {
     const parsed = record(parseJsonRelaxed(lockValue));
@@ -259,6 +727,7 @@ function lockOwnsManifest(lockPath: string, manifestPath: string, files: Readonl
   const value = files.get(lockPath);
   if (!value) return false;
   if (kind === "CARGO") return cargoWorkspaceOwns(root, manifestPath, files);
+  if (kind === "PYPI") return basename(lockPath).toLowerCase() === "uv.lock" && pythonWorkspaceOwns(root, manifestPath, files);
   if (basename(lockPath).toLowerCase() === "bun.lock") return bunWorkspaceOwns(value, root, manifestPath) || packageWorkspaceOwns(root, manifestPath, files);
   if (basename(lockPath).toLowerCase() === "pnpm-lock.yaml") return pnpmImporterOwns(value, root, manifestPath) || packageWorkspaceOwns(root, manifestPath, files);
   return packageWorkspaceOwns(root, manifestPath, files);
@@ -467,6 +936,7 @@ function parseLock(path: string, value: string): unknown | Error {
     if (name === "pnpm-lock.yaml") return parseYaml(value, { maxAliasCount: 1000 });
     if (name === "yarn.lock") return yarnEntries(value);
     if (name === "cargo.lock") return parseToml(value);
+    if (name === "uv.lock" || name === "poetry.lock") return parseToml(value);
     if (name === "bun.lock") {
       try { return parseJsonRelaxed(value); }
       catch { return parseJsonRelaxed(`{${value}}`); }
@@ -486,6 +956,8 @@ function lockVersion(lockPath: string, manifest: ParsedManifest, lock: unknown |
   if (lockName === "pnpm-lock.yaml") return pnpmPackageVersion(record(lock) ?? {}, lockPath, manifest, item);
   if (lockName === "yarn.lock") return Array.isArray(lock) ? yarnPackageVersion(lock as Array<{ selectors: string[]; version: string }>, item) : undefined;
   if (lockName === "cargo.lock") return cargoPackageVersion(record(lock) ?? {}, manifest, item);
+  if (lockName === "uv.lock") return uvPackageVersion(record(lock) ?? {}, lockPath, manifest, item);
+  if (lockName === "poetry.lock") return poetryPackageVersion(record(lock) ?? {}, manifest, item);
   return undefined;
 }
 
@@ -504,6 +976,7 @@ const MAX_DEPENDENCY_LOCK_ENTRIES = 100_000;
 function lockEntryCount(path: string, lock: unknown): number {
   const name = basename(path).toLowerCase();
   if (name === "cargo.lock") return Array.isArray(record(lock)?.package) ? (record(lock)!.package as unknown[]).length : 0;
+  if (name === "uv.lock" || name === "poetry.lock") return Array.isArray(record(lock)?.package) ? (record(lock)!.package as unknown[]).length : 0;
   if (name === "yarn.lock") return Array.isArray(lock) ? lock.length : 0;
   const data = record(lock);
   if (!data) return 0;
@@ -524,26 +997,65 @@ export function resolveRepositoryDependencies(input: DependencyResolutionInput):
   let applicableExternalDependencyCount = 0;
   const lockCache: LockCache = new Map();
 
-  for (const path of candidatePaths) {
-    const ecosystem = unsupportedEcosystemForPath(path);
-    if (ecosystem) unsupportedEcosystems.add(ecosystem);
-  }
-
   for (const manifest of manifests) {
-    const external = manifest.dependencies.filter(item => !item.local);
+    const parsedGo = manifest.ecosystem === "GO" ? parseGoDependencies(files.get(manifest.path) ?? "") : undefined;
+    const directDependencies = parsedGo?.requires ?? manifest.dependencies;
+    const external = directDependencies.filter(item => !item.local && !(parsedGo?.replacements.some(candidate => candidate.oldName === item.name && (candidate.oldVersion === undefined || candidate.oldVersion === item.requirement) && candidate.local) ?? false));
     for (const item of external.filter(item => item.registryEligible === false)) limitations.push(`dependency_specifier_unsupported:${manifest.path}:${item.name}`);
     if (manifest.malformed) {
       if (external.length === 0) {
         const unknown = { name: "<manifest>", requirement: "<malformed>", local: false };
         addUnresolved(unresolvedDependencies, unknown, manifest);
         applicableExternalDependencyCount += 1;
-      } else for (const item of external) addUnresolved(unresolvedDependencies, item, manifest);
+      } else for (const item of external) {
+        addUnresolved(unresolvedDependencies, item, manifest);
+        applicableExternalDependencyCount += 1;
+      }
       limitations.push(`dependency_manifest_malformed:${manifest.path}`);
       resolversAttempted.add(manifest.ecosystem);
       continue;
     }
     if (external.length === 0) continue;
     resolversAttempted.add(manifest.ecosystem);
+    if (manifest.ecosystem === "PYPI" && isRequirementsPath(manifest.path)) {
+      for (const item of external) {
+        applicableExternalDependencyCount += 1;
+        if (item.registryEligible === false) {
+          addUnresolved(unresolvedDependencies, item, manifest, manifest.path);
+        } else if (item.exactVersion) {
+          exactDependencies.push(exact(item, manifest, item.exactVersion, manifest.path));
+        } else {
+          addUnresolved(unresolvedDependencies, item, manifest, manifest.path);
+          limitations.push(`dependency_version_unresolved:${manifest.path}:${item.name}`);
+        }
+      }
+      continue;
+    }
+    if (manifest.ecosystem === "GO") {
+      const vendorPath = goVendorPathForManifest(manifest.path, candidatePaths);
+      const vendorValue = vendorPath === undefined ? undefined : files.get(vendorPath);
+      const parsedVendor = vendorValue === undefined ? new Error("dependency_vendor_unavailable") : parseGoVendorModules(vendorValue);
+      const vendorConsistent = vendorPath !== undefined && !(parsedVendor instanceof Error) && goVendorConsistent(parsedGo!, parsedVendor);
+      if (vendorPath === undefined) limitations.push(`dependency_vendor_missing:${manifest.path}`);
+      else if (vendorValue === undefined) limitations.push(`dependency_vendor_unavailable:${vendorPath}`);
+      else if (parsedVendor instanceof Error) limitations.push(`${parsedVendor.message}:${vendorPath}`);
+      else if (!vendorConsistent) limitations.push(`dependency_vendor_inconsistent:${vendorPath}`);
+      for (const item of external) {
+        applicableExternalDependencyCount += 1;
+        if (!vendorConsistent) {
+          addUnresolved(unresolvedDependencies, item, manifest, vendorPath);
+          continue;
+        }
+        const selected = goVendorDependency(item, parsedGo!, parsedVendor);
+        if (selected.registryEligible === false) {
+          addUnresolved(unresolvedDependencies, item, manifest, vendorPath);
+          limitations.push(`dependency_version_unresolved:${manifest.path}:${item.name}`);
+        } else {
+          exactDependencies.push(exact(selected, manifest, selected.requirement, vendorPath));
+        }
+      }
+      continue;
+    }
     const selection = selectLock(manifest, candidatePaths, files);
     if (!selection.path) {
       const limitation = selection.reason === "ambiguous" ? `dependency_lock_association_ambiguous:${manifest.path}` : `dependency_lock_missing:${manifest.path}`;
