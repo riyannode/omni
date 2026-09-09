@@ -56,6 +56,16 @@ function text(value: unknown, maximum = 256): string | undefined {
   return normalized.length <= maximum ? normalized : `${normalized.slice(0, maximum - 1)}…`;
 }
 
+function compactGatewayExtra(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const extra: Record<string, string> = {};
+  for (const key of ["name", "version", "verifyingContract"]) {
+    const item = text(value[key]);
+    if (item !== undefined) extra[key] = item;
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
 function boundedStrings(value: unknown, maximumEntries: number): { values: string[]; omitted: number } {
   const values = Array.isArray(value)
     ? [...new Set(value.map(item => text(item)).filter((item): item is string => item !== undefined))].sort()
@@ -196,6 +206,8 @@ function compactRiskAssessment(value: Record<string, unknown>): CompactRiskAsses
         if (item !== undefined) compactOption[key] = item;
       }
       if (typeof option.maxTimeoutSeconds === "number" && Number.isSafeInteger(option.maxTimeoutSeconds)) compactOption.maxTimeoutSeconds = option.maxTimeoutSeconds;
+      const extra = compactGatewayExtra(option.extra);
+      if (extra !== undefined) compactOption.extra = extra;
       return Object.keys(compactOption).length > 0 ? [compactOption] : [];
     });
     const paymentOptionsOmitted = Math.max(rawPaymentOptions.length - paymentOptions.length, integer(existingOmissions.paymentOptionsOmitted));

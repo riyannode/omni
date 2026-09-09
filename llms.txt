@@ -50,7 +50,7 @@ Repository JSON includes bounded `repositorySummary` sections for dependency res
 6. Apply caller/user/runtime wallet policy to the assessment and consistency result.
 7. Pay only if local policy allows; the wallet/runtime enforces that decision and Circle performs settlement.
 
-The response includes `preflightContext.resource` and `preflightContext.paymentOptions`: every payment option observed from Circle Discovery (`scheme`, `network`, `amount`, `asset`, `payTo`, and `maxTimeoutSeconds` as observed; absent fields are omitted). Observed Circle Gateway metadata is retained under `extra.name`, `extra.version`, and `extra.verifyingContract` when present.
+The response includes `preflightContext.resource` and `preflightContext.paymentOptions`: public JSON retains up to 8 observed Circle Discovery options (`scheme`, `network`, `amount`, `asset`, `payTo`, and `maxTimeoutSeconds` as observed; absent fields are omitted). `omissions.paymentOptionsOmitted` reports additional omitted options. Observed Circle Gateway metadata is retained under `extra.name`, `extra.version`, and `extra.verifyingContract` when present. If options were omitted and no retained option matches the selected requirement, consistency is `insufficient_context`, not a definitive `PAYMENT_REQUIREMENTS_MISMATCH`.
 
 The consistency model is `preflight observation → actual selected PaymentRequirements / 402 challenge → consistency comparison → match | repreflight_required | insufficient_context → caller policy → wallet enforcement`. A mismatching or stale challenge requires a fresh assessment or caller-side denial before automatic payment.
 

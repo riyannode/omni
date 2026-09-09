@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { CIRCLE_BATCHING_NAME, CIRCLE_BATCHING_VERSION } from "@circle-fin/x402-batching";
+import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import type { Response } from "express";
+import {
+  checkX402ChallengeAgainstPreflight,
+  ConsistencyReason
+} from "../src/domain/x402-preflight-consistency.ts";
 import { compactResultForHttp, MAX_PUBLIC_MARKDOWN_BYTES, MAX_PUBLIC_JSON_BYTES, sendResult } from "../src/http/result-representation.ts";
 import { renderRiskMarkdown } from "../src/http/risk-markdown.ts";
 
@@ -55,6 +61,38 @@ function repositoryResult() {
     sourceErrors: ["Threat Intelligence: feed unavailable"],
     assessedAt: "2026-09-10T00:00:00.000Z",
     freshness: { oldestEvidenceAt: "2026-09-10T00:00:00.000Z", newestEvidenceAt: "2026-09-10T00:00:00.000Z" }
+  };
+}
+
+function gatewayRequirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
+  return {
+    scheme: "exact",
+    network: "eip155:695569",
+    amount: "10000",
+    asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    payTo: "0xAbCdEf0000000000000000000000000000001234",
+    maxTimeoutSeconds: 300,
+    extra: {
+      name: CIRCLE_BATCHING_NAME,
+      version: CIRCLE_BATCHING_VERSION,
+      verifyingContract: "0x0077777d7EBA4688BDeF3E311b846F25870A19B9"
+    },
+    ...overrides
+  };
+}
+
+function gatewayChallenge(selected: PaymentRequirements, accepts: PaymentRequirements[] = [selected]): { paymentRequired: PaymentRequired; requirements: PaymentRequirements } {
+  return {
+    paymentRequired: { x402Version: 2, resource: { url: "https://example.com/api/paid" }, accepts },
+    requirements: selected
+  };
+}
+
+function x402Result(paymentOptions: PaymentRequirements[]): Record<string, unknown> {
+  return {
+    ...repositoryResult(),
+    subject: { type: "x402_endpoint", id: "https://example.com/api/paid" },
+    preflightContext: { resource: "https://example.com/api/paid", paymentOptions }
   };
 }
 
@@ -170,5 +208,54 @@ describe("compact HTTP representations", () => {
       assessedAt: "2026-09-10T00:00:00.000Z"
     };
     expect(renderRiskMarkdown(dependencyResult)).toContain("`4` additional package details omitted");
+  });
+
+  test("compact Gateway preflight context still matches the actual selected requirement", () => {
+    const canonical = gatewayRequirements();
+    const compact = compactResultForHttp(x402Result([canonical])) as Record<string, any>;
+
+    expect(compact.preflightContext.paymentOptions).toEqual([{
+      scheme: "exact",
+      network: canonical.network,
+      amount: canonical.amount,
+      asset: canonical.asset,
+      payTo: canonical.payTo,
+      maxTimeoutSeconds: canonical.maxTimeoutSeconds,
+      extra: canonical.extra
+    }]);
+    expect(checkX402ChallengeAgainstPreflight(compact as any, gatewayChallenge(canonical))).toEqual({ status: "match", reasons: [] });
+  });
+
+  test("compact Gateway context preserves verifyingContract drift detection", () => {
+    const canonical = gatewayRequirements();
+    const compact = compactResultForHttp(x402Result([canonical])) as Record<string, any>;
+    const drifted = gatewayRequirements({ extra: { ...canonical.extra, verifyingContract: "0x1111111111111111111111111111111111111111" } });
+
+    expect(checkX402ChallengeAgainstPreflight(compact as any, gatewayChallenge(drifted))).toEqual({
+      status: "repreflight_required",
+      reasons: [ConsistencyReason.PAYMENT_REQUIREMENTS_MISMATCH]
+    });
+  });
+
+  test("omitted public payment options produce insufficient context instead of a false mismatch", () => {
+    const canonicalOptions = Array.from({ length: 10 }, (_, index) => gatewayRequirements({ network: `eip155:${index + 1}` }));
+    const selectedOmittedOption = canonicalOptions[8]!;
+    const compact = compactResultForHttp(x402Result(canonicalOptions)) as Record<string, any>;
+    const result = checkX402ChallengeAgainstPreflight(compact as any, gatewayChallenge(selectedOmittedOption));
+
+    expect(compact.preflightContext.paymentOptions).toHaveLength(8);
+    expect(compact.omissions).toMatchObject({ paymentOptionsOmitted: 2 });
+    expect(result).toEqual({ status: "insufficient_context", reasons: [ConsistencyReason.PAYMENT_OPTIONS_OMITTED] });
+  });
+
+  test("without omitted payment options, a complete unmatched option remains a definitive mismatch", () => {
+    const observed = gatewayRequirements();
+    const selected = gatewayRequirements({ amount: "20000" });
+    const compact = compactResultForHttp(x402Result([observed])) as Record<string, any>;
+
+    expect(checkX402ChallengeAgainstPreflight(compact as any, gatewayChallenge(selected))).toEqual({
+      status: "repreflight_required",
+      reasons: [ConsistencyReason.PAYMENT_REQUIREMENTS_MISMATCH]
+    });
   });
 });

@@ -627,6 +627,7 @@ components:
       type: object
       additionalProperties: false
       required: [evidenceDetailsOmitted, dependencyDetailsOmitted]
+      description: Public representation omission counts. For x402 preflight, paymentOptionsOmitted reports options beyond the maximum of 8 retained public options; a nonzero count makes an unmatched selected option insufficient context rather than a definitive mismatch.
       properties:
         evidenceDetailsOmitted: { type: integer, minimum: 0 }
         dependencyDetailsOmitted: { type: integer, minimum: 0 }
@@ -704,7 +705,7 @@ components:
       type: object
       additionalProperties: false
       required: [resource, paymentOptions]
-      description: Observational/advisory record of what OMNI saw during preflight. It is not an authorization object and does not bind any settlement.
+      description: Public observational/advisory record of the preflight payment configuration. Up to 8 observed options are retained; additional options are reported by the top-level omissions.paymentOptionsOmitted field. It is not an authorization object and does not bind any settlement.
       properties:
         resource: { type: string, format: uri }
         paymentOptions:
