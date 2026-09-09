@@ -1,4 +1,4 @@
-import type { Recommendation, RepositoryDependencyVulnerabilityFinding, RepositoryThreatIntelFinding, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot, ScoreStatus } from "./risk.ts";
+import type { Recommendation, RepositoryDependencyVulnerabilityFinding, RepositoryThreatIntelFinding, RepositoryRiskSummary, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot, ScoreStatus } from "./risk.ts";
 import { extractRiskFeatures, type RiskFeatures } from "./risk-features.ts";
 import { DEFAULT_RISK_POLICY, type ReadonlyRiskPolicy } from "./risk-policy.ts";
 
@@ -29,6 +29,60 @@ function freshness(evidence: RiskSnapshot["evidence"]): RiskAssessment["freshnes
   const observedAt = evidence.map(item => item.observedAt).sort();
   const deadlines = evidence.flatMap(item => item.expiresAt ? [item.expiresAt] : []).sort();
   return { oldestEvidenceAt: observedAt[0] ?? null, newestEvidenceAt: observedAt.at(-1) ?? null, ...(deadlines[0] ? { expiresAt: deadlines[0] } : {}) };
+}
+
+function highestSeverity(counts: Record<RiskLevel, number>, policy: ReadonlyRiskPolicy): RiskLevel | null {
+  const known = (Object.keys(counts) as RiskLevel[]).filter(level => level !== "unknown" && counts[level] > 0);
+  if (known.length > 0) return known.sort((left, right) => policy.severityRanks[right] - policy.severityRanks[left])[0] ?? null;
+  return counts.unknown > 0 ? "unknown" : null;
+}
+
+function repositoryRiskSummary(snapshot: RiskSnapshot, features: RiskFeatures, policy: ReadonlyRiskPolicy): RepositoryRiskSummary | undefined {
+  const repositoryEvidence = snapshot.repositoryEvidence;
+  if (!repositoryEvidence) return undefined;
+
+  const vulnerabilitySummaryTrusted = validSummaryStatus(features.repository.dependencyVulnerabilitySummaryStatus) && features.repository.dependencyVulnerabilitySummaryValid;
+  const vulnerabilityCounts = { ...features.repository.dependencyVulnerabilityCountsBySeverity };
+  if (!vulnerabilitySummaryTrusted) {
+    for (const level of Object.keys(vulnerabilityCounts) as RiskLevel[]) vulnerabilityCounts[level] = 0;
+    for (const finding of features.repository.retainedDependencyVulnerabilities) vulnerabilityCounts[finding.vulnerability.severity] += 1;
+  }
+  // VALID and TRUNCATED summaries retain authoritative aggregate counts; only invalid or missing summaries fall back to retained detail.
+  const vulnerabilityTotal = Object.values(vulnerabilityCounts).reduce((total, count) => total + count, 0);
+  const maliciousObserved = vulnerabilitySummaryTrusted
+    ? features.repository.maliciousPackageObservationCount
+    : features.repository.retainedMaliciousPackageObservations.length;
+
+  const threatSummaryTrusted = validSummaryStatus(features.repository.dependencyThreatIntelSummaryStatus) && features.repository.dependencyThreatIntelSummaryValid;
+  const threatCounts = { ...features.repository.dependencyThreatIntelCountsBySeverity };
+  if (!threatSummaryTrusted) {
+    for (const level of Object.keys(threatCounts) as Array<Exclude<RiskLevel, "unknown">>) threatCounts[level] = 0;
+    for (const finding of features.repository.retainedDependencyThreatIntelFindings) threatCounts[finding.finding.severity] += 1;
+  }
+  // As above, preserve trusted aggregate counts even when detail retention was truncated.
+  const threatTotal = Object.values(threatCounts).reduce((total, count) => total + count, 0);
+  const resolution = repositoryEvidence.dependencyResolution;
+  const resolutionComplete = resolution
+    ? resolution.manifestDiscoveryComplete && resolution.unsupportedEcosystems.length === 0 && resolution.unresolvedDependencyCount === 0
+    : repositoryEvidence.dependencies.unresolved.length === 0 && !features.repository.partial;
+
+  return {
+    dependencies: { exact: features.repository.exactDependencyCount, unresolved: features.repository.unresolvedDependencyCount, resolutionComplete },
+    vulnerabilities: {
+      total: vulnerabilityTotal,
+      unknown: vulnerabilityCounts.unknown,
+      low: vulnerabilityCounts.low,
+      medium: vulnerabilityCounts.medium,
+      high: vulnerabilityCounts.high,
+      critical: vulnerabilityCounts.critical,
+      highestSeverity: highestSeverity(vulnerabilityCounts, policy)
+    },
+    knownExploitation: { kevMatches: features.repository.cisaKevMatchedCount, status: repositoryEvidence.dependencyVulnerabilities.cisaKev.status },
+    maliciousPackages: { observed: maliciousObserved },
+    threatIntelligence: { status: repositoryEvidence.dependencyThreatIntel.status, findings: threatTotal, highestSeverity: highestSeverity({ unknown: 0, ...threatCounts }, policy) as Exclude<RiskLevel, "unknown"> | null },
+    provenance: { sourceMismatch: features.repository.provenanceStates.VERIFIED_SOURCE_MISMATCH, commitMismatch: features.repository.provenanceStates.VERIFIED_COMMIT_MISMATCH, unavailable: features.repository.provenanceStates.UNAVAILABLE },
+    securityPractices: { mutableActions: features.repository.mutableActionRefCount, workflowWritePermissions: features.repository.workflowWritePermissionCount, downloadExecuteFindings: features.repository.downloadExecutePatternCount }
+  };
 }
 
 function scoreStatus(features: RiskFeatures): ScoreStatus {
@@ -237,6 +291,7 @@ export class RiskEngine {
 
     const knownVulnerabilities: RiskLevel = isRepository ? repositoryKnownVulnerabilities : features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : worstSeverity(features.vulnerabilities.map(v => v.severity), policy);
     const knownExploitation: RiskLevel = isRepository ? repositoryKnownExploitation : features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : features.exploitationChecked ? scoreLevel(exploitedScore, policy) : "unknown";
+    const summary = repositoryRiskSummary(snapshot, features, policy);
     return {
       subject: snapshot.subject,
       policyVersion: policy.version,
@@ -259,6 +314,7 @@ export class RiskEngine {
       evidence: snapshot.evidence,
       sourceErrors: snapshot.sourceErrors ?? [],
       assessedAt: new Date().toISOString(),
+      ...(summary === undefined ? {} : { repositorySummary: summary }),
       ...(snapshot.maliciousPackageObservations ? { maliciousPackageObservations: snapshot.maliciousPackageObservations } : {}),
       freshness: freshness(snapshot.evidence)
     };

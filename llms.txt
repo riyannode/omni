@@ -10,19 +10,14 @@ All four endpoints require x402 payment per request.
 
 Paid calls also require an `Idempotency-Key` header containing a UUID v4. Reuse the same value when retrying one logical request; using it with different validated input returns a conflict. Completed results replay without another payment, and already-paid incomplete requests recover without another payment.
 
-For successful JSON responses, OMNI always returns the canonical structured assessment inline plus an additive Markdown artifact generated deterministically from that same canonical result:
+Use one response representation per paid request:
 
-```json
-{
-  "artifact": {
-    "filename": "<fixed service filename>",
-    "mediaType": "text/markdown",
-    "content": "<markdown>"
-  }
-}
-```
+- `Accept: application/json` is the compact machine/agent interface. It contains authoritative decision fields, bounded scoring-relevant signals, repository summaries, bounded package `MAL-*` observation counts, coverage, bounded source errors, freshness, and explicit omission counts. It does not contain `artifact`, Markdown, raw `evidence[]`, provider payloads, full advisory objects, or full dependency lists.
+- `Accept: text/markdown` is a concise deterministic human summary. It is not a second copy of the JSON payload and never serializes raw evidence details.
 
-Fixed filenames are `package.risk.md` for `GET /v1/package/risk`, `repo.risk.md` for `GET /v1/repo/risk`, `dependencies.risk.md` for `POST /v1/dependencies/risk`, and `x402.endpoint.preflight.md` for `GET /v1/x402/endpoint/preflight`. No `Accept` header, `Accept: application/json`, and `Accept: */*` return the canonical JSON and artifact payload in the same HTTP 200 response. `Accept: text/markdown` returns only the pure deterministic Markdown representation. Unsupported or zero-quality `Accept` values return HTTP 406 before payment. Successful representations include `Vary: Accept`; switching representation during replay does not execute or settle again. Payment and other error responses remain JSON. Artifact-capable clients may materialize the supplied filename and content; OMNI does not write client files.
+The canonical completed assessment remains internal and is used to derive both representations. Reusing the same UUID v4 `Idempotency-Key` with a different accepted representation replays the completed result without another assessment or settlement. Choose the representation before payment and do not make a second paid request solely to obtain the other representation. Unsupported or zero-quality `Accept` values return HTTP 406 before payment.
+
+Repository JSON includes bounded `repositorySummary` sections for dependency resolution, vulnerability severity, CISA KEV, MAL observations, threat intelligence, provenance, and security-practice findings. `omissions` reports evidence/dependency/signal details intentionally omitted from the public representation; full evidence remains in the AssessmentJournal and internal snapshot.
 
 - [GET /v1/package/risk](https://omni.example.com/v1/package/risk): package risk assessment ($0.005 USDC). Query: `ecosystem`, `name`, `version`.
 - [GET /v1/repo/risk](https://omni.example.com/v1/repo/risk): repository risk assessment ($0.01 USDC). Query: `owner`, `repo`.
@@ -49,7 +44,7 @@ Fixed filenames are `package.risk.md` for `GET /v1/package/risk`, `repo.risk.md`
 
 1. Discover the intended target.
 2. Request an OMNI preflight for the target resource URL before your agent calls or pays it.
-3. Inspect `recommendation`, `evidenceCoverage`, `signals`, `evidence`, `sourceErrors`, and `freshness`.
+3. Inspect the compact JSON fields `recommendation`, `evidenceCoverage`, `dimensions`, `signals`, `repositorySummary` when present, `sourceErrors`, `omissions`, and `freshness`; or read the concise Markdown report for a human summary.
 4. Obtain the actual HTTP 402 `PaymentRequired` challenge from the target.
 5. Compare the selected `PaymentRequirements` from `accepts[]` with OMNI's `preflightContext.paymentOptions` using the local consistency helper.
 6. Apply caller/user/runtime wallet policy to the assessment and consistency result.

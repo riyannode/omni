@@ -269,8 +269,9 @@ ${preflightRule}
 
 OUTPUT
 After HTTP 200:
-1. Show JSON without artifact.content.
-2. Render artifact.content as the human-readable OMNI Markdown Report.
+1. Choose one representation for the task: application/json for machine decisions or text/markdown for a human summary.
+2. Request only that representation. Do not expect an artifact or a second copy of the result.
+3. Use JSON fields for decisions; use Markdown only for human-readable reporting.
 Missing content: report and stop; no more paid requests.`;
 }
 
