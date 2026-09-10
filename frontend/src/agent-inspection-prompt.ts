@@ -270,9 +270,9 @@ Never expose OTP, wallet, signing, or payment authorization secrets.
 ${preflightRule}
 
 OUTPUT
-After HTTP 200, show the OMNI Markdown Report exactly as returned.
-If the Markdown body is missing, report it and stop.
-Do not request another representation or make another paid request.`;
+After the paid call succeeds, show the OMNI Markdown response body exactly as returned.
+With Circle CLI, prefer response-body-only output (--quiet / -q) for the final paid call when supported. If Circle CLI returns a JSON envelope, unwrap the endpoint response payload; when present, data.response is the OMNI response body. Do not treat the CLI envelope itself as the OMNI response.
+If no service response body exists, report it and stop. Do not make another paid request merely because the response is wrapped.`;
 }
 
 export async function copyText(value: string): Promise<void> {

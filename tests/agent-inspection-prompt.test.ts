@@ -177,20 +177,26 @@ describe("agent inspection prompt profiles", () => {
     expect(request.url).not.toContain("name=circle-fin%2Fx402-batching");
   });
 
-  test("output shows the Markdown report and stops when it is missing", () => {
+  test("paid Markdown output handles Circle CLI envelopes without another payment", () => {
     const expectedOutput = [
       "OUTPUT",
-      "After HTTP 200, show the OMNI Markdown Report exactly as returned.",
-      "If the Markdown body is missing, report it and stop.",
-      "Do not request another representation or make another paid request.",
+      "After the paid call succeeds, show the OMNI Markdown response body exactly as returned.",
+      "With Circle CLI, prefer response-body-only output (--quiet / -q) for the final paid call when supported. If Circle CLI returns a JSON envelope, unwrap the endpoint response payload; when present, data.response is the OMNI response body. Do not treat the CLI envelope itself as the OMNI response.",
+      "If no service response body exists, report it and stop. Do not make another paid request merely because the response is wrapped.",
     ].join("\n");
 
     for (const prompt of [AGENT_QUICK_TEST_PROMPT, buildAgentInspectionPrompt(packageInput)]) {
       expect(prompt).toContain(expectedOutput);
-      expect(prompt.match(/^OUTPUT$/gm)).toHaveLength(1);
+      expect(prompt).toContain("Circle CLI");
+      expect(prompt).toContain("data.response");
+      expect(prompt).toContain("--quiet / -q");
       expect(prompt.match(/^TASK$/gm)).toHaveLength(1);
       expect(prompt.match(/^REQUEST$/gm)).toHaveLength(1);
       expect(prompt.match(/^PAYMENT$/gm)).toHaveLength(1);
+      expect(prompt.match(/^OUTPUT$/gm)).toHaveLength(1);
+      expect(prompt).not.toContain("artifact.content");
+      expect(prompt).not.toContain("second representation");
+      expect(prompt).not.toContain("second paid request");
     }
   });
 
@@ -206,9 +212,9 @@ describe("agent inspection prompt profiles", () => {
     }
   });
 
-  test("copied prompts stay materially below the previous size", () => {
+  test("copied prompts stay bounded with Circle CLI response handling", () => {
     const wordCount = (value: string) => value.trim().split(/\s+/).filter(Boolean).length;
-    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBeLessThan(200);
-    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBeLessThan(200);
+    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBeLessThan(250);
+    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBeLessThan(250);
   });
 });
