@@ -65,6 +65,7 @@ export const ConsistencyReason = {
   PREFLIGHT_EXPIRED: "PREFLIGHT_EXPIRED",
   RESOURCE_MISMATCH: "RESOURCE_MISMATCH",
   PAYMENT_REQUIREMENTS_MISMATCH: "PAYMENT_REQUIREMENTS_MISMATCH",
+  PAYMENT_OPTIONS_OMITTED: "PAYMENT_OPTIONS_OMITTED",
   NO_OBSERVED_PAYMENT_OPTIONS: "NO_OBSERVED_PAYMENT_OPTIONS",
   INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT: "INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT",
   SELECTED_REQUIREMENT_NOT_OFFERED: "SELECTED_REQUIREMENT_NOT_OFFERED"
@@ -181,6 +182,12 @@ function optionMatches(observed: ObservedPaymentRequirement, challenge: Prefligh
   return true;
 }
 
+export type PreflightConsistencyInput = {
+  preflightContext: X402EndpointPreflight["preflightContext"];
+  freshness?: RiskAssessment["freshness"];
+  omissions?: { paymentOptionsOmitted?: number };
+};
+
 /**
  * Pure local check of an actual x402 PaymentRequirements selection against the
  * configuration OMNI observed during preflight.
@@ -190,15 +197,15 @@ function optionMatches(observed: ObservedPaymentRequirement, challenge: Prefligh
  * `riskScore` remain RiskEngine outputs and are deliberately not consulted.
  */
 export function checkX402ChallengeAgainstPreflight(
-  preflight: {
-    preflightContext: X402EndpointPreflight["preflightContext"];
-    freshness?: RiskAssessment["freshness"];
-  },
+  preflight: PreflightConsistencyInput,
   challenge: PreflightChallenge,
   now: Date = new Date()
 ): ConsistencyCheck {
   const reasons: string[] = [];
   const expiresAt = preflight.freshness?.expiresAt;
+  const paymentOptionsOmitted = typeof preflight.omissions?.paymentOptionsOmitted === "number"
+    && Number.isSafeInteger(preflight.omissions.paymentOptionsOmitted)
+    && preflight.omissions.paymentOptionsOmitted > 0;
 
   if (expiresAt !== undefined && now.getTime() >= Date.parse(expiresAt)) {
     return { status: "repreflight_required", reasons: [ConsistencyReason.PREFLIGHT_EXPIRED] };
@@ -215,15 +222,18 @@ export function checkX402ChallengeAgainstPreflight(
 
   const options = preflight.preflightContext.paymentOptions;
   if (options.length === 0) {
-    return { status: "insufficient_context", reasons: [ConsistencyReason.NO_OBSERVED_PAYMENT_OPTIONS] };
+    return {
+      status: "insufficient_context",
+      reasons: [paymentOptionsOmitted ? ConsistencyReason.PAYMENT_OPTIONS_OMITTED : ConsistencyReason.NO_OBSERVED_PAYMENT_OPTIONS]
+    };
   }
 
   const comparableOptions = options.filter(option => hasEnoughContext(option, challenge.requirements));
+  if (comparableOptions.some(option => optionMatches(option, challenge))) return { status: "match", reasons: [] };
+  if (paymentOptionsOmitted) return { status: "insufficient_context", reasons: [ConsistencyReason.PAYMENT_OPTIONS_OMITTED] };
   if (comparableOptions.length === 0) {
     return { status: "insufficient_context", reasons: [ConsistencyReason.INSUFFICIENT_PAYMENT_REQUIREMENT_CONTEXT] };
   }
-
-  if (comparableOptions.some(option => optionMatches(option, challenge))) return { status: "match", reasons: [] };
 
   return { status: "repreflight_required", reasons: [ConsistencyReason.PAYMENT_REQUIREMENTS_MISMATCH] };
 }
