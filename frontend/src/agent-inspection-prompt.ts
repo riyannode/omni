@@ -248,7 +248,7 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
   const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-testnet"];
-  const request = buildRequest(input, "text/markdown");
+  const request = buildRequest(input, "application/json");
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
@@ -270,9 +270,9 @@ Never expose OTP, wallet, signing, or payment authorization secrets.
 ${preflightRule}
 
 OUTPUT
-After the paid call succeeds, show the OMNI Markdown response body exactly as returned.
-With Circle CLI, prefer response-body-only output (--quiet / -q) for the final paid call when supported. If Circle CLI returns a JSON envelope, unwrap the endpoint response payload; when present, data.response is the OMNI response body. Do not treat the CLI envelope itself as the OMNI response.
-If no service response body exists, report it and stop. Do not make another paid request merely because the response is wrapped.`;
+After the paid call succeeds, use the OMNI JSON service result returned by the paid request.
+If Circle CLI returns an envelope, use data.response as the OMNI service result. Treat that compact JSON as the authoritative OMNI assessment. Present it to the user as a concise human-readable risk report.
+Do not request text/markdown afterward. Do not make another paid request.`;
 }
 
 export async function copyText(value: string): Promise<void> {

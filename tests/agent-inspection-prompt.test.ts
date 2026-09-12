@@ -12,7 +12,7 @@ const genericInputs: readonly InspectionInput[] = [
 
 describe("agent inspection prompt profiles", () => {
   test("homepage quick test is Arc Testnet only", () => {
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("Accept: text/markdown");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Accept: application/json");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("ARC TESTNET ONLY:");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("eip155:5042002");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("never enumerate/use another chain");
@@ -25,7 +25,7 @@ describe("agent inspection prompt profiles", () => {
   test("all API endpoint builders keep generic TESTNET behavior", () => {
     for (const input of genericInputs) {
       const prompt = buildAgentInspectionPrompt(input);
-      expect(prompt).toContain("Accept: text/markdown");
+      expect(prompt).toContain("Accept: application/json");
       expect(prompt).toContain("TESTNET only:");
       expect(prompt).toContain("acceptable TESTNET option");
       expect(prompt).toContain("If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not fall back to another chain.");
@@ -150,7 +150,7 @@ describe("agent inspection prompt profiles", () => {
     }
   });
 
-  test("COPY REQUEST remains JSON while agent prompts request Markdown", () => {
+  test("COPY REQUEST and agent prompts use JSON", () => {
     for (const input of genericInputs) {
       const request = buildRequest(input);
       expect(request.display).toContain("Accept: application/json");
@@ -159,8 +159,8 @@ describe("agent inspection prompt profiles", () => {
       expect(request.curl).not.toContain("Accept: text/markdown");
 
       const prompt = buildAgentInspectionPrompt(input);
-      expect(prompt).toContain("Accept: text/markdown");
-      expect(prompt).not.toContain("Accept: application/json");
+      expect(prompt).toContain("Accept: application/json");
+      expect(prompt).not.toContain("Accept: text/markdown");
     }
   });
 
@@ -177,26 +177,29 @@ describe("agent inspection prompt profiles", () => {
     expect(request.url).not.toContain("name=circle-fin%2Fx402-batching");
   });
 
-  test("paid Markdown output handles Circle CLI envelopes without another payment", () => {
+  test("paid JSON output handles Circle CLI envelopes without another payment", () => {
     const expectedOutput = [
       "OUTPUT",
-      "After the paid call succeeds, show the OMNI Markdown response body exactly as returned.",
-      "With Circle CLI, prefer response-body-only output (--quiet / -q) for the final paid call when supported. If Circle CLI returns a JSON envelope, unwrap the endpoint response payload; when present, data.response is the OMNI response body. Do not treat the CLI envelope itself as the OMNI response.",
-      "If no service response body exists, report it and stop. Do not make another paid request merely because the response is wrapped.",
+      "After the paid call succeeds, use the OMNI JSON service result returned by the paid request.",
+      "If Circle CLI returns an envelope, use data.response as the OMNI service result. Treat that compact JSON as the authoritative OMNI assessment. Present it to the user as a concise human-readable risk report.",
+      "Do not request text/markdown afterward. Do not make another paid request.",
     ].join("\n");
 
     for (const prompt of [AGENT_QUICK_TEST_PROMPT, buildAgentInspectionPrompt(packageInput)]) {
       expect(prompt).toContain(expectedOutput);
       expect(prompt).toContain("Circle CLI");
       expect(prompt).toContain("data.response");
-      expect(prompt).toContain("--quiet / -q");
+      expect(prompt).toContain("authoritative OMNI assessment");
+      expect(prompt).toContain("concise human-readable risk report");
+      expect(prompt).not.toContain("Accept: text/markdown");
+      expect(prompt).not.toContain("--quiet");
+      expect(prompt).not.toContain("Markdown response body");
+      expect(prompt).not.toContain("second representation");
+      expect(prompt).not.toContain("second paid request");
       expect(prompt.match(/^TASK$/gm)).toHaveLength(1);
       expect(prompt.match(/^REQUEST$/gm)).toHaveLength(1);
       expect(prompt.match(/^PAYMENT$/gm)).toHaveLength(1);
       expect(prompt.match(/^OUTPUT$/gm)).toHaveLength(1);
-      expect(prompt).not.toContain("artifact.content");
-      expect(prompt).not.toContain("second representation");
-      expect(prompt).not.toContain("second paid request");
     }
   });
 
