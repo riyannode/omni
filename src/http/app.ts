@@ -14,15 +14,9 @@ function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => void fn(req, res).catch(next);
 }
 
-interface OpenApiDoc {
-  raw: string;
-  parsed: Record<string, unknown>;
-}
-
-async function loadOpenApi(baseUrl: string | undefined): Promise<OpenApiDoc> {
+async function loadOpenApi(baseUrl: string | undefined): Promise<string> {
   const raw = await readFile(new URL("../../openapi.yaml", import.meta.url), "utf8");
-  const rendered = baseUrl ? raw.replaceAll("https://omni.example.com", baseUrl) : raw;
-  return { raw: rendered, parsed: parseYaml(rendered) as Record<string, unknown> };
+  return baseUrl ? raw.replaceAll("https://omni.example.com", baseUrl) : raw;
 }
 
 function resolvePublicBaseUrl(req: Request, configured: string | undefined): string | undefined {
@@ -95,13 +89,14 @@ export function createApp(options: {
   app.get("/openapi.yaml", asyncRoute(async (req, res) => {
     const baseUrl = resolvePublicBaseUrl(req, options.publicBaseUrl);
     const doc = await loadOpenApi(baseUrl);
-    res.type("application/yaml").send(doc.raw);
+    res.type("application/yaml").send(doc);
   }));
 
   app.get("/openapi.json", asyncRoute(async (req, res) => {
     const baseUrl = resolvePublicBaseUrl(req, options.publicBaseUrl);
-    const doc = await loadOpenApi(baseUrl);
-    res.type("application/json").send(JSON.stringify(doc.parsed));
+    const yaml = await loadOpenApi(baseUrl);
+    const parsed = parseYaml(yaml) as Record<string, unknown>;
+    res.type("application/json").send(JSON.stringify(parsed));
   }));
 
   const gate = concurrencyGate(options.maxInFlight);

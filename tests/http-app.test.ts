@@ -185,10 +185,7 @@ describe("HTTP machine-readable documents", () => {
 
     expect(jsonDoc.openapi).toBe("3.1.0");
     expect(yamlDoc.openapi).toBe("3.1.0");
-    expect(jsonDoc.servers).toEqual(yamlDoc.servers);
-    expect(jsonDoc.paths).toEqual(yamlDoc.paths);
-    expect(jsonDoc.components).toEqual(yamlDoc.components);
-    expect(jsonDoc.info).toEqual(yamlDoc.info);
+    expect(jsonDoc).toEqual(yamlDoc);
 
     expect(jsonDoc.servers[0].url).toBe("https://api.askomni.xyz");
     expect(yamlDoc.servers[0].url).toBe("https://api.askomni.xyz");
