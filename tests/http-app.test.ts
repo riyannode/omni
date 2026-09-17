@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { AddressInfo } from "node:net";
 import { parse } from "yaml";
-import type { RequestHandler } from "express";
+import type { NextFunction, RequestHandler } from "express";
 import { createApp } from "../src/http/app.ts";
 import type { HistoryStore } from "../src/data/history.ts";
 import type { ThreatIntelStore } from "../src/data/threat-intel.ts";
@@ -135,14 +135,7 @@ describe("HTTP machine-readable documents", () => {
       expect(Object.keys(api.paths[path])).toEqual([method]);
       const operation = api.paths[path][method];
       expect(operation["x-payment-info"].price).toEqual({ mode: "fixed", currency: "USDC", amount });
-      const protocols = operation["x-payment-info"].protocols;
-      expect(protocols).toBeDefined();
-      const x402Entry = protocols.find((p: any) => p.x402);
-      expect(x402Entry).toBeDefined();
-      expect(x402Entry.x402.networks).toBeDefined();
-      expect(new Set(x402Entry.x402.networks).size).toBeGreaterThanOrEqual(2);
-      expect(x402Entry.x402.networks).toContain("eip155:5042");
-      expect(x402Entry.x402.networks).not.toContain("eip155:5042002");
+      expect(operation["x-payment-info"].protocols).toEqual([{ x402: {} }]);
       expect(operation.parameters).toContainEqual({ $ref: "#/components/parameters/IdempotencyKey" });
       expect(operation.responses["200"].content["application/json"]).toBeDefined();
       expect(operation.responses["402"]).toEqual({ $ref: "#/components/responses/PaymentRequired" });
@@ -155,6 +148,58 @@ describe("HTTP machine-readable documents", () => {
     expect(api.components.schemas.RiskAssessmentResponse.description).toContain("Compact machine-readable JSON");
     expect(api.components.schemas.CompactRiskAssessmentFields.properties).not.toHaveProperty("artifact");
     expect(api.components.schemas.CompactRiskAssessmentFields.properties).not.toHaveProperty("evidence");
+  });
+
+  test("serves /openapi.json with application/json and same content as /openapi.yaml", async () => {
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => (_req: Request, _res: Response, next: NextFunction) => next() },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz"
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", () => resolve());
+      server.once("error", reject);
+    });
+    const addr = server.address() as AddressInfo;
+    const origin = "http://127.0.0.1:" + String(addr.port);
+
+    const yamlRes = await fetch(origin + "/openapi.yaml");
+    expect(yamlRes.status).toBe(200);
+    expect(yamlRes.headers.get("content-type")).toContain("application/yaml");
+    const yamlText = await yamlRes.text();
+
+    const jsonRes = await fetch(origin + "/openapi.json");
+    expect(jsonRes.status).toBe(200);
+    expect(jsonRes.headers.get("content-type")).toContain("application/json");
+    const jsonText = await jsonRes.text();
+
+    const yamlDoc = parse(yamlText) as any;
+    const jsonDoc = JSON.parse(jsonText) as any;
+
+    expect(jsonDoc.openapi).toBe("3.1.0");
+    expect(yamlDoc.openapi).toBe("3.1.0");
+    expect(jsonDoc.servers).toEqual(yamlDoc.servers);
+    expect(jsonDoc.paths).toEqual(yamlDoc.paths);
+    expect(jsonDoc.components).toEqual(yamlDoc.components);
+    expect(jsonDoc.info).toEqual(yamlDoc.info);
+
+    expect(jsonDoc.servers[0].url).toBe("https://api.askomni.xyz");
+    expect(yamlDoc.servers[0].url).toBe("https://api.askomni.xyz");
+
+    for (const path of ["/v1/package/risk", "/v1/repo/risk", "/v1/dependencies/risk", "/v1/x402/endpoint/preflight"]) {
+      const methods = jsonDoc.paths[path];
+      for (const method of Object.keys(methods)) {
+        const op = methods[method];
+        expect(op["x-payment-info"].protocols).toEqual([{ x402: {} }]);
+      }
+    }
   });
 
   test("returns HTTP 200 when the paid request store is available", async () => {
