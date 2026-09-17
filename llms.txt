@@ -86,9 +86,17 @@ x402 `PaymentRequirements.amount` is an atomic-unit string. Numeric canonicaliza
 
 ## Configuration and historical paid acceptance
 
-- Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable PostgreSQL persistence, OMNI execution, recovery/replay, and Circle transfer reconciliation.
-- Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Remaining acceptance gates include broader route coverage, multi-chain acceptance, fleet validation, and capacity testing.
-- Neither historical acceptance nor mainnet package-route verification establishes exhaustive route-by-route, multi-chain, or fleet capacity.
+- Arc Mainnet paid lifecycle: verified on September 17, 2026 on the tested
+  `GET /v1/package/risk` route with a real 5000-atomic / 0.005 USDC x402
+  payment on Arc Mainnet (`eip155:5042`), using Circle Agent Wallet + Circle
+  Gateway (`https://gateway-api.circle.com`), HTTP 200, durable persistence,
+  reconciliation, and replay without duplicate settlement.
+- Historical Arc Testnet paid lifecycle was verified earlier on the tested
+  OMNI paid path, including Circle Agent Wallet payment, Gateway settlement,
+  durable PostgreSQL persistence, OMNI execution, recovery/replay, and Circle
+  transfer reconciliation. Historical Testnet evidence is not mainnet evidence.
+- Neither mainnet package-route verification nor historical testnet acceptance
+  establishes exhaustive route-by-route, multi-chain, or fleet capacity.
 
 ## Architecture and security
 

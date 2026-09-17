@@ -25,8 +25,16 @@ Payout wallet: use the same `SELLER_ADDRESS` configured in production.
 
 - Unpaid protected request returns HTTP 402 and `PAYMENT-REQUIRED`.
 - `circle services inspect` reports price, method, accepted chain(s), and scheme.
-- Historical acceptance evidence (Arc Testnet paid lifecycle: verified historically): a real Arc Testnet x402 paid call on the tested OMNI paid path returned HTTP 200 with non-mocked Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. This does not claim exhaustive route-by-route or mainnet paid acceptance.
-- Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com`. This does not claim exhaustive route-by-route or multi-chain paid acceptance. Capture additional route coverage evidence before advertising broader mainnet paid acceptance. General API buyers select acceptable mainnet options from the live PAYMENT-REQUIRED challenge; the Arc-only quick test is not an API contract requirement.
+- Arc Mainnet paid lifecycle: verified on September 17, 2026 on the tested
+  `GET /v1/package/risk` route with a real 5000-atomic / 0.005 USDC x402
+  payment on Arc Mainnet (`eip155:5042`), using Circle Agent Wallet + Circle
+  Gateway (`https://gateway-api.circle.com`), HTTP 200, durable persistence,
+  reconciliation, and replay without duplicate settlement. This does not claim
+  exhaustive route-by-route or multi-chain paid acceptance.
+- Historical note: Arc Testnet paid lifecycle was verified earlier on the
+  tested OMNI paid path, including Circle Agent Wallet payment, Gateway
+  settlement, durable persistence, execution, recovery/replay, and Circle
+  transfer reconciliation. Historical Testnet evidence is not mainnet evidence.
 - Public OpenAPI is reachable.
 - `/health` returns process liveness.
 - `/ready` returns `status: ready` while reporting non-blocking dependency degradation separately.

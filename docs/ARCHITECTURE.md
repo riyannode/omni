@@ -117,4 +117,18 @@ completed → replay result
 
 Recovery is explicit: `completed` replays; `paid` or stale `running` resumes without payment; `settling` or `recovery_pending` reconciles with Circle by nonce. An exact accepted transfer marks the request paid and resumes execution. Unknown, ambiguous, mismatching, unavailable, or failed recovery never initiates another settlement.
 
-Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable PostgreSQL persistence, execution, recovery/replay, and Circle transfer reconciliation. Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com` for both official middleware and transfer lookup, with no payment, persistence, or recovery state machine changes required. Remaining: broader route-by-route acceptance, multi-chain acceptance, and fleet validation remain separate gates.
+Arc Mainnet paid lifecycle: verified on September 17, 2026 on the tested
+`GET /v1/package/risk` route with a real 5000-atomic / 0.005 USDC x402
+payment on Arc Mainnet (`eip155:5042`), using Circle Agent Wallet + Circle
+Gateway (`https://gateway-api.circle.com`), HTTP 200, durable persistence,
+reconciliation, and replay without duplicate settlement. Production
+facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`;
+the Arc mainnet target is `https://gateway-api.circle.com` for both official
+middleware and transfer lookup, with no payment, persistence, or recovery
+state machine changes required. Remaining acceptance gates include broader
+route coverage, multi-chain acceptance, fleet validation, and capacity testing.
+
+Historical note: Arc Testnet paid lifecycle was verified earlier on the tested
+OMNI paid path, including Circle Agent Wallet payment, Gateway settlement,
+durable PostgreSQL persistence, execution, recovery/replay, and Circle transfer
+reconciliation. Historical Testnet evidence is not mainnet evidence.

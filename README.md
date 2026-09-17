@@ -92,9 +92,30 @@ Health endpoints are `GET /health` and `GET /ready`. `openapi.yaml` is served at
 
 Buyer clients can compare the selected official x402 `PaymentRequirements` from a `PaymentRequired` response with the configuration observed during preflight (`preflightContext.paymentOptions`) and request a fresh assessment when they differ. Circle Gateway observations retain `maxTimeoutSeconds` and observed `extra.name`, `extra.version`, and `extra.verifyingContract`; atomic amounts are integer strings with no floating-point or exponent normalization. A match is consistency evidence, not payment authorization; see `/llms.txt`.
 
+## Arc Mainnet — Verified Paid Lifecycle
+
+- Date: September 17, 2026
+- Network: Arc Mainnet / `eip155:5042`
+- Tested paid route: `GET /v1/package/risk`
+- Real x402 amount: `5000` atomic / `0.005` USDC
+- Payment path: Circle Agent Wallet + Circle Gateway
+- Production facilitator: `https://gateway-api.circle.com`
+- HTTP result: `200`
+- OMNI assessment executed
+- Result durably persisted
+- Payment/request reconciliation passed
+- Replay of the same logical request returned the completed result
+- Replay did not create a duplicate settlement
+
+Scope: this verifies the tested `package-risk` paid lifecycle on Arc Mainnet. It does not claim that every OMNI paid route or every supported mainnet network has been paid-tested.
+
 ## Maturity
 
-This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`. The Arc mainnet target is `https://gateway-api.circle.com`. General API prompts select acceptable mainnet options from the live challenge; TRY WITH YOUR AGENT pins Arc mainnet (`eip155:5042`, Circle CLI `ARC`). This does not claim exhaustive route coverage, multi-chain acceptance, fleet capacity, or payment execution against every endpoint on mainnet. Remaining work includes licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, broader route acceptance, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+OMNI is deployed and operating in production on Arc mainnet. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path.
+
+Historical note: the Arc Testnet paid lifecycle was verified earlier on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Historical Testnet evidence is not mainnet evidence.
+
+Remaining work includes licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, broader route-by-route acceptance, multi-chain acceptance, fleet-scale validation, and measured load/soak testing. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
 
 See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.
 
