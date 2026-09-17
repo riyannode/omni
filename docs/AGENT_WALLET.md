@@ -13,7 +13,7 @@ CIRCLE_FACILITATOR_URL=https://gateway-api.circle.com
 Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com`. Keep `SELLER_ADDRESS` and endpoint prices unchanged.
 
 - Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation.
-- Arc Mainnet configuration: prepared / pending live acceptance. Actual mainnet payment, settlement, persistence, replay, and reconciliation remain acceptance gates. Historical Testnet evidence is not mainnet evidence.
+- Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Remaining acceptance gates include broader route coverage, multi-chain acceptance, fleet validation, and capacity testing. Historical Testnet evidence is not mainnet evidence; mainnet acceptance does not imply exhaustive route coverage.
 
 ## Setup/login
 

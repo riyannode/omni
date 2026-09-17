@@ -96,7 +96,7 @@ describe("HTTP machine-readable documents", () => {
     const yaml = await apiResponse.text();
     for (const document of [llms, yaml]) {
       expect(document).toContain("https://gateway-api.circle.com");
-      expect(document).toContain("Arc Mainnet configuration: prepared / pending live acceptance");
+      expect(document).toContain("Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route");
       expect(document).toContain("Arc Testnet paid lifecycle: verified historically");
       expect(document).not.toMatch(/ARC-TESTNET|eip155:5042002|gateway-api-testnet|Arc Mainnet paid lifecycle verified/);
     }
