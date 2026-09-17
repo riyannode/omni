@@ -1,5 +1,6 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { readFile } from "node:fs/promises";
+import { parse as parseYaml } from "yaml";
 import type { HistoryStore } from "../data/history.ts";
 import type { ThreatIntelStore } from "../data/threat-intel.ts";
 import type { OmniIntelligence } from "../services.ts";
@@ -11,6 +12,11 @@ import { dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./vali
 
 function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => void fn(req, res).catch(next);
+}
+
+async function loadOpenApi(baseUrl: string | undefined): Promise<string> {
+  const raw = await readFile(new URL("../../openapi.yaml", import.meta.url), "utf8");
+  return baseUrl ? raw.replaceAll("https://omni.example.com", baseUrl) : raw;
 }
 
 function resolvePublicBaseUrl(req: Request, configured: string | undefined): string | undefined {
@@ -81,12 +87,16 @@ export function createApp(options: {
     res.type("text/plain; charset=utf-8").send(rendered);
   }));
   app.get("/openapi.yaml", asyncRoute(async (req, res) => {
-    const body = await readFile(new URL("../../openapi.yaml", import.meta.url), "utf8");
     const baseUrl = resolvePublicBaseUrl(req, options.publicBaseUrl);
-    const rendered = baseUrl
-      ? body.replaceAll("https://omni.example.com", baseUrl)
-      : body;
-    res.type("application/yaml").send(rendered);
+    const doc = await loadOpenApi(baseUrl);
+    res.type("application/yaml").send(doc);
+  }));
+
+  app.get("/openapi.json", asyncRoute(async (req, res) => {
+    const baseUrl = resolvePublicBaseUrl(req, options.publicBaseUrl);
+    const yaml = await loadOpenApi(baseUrl);
+    const parsed = parseYaml(yaml) as Record<string, unknown>;
+    res.type("application/json").send(JSON.stringify(parsed));
   }));
 
   const gate = concurrencyGate(options.maxInFlight);
