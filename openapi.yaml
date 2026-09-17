@@ -107,7 +107,25 @@ paths:
           currency: USDC
           amount: "0.005000"
         protocols:
-          - x402: {}
+          - x402:
+              # Discovery network metadata reflects the verified production
+              # Gateway network set at publication time. Runtime PAYMENT-REQUIRED
+              # remains authoritative and may change as Circle Gateway support
+              # changes. This is compatibility metadata for Circle Sell Score
+              # discovery, not a normative x402 requirement.
+              networks:
+                - eip155:1
+                - eip155:10
+                - eip155:130
+                - eip155:1329
+                - eip155:137
+                - eip155:146
+                - eip155:42161
+                - eip155:43114
+                - eip155:480
+                - eip155:5042
+                - eip155:8453
+                - eip155:999
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -141,7 +159,25 @@ paths:
           currency: USDC
           amount: "0.010000"
         protocols:
-          - x402: {}
+          - x402:
+              # Discovery network metadata reflects the verified production
+              # Gateway network set at publication time. Runtime PAYMENT-REQUIRED
+              # remains authoritative and may change as Circle Gateway support
+              # changes. This is compatibility metadata for Circle Sell Score
+              # discovery, not a normative x402 requirement.
+              networks:
+                - eip155:1
+                - eip155:10
+                - eip155:130
+                - eip155:1329
+                - eip155:137
+                - eip155:146
+                - eip155:42161
+                - eip155:43114
+                - eip155:480
+                - eip155:5042
+                - eip155:8453
+                - eip155:999
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -174,7 +210,25 @@ paths:
           currency: USDC
           amount: "0.050000"
         protocols:
-          - x402: {}
+          - x402:
+              # Discovery network metadata reflects the verified production
+              # Gateway network set at publication time. Runtime PAYMENT-REQUIRED
+              # remains authoritative and may change as Circle Gateway support
+              # changes. This is compatibility metadata for Circle Sell Score
+              # discovery, not a normative x402 requirement.
+              networks:
+                - eip155:1
+                - eip155:10
+                - eip155:130
+                - eip155:1329
+                - eip155:137
+                - eip155:146
+                - eip155:42161
+                - eip155:43114
+                - eip155:480
+                - eip155:5042
+                - eip155:8453
+                - eip155:999
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -219,7 +273,25 @@ paths:
           currency: USDC
           amount: "0.010000"
         protocols:
-          - x402: {}
+          - x402:
+              # Discovery network metadata reflects the verified production
+              # Gateway network set at publication time. Runtime PAYMENT-REQUIRED
+              # remains authoritative and may change as Circle Gateway support
+              # changes. This is compatibility metadata for Circle Sell Score
+              # discovery, not a normative x402 requirement.
+              networks:
+                - eip155:1
+                - eip155:10
+                - eip155:130
+                - eip155:1329
+                - eip155:137
+                - eip155:146
+                - eip155:42161
+                - eip155:43114
+                - eip155:480
+                - eip155:5042
+                - eip155:8453
+                - eip155:999
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
