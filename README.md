@@ -38,6 +38,8 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 | `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
 | `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
 
+OMNI's paid API can be purchased over any compatible mainnet option currently offered by the live Circle Gateway x402 challenge. Arc Mainnet is the pinned network only for the Try with your agent demo flow.
+
 Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
 Successful paid results keep the canonical structured assessment fields inline. `Accept: application/json` is the compact machine/agent interface; it contains authoritative decision fields, bounded scoring-relevant signals, repository summaries, bounded package `MAL-*` observation counts, coverage, bounded source errors, freshness, and explicit omission counts. It does **not** contain `artifact`, Markdown, raw `evidence[]`, provider payloads, full advisory objects, or full dependency lists. `Accept: text/markdown` is a concise deterministic human summary; it is not a second copy of the JSON payload and never serializes raw evidence details. Unsupported or zero-quality `Accept` values return HTTP 406 before payment. The representation is selected at the HTTP response seam, `Vary: Accept` is returned, and replaying a completed request in another representation does not execute or settle again. Payment errors remain JSON.
@@ -108,6 +110,16 @@ Buyer clients can compare the selected official x402 `PaymentRequirements` from 
 - Replay did not create a duplicate settlement
 
 Scope: this verifies the tested `package-risk` paid lifecycle on Arc Mainnet. It does not claim that every OMNI paid route or every supported mainnet network has been paid-tested.
+
+### Mainnet payment behavior
+
+OMNI exposes the mainnet payment options returned by Circle Gateway through the live x402 PAYMENT-REQUIRED challenge.
+
+The general agent flow dynamically selects a compatible mainnet offer from the live challenge rather than relying on a static network allowlist.
+
+The Try with your agent demo is intentionally pinned to Arc Mainnet (`eip155:5042`) to provide a deterministic Arc-specific test flow.
+
+At the September 17, 2026 production verification, the live challenge exposed 12 mainnet payment options, including Arc Mainnet.
 
 ## Maturity
 
