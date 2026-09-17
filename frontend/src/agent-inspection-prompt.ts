@@ -302,7 +302,7 @@ ${preflightRule}
 OUTPUT
 Use only the successful OMNI JSON response. If Circle CLI wraps it, use data.response.
 Return a concise risk report. Do not make another paid request.
-Report only facts from OMNI JSON or observed payment. Do not infer omitted details or map riskScore to severity. OMNI dimensions are risk levels.`;
+Report only facts from OMNI JSON or observed payment. Do not infer omitted details or map riskScore to severity. OMNI dimensions are risk levels. Preserve OMNI status terms exactly, and distinguish the x402 challenge scheme from the wallet execution mechanism.`;
 }
 
 export async function copyText(value: string): Promise<void> {
