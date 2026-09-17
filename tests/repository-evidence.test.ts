@@ -257,6 +257,63 @@ describe("repository evidence foundation", () => {
     expect(normalizeProvenance({ verified: true, sourceRepository: "github.com/acme/demo", commit: "1111111111111111111111111111111111111111" }, { repository: "github.com/acme/demo", commit: commitSha }).state).toBe("VERIFIED_COMMIT_MISMATCH");
   });
 
+  test("uses package-specific upstream provenance instead of the inspected repository identity", async () => {
+    const packageSources = new Map([
+      ["@langchain/openai", "github.com/langchain-ai/langchainjs"],
+      ["@langchain/core", "github.com/langchain-ai/langchainjs"],
+      ["@supabase/ssr", "github.com/supabase/ssr"],
+      ["@supabase/supabase-js", "github.com/supabase/supabase-js"],
+      ["@tailwindcss/postcss", "github.com/tailwindlabs/tailwindcss"],
+      ["@x402/core", "github.com/coinbase/x402"],
+      ["@x402/evm", "github.com/coinbase/x402"],
+      ["deepagents", "github.com/langchain-ai/deepagentsjs"],
+      ["eslint-config-next", "github.com/vercel/next.js"],
+      ["lucide-react", "github.com/lucide-icons/lucide"],
+      ["next", "github.com/vercel/next.js"]
+    ]);
+    const coordinates = [...packageSources.keys()].map(name => exactCoordinate(name, name === "next" ? "16.1.6" : "1.0.0"));
+    const packageSource = packageSources.get("next")!;
+    const packageData = {
+      relatedProjects: [{ projectKey: { id: packageSource }, relationType: "SOURCE_REPO", relationProvenance: "CORRECTLY_INFERRED" }],
+      slsaProvenances: [{ verified: true, sourceRepository: packageSource, commit: commitSha }]
+    };
+    const packageSpecific = await new DepsDevProvider({ async boundedJson() { return packageData; } } as never).packageVersion(coordinates.at(-1)!);
+    expect(packageSpecific.observation.provenance[0]).toMatchObject({ state: "VERIFIED", sourceRepository: packageSource, expectedSourceMatches: true });
+
+    const snapshots: RiskSnapshot[] = [];
+    const expectedSources: Array<{ repository?: string; commit?: string } | undefined> = [];
+    const depsDev = {
+      async packageVersion(item: ExactDependencyCoordinate, expected?: { repository?: string; commit?: string }) {
+        expectedSources.push(expected);
+        const sourceRepository = packageSources.get(item.name);
+        if (!sourceRepository) throw new Error(`unexpected package ${item.name}`);
+        return {
+          observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, source: "deps.dev" as const, state: "VERIFIED" as const, sourceRepository }] },
+          evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+        };
+      }
+    };
+    const repository = repositoryEvidenceWith(coordinates);
+    repository.target.repository = "github.com/circlefin/arc-nanopayments";
+    const assessment = await repositoryOmni(repository, threatIntelStore(async () => ({ checked: true, findings: [] })), capturingJournal(snapshots), staticScorecard, undefined, depsDev as never).repositoryRisk("circlefin", "arc-nanopayments");
+    const features = extractRiskFeatures(snapshots[0]!);
+
+    expect(expectedSources).toEqual(Array.from({ length: packageSources.size }, () => undefined));
+    expect(features.repository.provenanceStates).toMatchObject({ VERIFIED: 11, VERIFIED_SOURCE_MISMATCH: 0, VERIFIED_COMMIT_MISMATCH: 0 });
+    expect(assessment.dimensions.repositorySecurityPractices).toBe("low");
+    expect(assessment.riskScore).toBe(3);
+  });
+
+  test("preserves a real package-specific provenance disagreement as a source mismatch", async () => {
+    const coordinate = exactCoordinate("next", "16.1.6");
+    const packageSource = "github.com/vercel/next.js";
+    const observed = await new DepsDevProvider({ async boundedJson() { return {
+      relatedProjects: [{ projectKey: { id: packageSource }, relationType: "SOURCE_REPO", relationProvenance: "CORRECTLY_INFERRED" }],
+      slsaProvenances: [{ verified: true, sourceRepository: "github.com/other/next", commit: commitSha }]
+    }; } } as never).packageVersion(coordinate);
+    expect(observed.observation.provenance[0]).toMatchObject({ state: "VERIFIED_SOURCE_MISMATCH", sourceRepository: "github.com/other/next", expectedSourceMatches: false });
+  });
+
   test("scores repository dependency threat intel while separating uncertainty states", async () => {
     const baseline = new RiskEngine().assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "Scorecard", kind: "score", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] });
     const coordinate = exactCoordinate("dangerous-package", "4.2.0");

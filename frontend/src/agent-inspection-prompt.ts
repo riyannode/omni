@@ -272,7 +272,8 @@ ${preflightRule}
 OUTPUT
 After the paid call succeeds, use the OMNI JSON service result returned by the paid request.
 If Circle CLI returns an envelope, use data.response as the OMNI service result. Treat that compact JSON as the authoritative OMNI assessment. Present it to the user as a concise human-readable risk report.
-Do not request text/markdown afterward. Do not make another paid request.`;
+Do not request text/markdown afterward. Do not make another paid request.
+OMNI dimensions low/medium/high/critical/unknown are RISK LEVELS, not quality ratings. repositorySecurityPractices: high means high repository-security-practice risk, never strong/good practices or high security quality.`;
 }
 
 export async function copyText(value: string): Promise<void> {

@@ -203,6 +203,16 @@ describe("agent inspection prompt profiles", () => {
     }
   });
 
+  test("explains OMNI dimensions as risk levels in human-readable output", () => {
+    const semanticRule = "OMNI dimensions low/medium/high/critical/unknown are RISK LEVELS, not quality ratings. repositorySecurityPractices: high means high repository-security-practice risk, never strong/good practices or high security quality.";
+    for (const prompt of [AGENT_QUICK_TEST_PROMPT, buildAgentInspectionPrompt(packageInput)]) {
+      expect(prompt).toContain(semanticRule);
+      expect(prompt).not.toContain("repositorySecurityPractices: high means strong security practices");
+      expect(prompt).not.toContain("repositorySecurityPractices: high means good security practices");
+      expect(prompt).not.toContain("repositorySecurityPractices: high means high security quality");
+    }
+  });
+
   test("agent prompts omit legacy representation and replay instructions", () => {
     for (const prompt of [AGENT_QUICK_TEST_PROMPT, ...genericInputs.map((input) => buildAgentInspectionPrompt(input))]) {
       expect(prompt).not.toContain("artifact.content");

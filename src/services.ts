@@ -724,7 +724,6 @@ export class OmniIntelligence {
     if (vulnerabilityObservation.cisaKev.status !== "NOT_QUERIED") {
       evidence.push({ source: "CISA KEV", kind: "repository_dependency_known_exploitation", observedAt: new Date().toISOString(), detail: { ...vulnerabilityObservation.cisaKev } });
     }
-    const expected = { repository: repositoryEvidence.target.repository, ...(repositoryEvidence.target.resolvedCommitSha ? { commit: repositoryEvidence.target.resolvedCommitSha } : {}) };
     const threatIntelObservation = await collectRepositoryThreatIntel(this.threatIntel, enriched, deferred, selected.length);
     repositoryEvidence.dependencyThreatIntel = threatIntelObservation;
     evidence.push({ source: "OMNI threat intelligence", kind: "repository_dependency_ioc_lookup", observedAt: new Date().toISOString(), detail: repositoryThreatIntelDetail(threatIntelObservation) });
@@ -732,7 +731,7 @@ export class OmniIntelligence {
       const chunk = enriched.slice(offset, offset + REPOSITORY_ENRICHMENT_CONCURRENCY);
       await Promise.all(chunk.map(async coordinate => {
         try {
-          const observed = await this.depsDev.packageVersion(coordinate, expected);
+          const observed = await this.depsDev.packageVersion(coordinate);
           repositoryEvidence.dependencyObservations.push(observed.observation);
           repositoryEvidence.dependencies.resolvedGraph.packagesChecked += 1;
           repositoryEvidence.dependencies.resolvedGraph.nodesObserved += observed.observation.graph.nodeCount;
