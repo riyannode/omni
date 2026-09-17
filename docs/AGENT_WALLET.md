@@ -1,83 +1,50 @@
-# Circle CLI agent wallet for OMNI buyer tests
+# Circle Agent Wallet integration for OMNI
 
-The buyer agent wallet is separate from the OMNI seller process. OMNI only needs the seller payout address. Buyer/test payments are signed through Circle CLI; no buyer private key belongs in the OMNI server.
+The buyer agent wallet is separate from the OMNI seller process. OMNI only needs the existing seller payout address. Buyer payments are signed through the wallet/runtime; no buyer private key belongs in the OMNI server. This guide does not select a buyer address or authorize funding, deposits, or payments.
 
-## Mainnet login and wallet (production)
+## Production configuration and acceptance
 
-```bash
-npm install -g @circle-fin/cli@latest
-circle --version
+Mainnet-ready production configuration targets:
 
-# Interactive mainnet login. Mainnet and testnet sessions are separate.
-circle wallet login <email>
-
-# Login provisions agent wallets automatically; inspect before creating anything else.
-circle wallet list --chain ARC --type agent --output json
+```dotenv
+CIRCLE_FACILITATOR_URL=https://gateway-api.circle.com
 ```
 
-For a non-interactive agent flow:
+Activation requires a separate deployment and production environment switch. Keep `SELLER_ADDRESS` and endpoint prices unchanged.
 
-```bash
-circle wallet login --init
-circle wallet login --request <REQUEST_ID> --otp <OTP>
-```
+- Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation.
+- Arc Mainnet configuration: prepared / pending live acceptance. Actual mainnet payment, settlement, persistence, replay, and reconciliation remain acceptance gates. Historical Testnet evidence is not mainnet evidence.
 
-Never write OTPs, Circle session files, private keys, or mnemonics into the repository.
-Mainnet payments move real funds: keep Agent Wallet spending policies enabled and never fund more than the test budget.
+## Setup/login
 
-## Testnet login and wallet (isolated development only)
+Use/reuse the official Circle Agent Wallet. Follow the current official setup/login instructions at https://agents.circle.com/skills/setup.md. Mainnet and testnet sessions are separate. Inspect existing wallets before creating anything else. Never write OTPs, Circle session files, private keys, or mnemonics into the repository.
 
-```bash
-npm install -g @circle-fin/cli@latest
-circle --version
+## General API / COPY AGENT PROMPT
 
-# Interactive testnet login. Testnet and mainnet sessions are separate.
-circle wallet login <email> --testnet
+The `generic-mainnet` profile is MAINNET-only, not Arc-only:
 
-# Login provisions agent wallets automatically; inspect before creating anything else.
-circle wallet list --chain ARC-TESTNET --type agent --output json
+1. Send the exact OMNI request unpaid first with `Accept: application/json`. On HTTP 402, read PAYMENT-REQUIRED; an empty JSON body is valid. An Idempotency-Key is optional for unpaid discovery.
+2. Select any acceptable Circle-supported MAINNET option actually offered by the live challenge. Arc, Base, Unichain, Polygon, or another Circle-supported mainnet may be acceptable only when offered; this list is not proof of availability. No testnet use or fallback. If none is acceptable, STOP.
+3. The wallet must support that network, be payment-ready, and have enough Gateway balance for the exact USDC payment. Otherwise STOP. Validate the selected offer's network, scheme, asset, amount, and recipient together; never combine fields from different offers.
+4. Resolve the challenge resource against the original OMNI URL. Require the same HTTPS origin, path, and query names/values with no missing/extra keys (order and equivalent percent-encoding are okay). Otherwise STOP before payment.
+5. Use one fresh UUID v4 `Idempotency-Key` per logical request. Authorize at most one payment; an allowed retry reuses the same request and key. Uncertain validation, funds, or payment state requires STOP. Never expose authentication, wallet, signing, or payment secrets.
 
-# Arc Testnet faucet: omit --method and --amount.
-circle wallet fund --address <AGENT_WALLET> --chain ARC-TESTNET
-```
+Prices remain: package `5000` atomic units / `0.005000` USDC; repository and x402 preflight `10000` / `0.010000`; dependency set `50000` / `0.050000`.
 
-For a non-interactive agent flow:
+For x402 preflight, OMNI is the service being paid and the inspected URL is input only. Never pay the inspected target as part of the OMNI request.
 
-```bash
-circle wallet login <email> --testnet --init
-circle wallet login <email> --testnet --request <REQUEST_ID> --otp <OTP>
-```
+## TRY WITH YOUR AGENT
 
-Never write OTPs, Circle session files, private keys, or mnemonics into the repository.
+The homepage uses `arc-mainnet-quick-test`: ARC MAINNET ONLY, exactly `eip155:5042`, Circle CLI chain `ARC`. No other network or fallback. If `eip155:5042` is absent from PAYMENT-REQUIRED, the Arc mainnet wallet is not payment-ready, or Gateway balance cannot cover the payment, STOP. All shared payment and reporting rules above apply. This profile is not an API-wide network requirement.
 
-## Inspect, estimate, then pay
+## Report output
 
-```bash
-circle services inspect "https://<host>/v1/package/risk?ecosystem=npm&name=express&version=5.2.1" --output json
+Use only successful OMNI JSON as the report source. If Circle CLI returns an envelope, unwrap data.response. Return a concise human-readable risk report. Do not make another paid request or request another representation.
 
-circle services pay "https://<host>/v1/package/risk?ecosystem=npm&name=express&version=5.2.1" \
-  -X GET \
-  --address <AGENT_WALLET> \
-  --chain <CHAIN-FROM-INSPECT> \
-  --max-amount 0.005 \
-  --estimate \
-  --output json
-```
+Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.
 
-After reviewing the estimate, repeat the same command without `--estimate` for a paid end-to-end test. On production, the OMNI seller facilitator is Circle mainnet (https://gateway-api.circle.com) and payments settle in USDC over the networks the challenge advertises; testnet examples above are for isolated development only. For production autonomous wallets, configure appropriate Circle Agent Wallet spending policies and test them separately from the seller service.
+## Isolated development only
 
-## Using a Circle Agent Wallet as OMNI's seller payout address
+The optional `https://gateway-api-testnet.circle.com` override in `.env.example` is for local/isolated testnet testing, never production. Historical Arc Testnet tests used `ARC-TESTNET` / `eip155:5042002`; those identifiers are not production buyer guidance. Planned testnet load ramps do not establish mainnet acceptance or capacity.
 
-If you want OMNI's seller identity to use a Circle Agent Wallet, set that wallet's EVM/SCA address as `SELLER_ADDRESS`. The server still stores no signing key; Circle's seller middleware only needs the payout address. Inspect accumulated Gateway earnings with:
-
-```bash
-circle gateway balance --address <SELLER_ADDRESS> --chain <CHAIN> --all
-```
-
-For an Agent Wallet SCA, same-chain withdrawal is available through Circle CLI:
-
-```bash
-circle gateway withdraw --amount <USDC> --address <SELLER_ADDRESS> --chain <CHAIN>
-```
-
-Keep buyer-wallet automation and seller deployment credentials operationally separate even if they are managed from the same Circle account.
+Keep buyer-wallet automation and seller deployment credentials operationally separate even when managed from the same Circle account.

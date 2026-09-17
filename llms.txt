@@ -24,6 +24,26 @@ Repository JSON includes bounded `repositorySummary` sections for dependency res
 - [POST /v1/dependencies/risk](https://omni.example.com/v1/dependencies/risk): per-package assessment for up to 100 packages plus an aggregate summary ($0.05 USDC). Body: `packages[]`.
 - [GET /v1/x402/endpoint/preflight](https://omni.example.com/v1/x402/endpoint/preflight): x402 endpoint preflight assessment ($0.01 USDC). Query: `url`.
 
+## Mainnet payment guidance
+
+Production configuration targets the Circle MAINNET facilitator https://gateway-api.circle.com. Activation requires a separate deployment and production environment switch; these instructions are not proof that a live network is offered.
+
+General API / COPY AGENT PROMPT uses `generic-mainnet`, not an Arc-only policy:
+
+1. Send the exact OMNI request unpaid first with `Accept: application/json`. On HTTP 402, read the PAYMENT-REQUIRED header; an empty JSON body is valid. An Idempotency-Key is optional for this unpaid discovery request.
+2. Select any acceptable Circle-supported MAINNET option actually offered by PAYMENT-REQUIRED. Use the live challenge, not a static network allowlist, as evidence of availability. The selected wallet must support that network and have enough Gateway balance for the exact USDC payment. If no acceptable mainnet option exists, the wallet is not payment-ready, or funds are insufficient: STOP. No testnet use or fallback.
+3. Validate the selected option as one complete offer: USDC, exact atomic/display amount for the endpoint, scheme, network, and recipient. Resolve the challenge resource against the original request URL and require the same HTTPS origin, path, and query names/values (no missing/extra keys; order and equivalent percent-encoding are okay). Otherwise STOP before payment.
+4. Use one fresh UUID v4 Idempotency-Key per logical request. Authorize at most one payment. Any allowed retry reuses the same request and key. If validation, funds, or payment state is uncertain: STOP. Never expose authentication, wallet, signing, or payment secrets.
+5. Use only successful OMNI JSON as the report source; if Circle CLI returns an envelope, unwrap data.response. Return a concise human-readable risk report. Do not make another paid request or request another representation.
+
+Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.
+
+For endpoint preflight, OMNI is the service being paid; the inspected target is input only. Never pay that target as part of the OMNI request. Its observed networks do not define OMNI's payment network.
+
+## TRY WITH YOUR AGENT
+
+The homepage uses `arc-mainnet-quick-test`: ARC MAINNET ONLY, exactly `eip155:5042`, Circle CLI chain `ARC`. No other network or fallback. If that network is absent from PAYMENT-REQUIRED, the Arc mainnet wallet is not payment-ready, or Gateway balance cannot cover the payment: STOP. The same amount, resource, idempotency, one-payment, and reporting rules apply. Use/reuse the official Circle Agent Wallet; follow https://agents.circle.com/skills/setup.md for setup/login. This quick-test profile is not a network restriction on the general API.
+
 ## Assessment semantics
 
 - `recommendation` is one of `proceed`, `proceed_with_caution`, `manual_review`, `do_not_proceed`. It is advisory output from deterministic policy using observed risk and, where applicable, evidence sufficiency; it is not an authorization decision, and `do_not_proceed` does not prohibit a payment.
@@ -64,9 +84,11 @@ x402 `PaymentRequirements.amount` is an atomic-unit string. Numeric canonicaliza
 
 `/v1/repo/audit` and `/v1/audits/{id}` are future roadmap concepts and are not currently available or part of this implemented endpoint list.
 
-## Current paid acceptance
+## Configuration and historical paid acceptance
 
-Real Arc Testnet x402 paid lifecycle has been verified on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable PostgreSQL persistence, OMNI execution, recovery/replay, and Circle transfer reconciliation. This is not an exhaustive route-by-route, mainnet, multi-chain, or fleet-capacity claim.
+- Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable PostgreSQL persistence, OMNI execution, recovery/replay, and Circle transfer reconciliation.
+- Arc Mainnet configuration: prepared / pending live acceptance. Mainnet-ready configuration is not verified mainnet settlement. Actual mainnet payment, settlement, persistence, replay, and reconciliation remain acceptance gates.
+- Neither historical acceptance nor configuration readiness establishes exhaustive route-by-route, multi-chain, or fleet capacity.
 
 ## Architecture and security
 

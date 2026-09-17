@@ -25,7 +25,8 @@ Payout wallet: use the same `SELLER_ADDRESS` configured in production.
 
 - Unpaid protected request returns HTTP 402 and `PAYMENT-REQUIRED`.
 - `circle services inspect` reports price, method, accepted chain(s), and scheme.
-- Acceptance evidence: a real Arc Testnet x402 paid call on the tested OMNI paid path returned HTTP 200 with non-mocked Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. This does not claim exhaustive route-by-route acceptance or mainnet readiness.
+- Historical acceptance evidence (Arc Testnet paid lifecycle: verified historically): a real Arc Testnet x402 paid call on the tested OMNI paid path returned HTTP 200 with non-mocked Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. This does not claim exhaustive route-by-route or mainnet paid acceptance.
+- Arc Mainnet configuration: prepared / pending live acceptance. Mainnet-ready configuration targets `https://gateway-api.circle.com` after a separate deployment/environment switch. Capture fresh mainnet payment, settlement, persistence, replay, and reconciliation evidence before advertising mainnet paid acceptance. General API buyers select acceptable mainnet options from the live PAYMENT-REQUIRED challenge; the Arc-only quick test is not an API contract requirement.
 - Public OpenAPI is reachable.
 - `/health` returns process liveness.
 - `/ready` returns `status: ready` while reporting non-blocking dependency degradation separately.

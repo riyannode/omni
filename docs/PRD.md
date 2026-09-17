@@ -159,7 +159,7 @@ In this example, `manual_review` and `do_not_proceed` do not auto-pay. The walle
 
 ## Success criteria before v1.0
 
-1. Real Arc Testnet x402 paid lifecycle verified across every paid route. Current progress: the tested OMNI paid path has been verified with Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Remaining: real paid acceptance for the remaining paid routes.
+1. Real mainnet x402 paid lifecycle acceptance across every paid route. Historical progress — Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path with Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Arc Mainnet configuration: prepared / pending live acceptance. Mainnet-ready configuration targets `https://gateway-api.circle.com`; activation requires a separate deployment/environment switch. Remaining: actual mainnet payment, settlement, persistence, replay, and reconciliation acceptance, plus remaining route coverage. Historical Testnet evidence is not mainnet evidence.
 2. At least one licensed commercial threat-intelligence source in production.
 3. Historical x402 drift tested against known provider changes.
 4. False-positive/false-negative evaluation set for risk reason codes.
