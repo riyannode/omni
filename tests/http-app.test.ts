@@ -224,3 +224,46 @@ describe("HTTP machine-readable documents", () => {
     expect(await response.json()).toMatchObject({ status: "ready", dependencies: { paidRequests: "available" } });
   });
 });
+
+describe("API root response", () => {
+  test("returns service status with docs and health links", async () => {
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => (_req: Request, _res: Response, next: NextFunction) => next() },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", () => resolve());
+      server.once("error", reject);
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const rootRes = await fetch(`${origin}/`);
+    expect(rootRes.status).toBe(200);
+    expect(rootRes.headers.get("content-type")).toContain("application/json");
+    expect(await rootRes.json()).toEqual({
+      service: "OMNI",
+      status: "online",
+      docs: "/openapi.json",
+      health: "/health"
+    });
+
+    const healthRes = await fetch(`${origin}/health`);
+    expect(healthRes.status).toBe(200);
+    expect(await healthRes.json()).toEqual({ service: "OMNI", status: "healthy" });
+
+    const readyRes = await fetch(`${origin}/ready`);
+    expect(readyRes.status).toBe(503);
+    expect(await readyRes.json()).toMatchObject({ status: "degraded" });
+
+    const openapiRes = await fetch(`${origin}/openapi.json`);
+    expect(openapiRes.status).toBe(200);
+  });
+});

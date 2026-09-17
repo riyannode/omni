@@ -64,6 +64,14 @@ export function createApp(options: {
   app.use(express.json({ limit: "256kb", strict: true }));
 
   app.get("/health", (_req, res) => res.json({ service: "OMNI", status: "healthy" }));
+  app.get("/", (_req, res) => {
+    res.json({
+      service: "OMNI",
+      status: "online",
+      docs: "/openapi.json",
+      health: "/health"
+    });
+  });
   app.get("/ready", asyncRoute(async (_req, res) => {
     const [historyAvailable, threatStatus, paidRequestsAvailable] = await Promise.all([
       options.history.isAvailable(),
