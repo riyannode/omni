@@ -56,6 +56,16 @@ export type MaliciousPackageObservation = {
 export type EndpointHistory = { observationCount: number; firstSeenAt?: string; lastSeenAt?: string; payToChangeCount: number; priceChangeCount: number; networkChangeCount: number; schemaChangeCount: number; providerChangeCount: number; relatedResourcesByPayTo: number };
 export type RiskSignal = { code: string; severity: Exclude<RiskLevel, "unknown">; source: string; detail: Record<string, unknown> };
 
+export type RepositoryRiskSummary = {
+  dependencies: { exact: number; unresolved: number; resolutionComplete: boolean };
+  vulnerabilities: { total: number; unknown: number; low: number; medium: number; high: number; critical: number; highestSeverity: RiskLevel | null };
+  knownExploitation: { kevMatches: number; status: RepositoryDependencyCisaKevObservation["status"] };
+  maliciousPackages: { observed: number };
+  threatIntelligence: { status: RepositoryThreatIntelStatus; findings: number; highestSeverity: Exclude<RiskLevel, "unknown"> | null };
+  provenance: { sourceMismatch: number; commitMismatch: number; unavailable: number };
+  securityPractices: { mutableActions: number; workflowWritePermissions: number; downloadExecuteFindings: number };
+};
+
 export type DependencyEcosystem = "NPM" | "CARGO" | "PYPI" | "GO";
 export type ExactDependencyCoordinate = { ecosystem: DependencyEcosystem; name: string; version: string; sourcePath: string; manifestPath: string; workspacePath: string };
 export type UnresolvedDependency = { ecosystem: DependencyEcosystem; name: string; requirement: string; sourcePath?: string; manifestPath: string; workspacePath: string };
@@ -149,6 +159,7 @@ export type RiskAssessment = {
   coverage?: EvidenceCoverageSummary;
   dimensions: { knownVulnerabilities: RiskDimensionLevel; knownExploitation: RiskDimensionLevel; packageSupplyChain: RiskDimensionLevel; repositorySecurityPractices: RiskDimensionLevel; maliciousInfrastructure: RiskDimensionLevel; serviceIdentity: RiskDimensionLevel; paymentConfigurationRisk: RiskDimensionLevel; endpointOperationalRisk: RiskDimensionLevel };
   signals: RiskSignal[]; evidence: Evidence[]; sourceErrors: string[]; assessedAt: string;
+  repositorySummary?: RepositoryRiskSummary;
   maliciousPackageObservations?: MaliciousPackageObservation[];
   freshness: { oldestEvidenceAt: string | null; newestEvidenceAt: string | null; expiresAt?: string };
 };

@@ -1,7 +1,8 @@
 import { SQL } from "bun";
 import { beforeAll, afterAll, describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
-import { createAssessmentJournal } from "../src/data/assessment-journal.ts";
+import { createAssessmentJournal, type AssessmentJournal } from "../src/data/assessment-journal.ts";
+import { compactResultForHttp } from "../src/http/result-representation.ts";
 import { extractRiskFeatures, RISK_FEATURE_SCHEMA_VERSION } from "../src/domain/risk-features.ts";
 import { RISK_SNAPSHOT_SCHEMA_VERSION, type RiskSnapshot } from "../src/domain/risk.ts";
 import { RISK_POLICY_VERSION } from "../src/domain/risk-policy.ts";
@@ -31,7 +32,25 @@ afterAll(async () => {
   await setupDb?.close();
 });
 
-describe("Postgres assessment journal (requires TEST_DATABASE_URL)", () => {
+describe("assessment journal", () => {
+  test("representation compaction does not reduce the journal snapshot or evidence", async () => {
+    const records: RiskSnapshot[] = [];
+    const journal: AssessmentJournal = {
+      async record(input) { records.push(structuredClone(input)); return "in-memory-assessment"; },
+      async labelAssessment() {},
+      async loadLabelled() { return []; }
+    };
+    const features = extractRiskFeatures(snapshot);
+    const assessment = new RiskEngine().assess(snapshot);
+    const compact = compactResultForHttp(assessment) as Record<string, unknown>;
+
+    await journal.record(snapshot, features, assessment);
+
+    expect(compact).not.toHaveProperty("evidence");
+    expect(records[0]?.evidence).toEqual(snapshot.evidence);
+    expect(records[0]?.evidence[0]?.detail).toEqual({ persisted: true });
+  });
+
   postgresTest("round-trips the persisted snapshot, features, schema versions, policy, and assessment", async () => {
     const journal = createAssessmentJournal(databaseUrl);
     const features = extractRiskFeatures(snapshot);

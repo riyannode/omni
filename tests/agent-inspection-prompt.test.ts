@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AGENT_QUICK_TEST_PROMPT } from "../frontend/src/agent-quick-test.ts";
-import { buildAgentInspectionPrompt, buildRequest, type InspectionInput } from "../frontend/src/agent-inspection-prompt.ts";
+import { API_ENDPOINTS, buildAgentInspectionPrompt, buildRequest, type InspectionInput } from "../frontend/src/agent-inspection-prompt.ts";
 
 const packageInput: InspectionInput = { endpointId: "package", values: { ecosystem: "npm", name: "express", version: "5.2.1" } };
 const genericInputs: readonly InspectionInput[] = [
@@ -10,12 +10,17 @@ const genericInputs: readonly InspectionInput[] = [
   { endpointId: "preflight", values: { url: "https://example.com/paid" } },
 ];
 
+const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.";
+
 describe("agent inspection prompt profiles", () => {
   test("homepage quick test is Arc Testnet only", () => {
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Accept: application/json");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("ARC TESTNET ONLY:");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("eip155:5042002");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("never enumerate/use another chain");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not use another chain.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("no other chain, no network fallback");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("official Circle Agent Wallet");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("https://agents.circle.com/skills/setup.md");
     expect(AGENT_QUICK_TEST_PROMPT).not.toContain("TESTNET only: choose an acceptable TESTNET option");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("npm:express@5.2.1");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("5000 atomic units / 0.005000 USDC");
@@ -24,26 +29,26 @@ describe("agent inspection prompt profiles", () => {
   test("all API endpoint builders keep generic TESTNET behavior", () => {
     for (const input of genericInputs) {
       const prompt = buildAgentInspectionPrompt(input);
-      expect(prompt).toContain("TESTNET only:");
-      expect(prompt).toContain("acceptable TESTNET option");
-      expect(prompt).toContain("If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not fall back to another chain.");
-      expect(prompt).not.toContain("or cannot cover the payment");
+      expect(prompt).toContain("Accept: application/json");
+      expect(prompt).toContain("TESTNET only: choose an acceptable TESTNET option");
+      expect(prompt).toContain("No network fallback.");
+      expect(prompt).toContain("If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.");
       expect(prompt).not.toContain("ARC TESTNET ONLY:");
       expect(prompt).not.toContain("eip155:5042002");
     }
   });
 
   test("payment safety rules remain explicit and compact", () => {
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("one fresh UUID v4 Idempotency-Key");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("HTTP status and PAYMENT-REQUIRED header");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("body {} is allowed");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("Authorize at most one payment");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("same method, URL, POST body, and Idempotency-Key");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("If payment state is uncertain, STOP");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("never re-pay automatically");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("asset USDC");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("Never expose OTP, wallet, signing, or payment authorization secrets.");
-    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("Never expose secrets");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Require asset USDC and exactly 5000 atomic units / 0.005000 USDC.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("one fresh UUID v4 Idempotency-Key per logical request");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Authorize at most one payment; any retry reuses the same request and key.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("If validation, wallet/Gateway funds, or payment state is uncertain: STOP.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Never expose authentication, wallet, signing, or payment secrets.");
+    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("Retry same method, URL, POST body, and Idempotency-Key");
+    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("never re-pay automatically");
+    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("OTP, wallet");
+    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("payment authorization secrets");
   });
 
   test("prompt sections keep network and payment restrictions in PAYMENT", () => {
@@ -67,13 +72,12 @@ describe("agent inspection prompt profiles", () => {
     expect(paymentSection).toContain("payment-ready");
   });
 
-  test("resource validation is semantic and resolves relative resources against the full request URL", () => {
+  test("resource binding requires the same HTTPS origin, pathname, and query", () => {
     const prompt = buildAgentInspectionPrompt(packageInput);
-    expect(prompt).toContain("new URL(challengeResource, originalRequestUrl)");
-    expect(prompt).toContain("full original OMNI request URL");
-    expect(prompt).toContain("same HTTPS origin, pathname, and query names/values");
-    expect(prompt).toContain("Query order and equivalent percent-encoding are okay");
-    expect(prompt).not.toContain("must match the exact OMNI request");
+    expect(prompt).toContain("Require the challenge resource to resolve (new URL(challengeResource, originalRequestUrl)) to the same HTTPS origin, pathname, and query names/values as the full original OMNI request URL");
+    expect(prompt).toContain("no missing/extra keys (order and equivalent percent-encoding are okay)");
+    expect(prompt).toContain("Otherwise STOP before payment.");
+    expect(prompt).not.toContain("Different origin, pathname, query key, or query value: STOP before payment");
 
     const originalRequestUrl = "https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1";
     const relativeResources = [
@@ -90,7 +94,7 @@ describe("agent inspection prompt profiles", () => {
 
   test("resource mismatches stop before payment", () => {
     const prompt = buildAgentInspectionPrompt(packageInput);
-    expect(prompt).toContain("Different origin, pathname, query key, or query value: STOP before payment");
+    expect(prompt).toContain("Otherwise STOP before payment");
 
     const original = new URL("https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1");
     const mismatches = [
@@ -102,6 +106,63 @@ describe("agent inspection prompt profiles", () => {
     for (const resource of mismatches) {
       const resolved = new URL(resource, original);
       expect(resolved.origin === original.origin && resolved.pathname === original.pathname && resolved.search === original.search).toBe(false);
+    }
+  });
+
+  test("agent prompts preserve every endpoint request and price", () => {
+    const expectedRequests: readonly { input: InspectionInput; request: string; price: string }[] = [
+      {
+        input: packageInput,
+        request: "GET https://api.askomni.xyz/v1/package/risk?ecosystem=npm&name=express&version=5.2.1",
+        price: "5000 atomic units / 0.005000 USDC",
+      },
+      {
+        input: genericInputs[1]!,
+        request: "GET https://api.askomni.xyz/v1/repo/risk?owner=expressjs&repo=express",
+        price: "10000 atomic units / 0.010000 USDC",
+      },
+      {
+        input: genericInputs[2]!,
+        request: "POST https://api.askomni.xyz/v1/dependencies/risk",
+        price: "50000 atomic units / 0.050000 USDC",
+      },
+      {
+        input: genericInputs[3]!,
+        request: "GET https://api.askomni.xyz/v1/x402/endpoint/preflight?url=https%3A%2F%2Fexample.com%2Fpaid",
+        price: "10000 atomic units / 0.010000 USDC",
+      },
+    ];
+    expect(expectedRequests).toHaveLength(API_ENDPOINTS.length);
+
+    for (const expected of expectedRequests) {
+      const prompt = buildAgentInspectionPrompt(expected.input);
+      expect(prompt).toContain(expected.request);
+      expect(prompt).toContain(expected.price);
+      expect(prompt).toContain("new URL(challengeResource, originalRequestUrl)");
+      expect(prompt).toContain("same HTTPS origin, pathname, and query names/values");
+      if (expected.input.endpointId === "dependencies") {
+        expect(prompt).toContain("Content-Type: application/json");
+        expect(prompt).toContain('"packages": [');
+        expect(prompt).toContain('"ecosystem": "npm"');
+        expect(prompt).toContain('"name": "express"');
+        expect(prompt).toContain('"version": "5.2.1"');
+      } else {
+        expect(prompt).not.toContain("Content-Type: application/json");
+      }
+    }
+  });
+
+  test("COPY REQUEST and agent prompts use JSON", () => {
+    for (const input of genericInputs) {
+      const request = buildRequest(input);
+      expect(request.display).toContain("Accept: application/json");
+      expect(request.display).not.toContain("Accept: text/markdown");
+      expect(request.curl).toContain("Accept: application/json");
+      expect(request.curl).not.toContain("Accept: text/markdown");
+
+      const prompt = buildAgentInspectionPrompt(input);
+      expect(prompt).toContain("Accept: application/json");
+      expect(prompt).not.toContain("Accept: text/markdown");
     }
   });
 
@@ -118,24 +179,60 @@ describe("agent inspection prompt profiles", () => {
     expect(request.url).not.toContain("name=circle-fin%2Fx402-batching");
   });
 
-  test("output renders JSON then the human-readable markdown report and stops when content is missing", () => {
+  test("paid JSON output handles Circle CLI envelopes without another payment", () => {
     const expectedOutput = [
       "OUTPUT",
-      "After HTTP 200:",
-      "1. Show JSON without artifact.content.",
-      "2. Render artifact.content as the human-readable OMNI Markdown Report.",
-      "Missing content: report and stop; no more paid requests.",
+      "Use only the successful paid OMNI JSON response; if Circle CLI returns an envelope, unwrap data.response.",
+      "Return a concise human-readable risk report. Do not make another paid request or request another representation.",
     ].join("\n");
 
     for (const prompt of [AGENT_QUICK_TEST_PROMPT, buildAgentInspectionPrompt(packageInput)]) {
       expect(prompt).toContain(expectedOutput);
+      expect(prompt).toContain("Circle CLI");
+      expect(prompt).toContain("data.response");
+      expect(prompt).toContain("Do not make another paid request");
+      expect(prompt).not.toContain("Accept: text/markdown");
+      expect(prompt).not.toContain("--quiet");
+      expect(prompt).not.toContain("Markdown response body");
+      expect(prompt).not.toContain("authoritative OMNI assessment");
+      expect(prompt).not.toContain("text/markdown afterward");
+      expect(prompt.match(/^TASK$/gm)).toHaveLength(1);
+      expect(prompt.match(/^REQUEST$/gm)).toHaveLength(1);
+      expect(prompt.match(/^PAYMENT$/gm)).toHaveLength(1);
       expect(prompt.match(/^OUTPUT$/gm)).toHaveLength(1);
     }
   });
 
-  test("copied prompts keep a bounded word count after explicit output expansion", () => {
+  test("grounding rule forbids inferred provenance and riskScore severity mapping", () => {
+    for (const prompt of [AGENT_QUICK_TEST_PROMPT, buildAgentInspectionPrompt(packageInput), ...genericInputs.map((input) => buildAgentInspectionPrompt(input))]) {
+      expect(prompt).toContain(GROUNDING_RULE);
+      expect(prompt).toContain("Report only facts present in OMNI JSON or directly observed during payment.");
+      expect(prompt).toContain("Do not infer omitted details or map riskScore to a severity.");
+      expect(prompt).toContain("OMNI dimension values are risk levels, not quality ratings.");
+      expect(prompt).not.toContain("RISK LEVELS, not quality ratings. repositorySecurityPractices");
+      expect(prompt).not.toContain("repositorySecurityPractices: high means");
+      expect(prompt).not.toContain("VERIFIED");
+    }
+  });
+
+  test("agent prompts omit legacy representation and replay instructions", () => {
+    for (const prompt of [AGENT_QUICK_TEST_PROMPT, ...genericInputs.map((input) => buildAgentInspectionPrompt(input))]) {
+      expect(prompt).not.toContain("artifact.content");
+      expect(prompt).not.toContain("Choose one representation");
+      expect(prompt).not.toContain("request JSON then Markdown");
+      expect(prompt).not.toContain("replay for Markdown");
+      expect(prompt).not.toContain("expect an artifact");
+      expect(prompt).not.toContain("second paid request");
+      expect(prompt).not.toContain("second copy of the result");
+      expect(prompt).not.toContain("never enumerate/use another chain");
+      expect(prompt).not.toContain("do not fall back to another chain");
+      expect(prompt).not.toContain("do not use another chain");
+    }
+  });
+
+  test("copied prompts stay bounded with Circle CLI response handling", () => {
     const wordCount = (value: string) => value.trim().split(/\s+/).filter(Boolean).length;
-    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBe(187);
-    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBe(190);
+    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBeLessThan(250);
+    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBeLessThan(250);
   });
 });

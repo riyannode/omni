@@ -10,8 +10,8 @@ info:
     evaluates a dependency set, or pays an x402 endpoint. Inputs are an exact
     package coordinate, repository owner/name, up to 100 exact package
     coordinates, or a target endpoint URL. Outputs include riskScore,
-    scoreStatus, recommendation, evidenceCoverage, source-attributed signals and evidence,
-    sourceErrors, and deterministic JSON/Markdown representations. OMNI is
+    scoreStatus, recommendation, evidenceCoverage, bounded scoring-relevant signals and summaries,
+    sourceErrors, and deterministic application/json or text/markdown representations. OMNI is
     advisory: caller policy decides whether to proceed, the wallet/runtime
     enforces payment policy, and Circle settles payment. Call OMNI when fresh
     pre-execution evidence is required before software execution or payment.
@@ -102,7 +102,7 @@ paths:
         - { in: query, name: version, required: true, schema: { type: string, minLength: 1, maxLength: 128 }, example: 5.2.1 }
       responses:
         '200':
-          description: Risk assessment with source-attributed evidence and explicit source failures.
+          description: Compact machine-readable assessment with explicit source failures and omission counts.
           headers:
             PAYMENT-RESPONSE:
               $ref: '#/components/headers/PaymentResponse'
@@ -135,7 +135,7 @@ paths:
         - { in: query, name: repo, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_.-]{1,100}$' }, example: express }
       responses:
         '200':
-          description: Risk assessment with source-attributed evidence and explicit source failures.
+          description: Compact machine-readable assessment with explicit source failures and omission counts.
           headers:
             PAYMENT-RESPONSE:
               $ref: '#/components/headers/PaymentResponse'
@@ -237,7 +237,7 @@ components:
       name: Accept
       in: header
       required: false
-      description: Response representation. JSON is the canonical default; use text/markdown for a deterministic human-readable view of the same result. Errors remain JSON.
+      description: Response representation. Use application/json for compact machine/agent decisions or text/markdown for a concise human summary. Choose one representation per request; errors remain JSON. Replaying a completed Idempotency-Key may switch representation without another assessment or payment.
       schema:
         type: string
         default: application/json
@@ -351,22 +351,7 @@ components:
         sources:
           type: array
           items: { $ref: '#/components/schemas/EvidenceCoverageSource' }
-    MarkdownArtifact:
-      type: object
-      additionalProperties: false
-      required: [filename, mediaType, content]
-      description: Deterministic Markdown payload supplied by OMNI. Artifact-capable clients may materialize it as the supplied filename and content; OMNI does not write a client filesystem.
-      properties:
-        filename:
-          type: string
-          description: Fixed service filename selected by the endpoint, never derived from a user-controlled target.
-          examples: [package.risk.md, repo.risk.md, dependencies.risk.md, x402.endpoint.preflight.md]
-        mediaType:
-          type: string
-          enum: [text/markdown]
-        content:
-          type: string
-          description: Deterministic Markdown rendering of the same canonical structured result.
+
     OsvCwe:
       type: object
       additionalProperties: false
@@ -549,14 +534,155 @@ components:
             oldestEvidenceAt: { type: [string, 'null'], format: date-time }
             newestEvidenceAt: { type: [string, 'null'], format: date-time }
             expiresAt: { type: string, format: date-time }
+    CompactSignal:
+      type: object
+      additionalProperties: false
+      required: [code, severity, source]
+      properties:
+        code: { type: string }
+        severity: { type: string, enum: [low, medium, high, critical] }
+        source: { type: string }
+        detail:
+          type: object
+          additionalProperties: false
+          properties:
+            changeCount: { type: integer, minimum: 0 }
+            count: { type: integer, minimum: 0 }
+            ecosystem: { type: string }
+            id: { type: string }
+            indicatorType: { type: string }
+            name: { type: string }
+            observedCount: { type: integer, minimum: 0 }
+            reference: { type: string }
+            retainedDetailCount: { type: integer, minimum: 0 }
+            severity: { type: string }
+            status: { type: string }
+            summaryStatus: { type: string }
+            threatType: { type: string }
+            version: { type: string }
+            observedCountsBySeverity: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+    RepositoryRiskSummary:
+      type: object
+      additionalProperties: false
+      required: [dependencies, vulnerabilities, knownExploitation, maliciousPackages, threatIntelligence, provenance, securityPractices]
+      properties:
+        dependencies:
+          type: object
+          additionalProperties: false
+          required: [exact, unresolved, resolutionComplete]
+          properties:
+            exact: { type: integer, minimum: 0 }
+            unresolved: { type: integer, minimum: 0 }
+            resolutionComplete: { type: boolean }
+        vulnerabilities:
+          type: object
+          additionalProperties: false
+          required: [total, unknown, low, medium, high, critical, highestSeverity]
+          properties:
+            total: { type: integer, minimum: 0 }
+            unknown: { type: integer, minimum: 0 }
+            low: { type: integer, minimum: 0 }
+            medium: { type: integer, minimum: 0 }
+            high: { type: integer, minimum: 0 }
+            critical: { type: integer, minimum: 0 }
+            highestSeverity: { type: [string, 'null'], enum: [low, medium, high, critical, unknown, null] }
+        knownExploitation:
+          type: object
+          additionalProperties: false
+          required: [kevMatches, status]
+          properties:
+            kevMatches: { type: integer, minimum: 0 }
+            status: { type: string, enum: [NOT_QUERIED, CHECKED, UNAVAILABLE, UNKNOWN] }
+        maliciousPackages:
+          type: object
+          additionalProperties: false
+          required: [observed]
+          properties:
+            observed: { type: integer, minimum: 0 }
+        threatIntelligence:
+          type: object
+          additionalProperties: false
+          required: [status, findings, highestSeverity]
+          properties:
+            status: { type: string, enum: [NOT_CHECKED, CHECKED, UNAVAILABLE, UNKNOWN] }
+            findings: { type: integer, minimum: 0 }
+            highestSeverity: { type: [string, 'null'], enum: [low, medium, high, critical, null] }
+        provenance:
+          type: object
+          additionalProperties: false
+          required: [sourceMismatch, commitMismatch, unavailable]
+          properties:
+            sourceMismatch: { type: integer, minimum: 0 }
+            commitMismatch: { type: integer, minimum: 0 }
+            unavailable: { type: integer, minimum: 0 }
+        securityPractices:
+          type: object
+          additionalProperties: false
+          required: [mutableActions, workflowWritePermissions, downloadExecuteFindings]
+          properties:
+            mutableActions: { type: integer, minimum: 0 }
+            workflowWritePermissions: { type: integer, minimum: 0 }
+            downloadExecuteFindings: { type: integer, minimum: 0 }
+    ResponseOmissions:
+      type: object
+      additionalProperties: false
+      required: [evidenceDetailsOmitted, dependencyDetailsOmitted]
+      description: Public representation omission counts. For x402 preflight, paymentOptionsOmitted reports options beyond the maximum of 8 retained public options; a nonzero count makes an unmatched selected option insufficient context rather than a definitive mismatch.
+      properties:
+        evidenceDetailsOmitted: { type: integer, minimum: 0 }
+        dependencyDetailsOmitted: { type: integer, minimum: 0 }
+        signalsOmitted: { type: integer, minimum: 0 }
+        sourceErrorsOmitted: { type: integer, minimum: 0 }
+        packagesOmitted: { type: integer, minimum: 0 }
+        coverageSourcesOmitted: { type: integer, minimum: 0 }
+        paymentOptionsOmitted: { type: integer, minimum: 0 }
+    CompactRiskAssessmentFields:
+      type: object
+      required: [subject, policyVersion, scoreStatus, recommendation, riskScore, evidenceCoverage, dimensions, signals, sourceErrors, omissions, assessedAt, freshness]
+      properties:
+        subject: { $ref: '#/components/schemas/Subject' }
+        policyVersion: { type: string }
+        scoreStatus: { type: string, enum: [measured, measured_partial, insufficient_evidence] }
+        recommendation: { type: string, enum: [proceed, proceed_with_caution, manual_review, do_not_proceed] }
+        riskScore: { type: integer, minimum: 0, maximum: 100 }
+        evidenceCoverage: { type: number, minimum: 0, maximum: 1 }
+        coverage: { $ref: '#/components/schemas/EvidenceCoverage' }
+        dimensions: { $ref: '#/components/schemas/RiskDimensions' }
+        signals:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/CompactSignal' }
+        repositorySummary: { $ref: '#/components/schemas/RepositoryRiskSummary' }
+        maliciousPackageObservations:
+          type: object
+          additionalProperties: false
+          required: [observed, ids]
+          properties:
+            observed: { type: integer, minimum: 0 }
+            ids:
+              type: array
+              maxItems: 16
+              items: { type: string }
+            idsOmitted: { type: integer, minimum: 0 }
+        sourceErrors:
+          type: array
+          maxItems: 16
+          items: { type: string }
+        omissions: { $ref: '#/components/schemas/ResponseOmissions' }
+        assessedAt: { type: string, format: date-time }
+        freshness:
+          type: object
+          additionalProperties: false
+          required: [oldestEvidenceAt, newestEvidenceAt]
+          properties:
+            oldestEvidenceAt: { type: [string, 'null'], format: date-time }
+            newestEvidenceAt: { type: [string, 'null'], format: date-time }
+            expiresAt: { type: string, format: date-time }
     RiskAssessmentResponse:
       allOf:
-        - $ref: '#/components/schemas/RiskAssessment'
-        - type: object
-          required: [artifact]
-          properties:
-            artifact: { $ref: '#/components/schemas/MarkdownArtifact' }
-      description: Top-level successful JSON risk response. The canonical assessment fields remain inline and artifact is an additive delivery payload.
+        - $ref: '#/components/schemas/CompactRiskAssessmentFields'
+      unevaluatedProperties: false
+      description: Compact machine-readable JSON response. Raw evidence, provider payloads, Markdown, and full dependency details are intentionally omitted; omission counts are explicit.
     ObservedPaymentRequirement:
       type: object
       additionalProperties: false
@@ -579,29 +705,31 @@ components:
       type: object
       additionalProperties: false
       required: [resource, paymentOptions]
-      description: Observational/advisory record of what OMNI saw during preflight. It is not an authorization object and does not bind any settlement.
+      description: Public observational/advisory record of the preflight payment configuration. Up to 8 observed options are retained; additional options are reported by the top-level omissions.paymentOptionsOmitted field. It is not an authorization object and does not bind any settlement.
       properties:
         resource: { type: string, format: uri }
         paymentOptions:
           type: array
+          maxItems: 8
           items: { $ref: '#/components/schemas/ObservedPaymentRequirement' }
     X402EndpointPreflight:
       type: object
       allOf:
-        - $ref: '#/components/schemas/RiskAssessmentResponse'
+        - $ref: '#/components/schemas/CompactRiskAssessmentFields'
         - type: object
           required: [preflightContext]
           properties:
             preflightContext: { $ref: '#/components/schemas/X402PreflightContext' }
       unevaluatedProperties: false
-      description: Top-level successful JSON x402 preflight response with the observed preflight context and additive Markdown artifact payload.
+      description: Top-level successful JSON x402 preflight response with compact risk fields and bounded observed preflight context.
     DependencyAssessment:
       type: object
-      required: [packages, summary, assessedAt, artifact]
+      required: [packages, summary, assessedAt, omissions]
       properties:
         packages:
           type: array
-          items: { $ref: '#/components/schemas/RiskAssessment' }
+          maxItems: 16
+          items: { $ref: '#/components/schemas/RiskAssessmentResponse' }
         summary:
           type: object
           required: [count, worstRiskScore, recommendations]
@@ -612,7 +740,7 @@ components:
               type: object
               additionalProperties: { type: integer, minimum: 0 }
         assessedAt: { type: string, format: date-time }
-        artifact: { $ref: '#/components/schemas/MarkdownArtifact' }
+        omissions: { $ref: '#/components/schemas/ResponseOmissions' }
     Error:
       type: object
       required: [error]

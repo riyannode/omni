@@ -95,6 +95,8 @@ export type GeneratedRequest = {
   curl: string;
 };
 
+export type RequestRepresentation = "application/json" | "text/markdown";
+
 function trim(value: string): string {
   return value.trim();
 }
@@ -103,22 +105,22 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function makeGetRequest(url: string): GeneratedRequest {
+function makeGetRequest(url: string, representation: RequestRepresentation): GeneratedRequest {
   return {
     method: "GET",
     url,
-    display: `GET ${url}\nAccept: application/json`,
-    curl: `curl -sS -X GET ${shellQuote(url)} -H 'Accept: application/json'`,
+    display: `GET ${url}\nAccept: ${representation}`,
+    curl: `curl -sS -X GET ${shellQuote(url)} -H 'Accept: ${representation}'`,
   };
 }
 
-function makePostRequest(url: string, body: unknown): GeneratedRequest {
+function makePostRequest(url: string, body: unknown, representation: RequestRepresentation): GeneratedRequest {
   const json = JSON.stringify(body, null, 2);
   return {
     method: "POST",
     url,
-    display: `POST ${url}\nAccept: application/json\nContent-Type: application/json\n\n${json}`,
-    curl: `curl -sS -X POST ${shellQuote(url)} -H 'Accept: application/json' -H 'Content-Type: application/json' --data-raw ${shellQuote(JSON.stringify(body))}`,
+    display: `POST ${url}\nAccept: ${representation}\nContent-Type: application/json\n\n${json}`,
+    curl: `curl -sS -X POST ${shellQuote(url)} -H 'Accept: ${representation}' -H 'Content-Type: application/json' --data-raw ${shellQuote(JSON.stringify(body))}`,
   };
 }
 
@@ -175,14 +177,14 @@ export function validateInspection(input: InspectionInput): string | null {
   return null;
 }
 
-export function buildRequest(input: InspectionInput): GeneratedRequest {
+export function buildRequest(input: InspectionInput, representation: RequestRepresentation = "application/json"): GeneratedRequest {
   if (input.endpointId === "package") {
     const query = new URLSearchParams({
       ecosystem: trim(input.values.ecosystem),
       name: trim(input.values.name),
       version: trim(input.values.version),
     });
-    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/package/risk?${query.toString()}`);
+    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/package/risk?${query.toString()}`, representation);
   }
 
   if (input.endpointId === "repo") {
@@ -190,7 +192,7 @@ export function buildRequest(input: InspectionInput): GeneratedRequest {
       owner: trim(input.values.owner),
       repo: trim(input.values.repo),
     });
-    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/repo/risk?${query.toString()}`);
+    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/repo/risk?${query.toString()}`, representation);
   }
 
   if (input.endpointId === "dependencies") {
@@ -201,11 +203,11 @@ export function buildRequest(input: InspectionInput): GeneratedRequest {
         version: trim(version),
       })),
     };
-    return makePostRequest(`${OMNI_API_BASE_URL}/v1/dependencies/risk`, body);
+    return makePostRequest(`${OMNI_API_BASE_URL}/v1/dependencies/risk`, body, representation);
   }
 
   const query = new URLSearchParams({ url: trim(input.values.url) });
-  return makeGetRequest(`${OMNI_API_BASE_URL}/v1/x402/endpoint/preflight?${query.toString()}`);
+  return makeGetRequest(`${OMNI_API_BASE_URL}/v1/x402/endpoint/preflight?${query.toString()}`, representation);
 }
 
 function targetDescription(input: InspectionInput): string {
@@ -229,24 +231,26 @@ type AgentPromptProfileConfig = {
 
 const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig> = {
   "generic-testnet": {
-    task: "Use/reuse official Circle Agent Wallet. If setup/login needed, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "TESTNET only: choose acceptable TESTNET option from challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not fall back to another chain.",
+    task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
+    payment: "TESTNET only: choose an acceptable TESTNET option from the challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP. No network fallback.",
   },
   "arc-testnet-quick-test": {
-    task: "Use/reuse official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, legal input.",
-    payment: "ARC TESTNET ONLY: select eip155:5042002; never enumerate/use another chain. If absent, STOP. If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP; do not use another chain.",
+    task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
+    payment: "ARC TESTNET ONLY: pin eip155:5042002; no other chain, no network fallback. If absent, STOP. If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.",
   },
 };
 
-const RESOURCE_VALIDATION_RULE = `Resolve new URL(challengeResource, originalRequestUrl) against full original OMNI request URL. Require same HTTPS origin, pathname, and query names/values; no missing/extra keys. Query order and equivalent percent-encoding are okay. Different origin, pathname, query key, or query value: STOP before payment.`;
+const RESOURCE_VALIDATION_RULE = "Require the challenge resource to resolve (new URL(challengeResource, originalRequestUrl)) to the same HTTPS origin, pathname, and query names/values as the full original OMNI request URL; no missing/extra keys (order and equivalent percent-encoding are okay). Otherwise STOP before payment.";
 
-const UNPAID_REQUEST_RULE = "Make request unpaid first. Check HTTP status and PAYMENT-REQUIRED header; body {} is allowed.";
+const UNPAID_REQUEST_RULE = "Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.";
+
+const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.";
 
 export function buildAgentInspectionPrompt(input: InspectionInput, options: AgentPromptOptions = {}): string {
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
   const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-testnet"];
-  const request = buildRequest(input);
+  const request = buildRequest(input, "application/json");
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
@@ -263,15 +267,14 @@ ${profile.payment}
 ${UNPAID_REQUEST_RULE}
 Require asset USDC and exactly ${endpoint.atomicAmount} atomic units / ${endpoint.displayPrice} USDC.
 ${RESOURCE_VALIDATION_RULE}
-Use one fresh UUID v4 Idempotency-Key. Authorize at most one payment. Retry same method, URL, POST body, and Idempotency-Key. If payment state is uncertain, STOP; never re-pay automatically.
-Never expose OTP, wallet, signing, or payment authorization secrets.
+Use one fresh UUID v4 Idempotency-Key per logical request. Authorize at most one payment; any retry reuses the same request and key. If validation, wallet/Gateway funds, or payment state is uncertain: STOP.
+Never expose authentication, wallet, signing, or payment secrets.
 ${preflightRule}
 
 OUTPUT
-After HTTP 200:
-1. Show JSON without artifact.content.
-2. Render artifact.content as the human-readable OMNI Markdown Report.
-Missing content: report and stop; no more paid requests.`;
+Use only the successful paid OMNI JSON response; if Circle CLI returns an envelope, unwrap data.response.
+Return a concise human-readable risk report. Do not make another paid request or request another representation.
+${GROUNDING_RULE}`;
 }
 
 export async function copyText(value: string): Promise<void> {

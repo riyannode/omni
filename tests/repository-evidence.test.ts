@@ -257,6 +257,165 @@ describe("repository evidence foundation", () => {
     expect(normalizeProvenance({ verified: true, sourceRepository: "github.com/acme/demo", commit: "1111111111111111111111111111111111111111" }, { repository: "github.com/acme/demo", commit: commitSha }).state).toBe("VERIFIED_COMMIT_MISMATCH");
   });
 
+  test("uses package-specific upstream provenance instead of the inspected repository identity", async () => {
+    const packageSources = new Map([
+      ["@langchain/openai", "github.com/langchain-ai/langchainjs"],
+      ["@langchain/core", "github.com/langchain-ai/langchainjs"],
+      ["@supabase/ssr", "github.com/supabase/ssr"],
+      ["@supabase/supabase-js", "github.com/supabase/supabase-js"],
+      ["@tailwindcss/postcss", "github.com/tailwindlabs/tailwindcss"],
+      ["@x402/core", "github.com/coinbase/x402"],
+      ["@x402/evm", "github.com/coinbase/x402"],
+      ["deepagents", "github.com/langchain-ai/deepagentsjs"],
+      ["eslint-config-next", "github.com/vercel/next.js"],
+      ["lucide-react", "github.com/lucide-icons/lucide"],
+      ["next", "github.com/vercel/next.js"]
+    ]);
+    const coordinates = [...packageSources.keys()].map(name => exactCoordinate(name, name === "next" ? "16.1.6" : "1.0.0"));
+    const packageSource = packageSources.get("next")!;
+    const packageData = {
+      relatedProjects: [{ projectKey: { id: packageSource }, relationType: "SOURCE_REPO", relationProvenance: "CORRECTLY_INFERRED" }],
+      slsaProvenances: [{ verified: true, sourceRepository: packageSource, commit: commitSha }]
+    };
+    const packageSpecific = await new DepsDevProvider({ async boundedJson() { return packageData; } } as never).packageVersion(coordinates.at(-1)!);
+    expect(packageSpecific.observation.provenance[0]).toMatchObject({ state: "VERIFIED", sourceRepository: packageSource, expectedSourceMatches: true });
+
+    const snapshots: RiskSnapshot[] = [];
+    const expectedSources: Array<{ repository?: string; commit?: string } | undefined> = [];
+    const depsDev = {
+      async packageVersion(item: ExactDependencyCoordinate, expected?: { repository?: string; commit?: string }) {
+        expectedSources.push(expected);
+        const sourceRepository = packageSources.get(item.name);
+        if (!sourceRepository) throw new Error(`unexpected package ${item.name}`);
+        return {
+          observation: { coordinate: item, licenses: [], advisoryIds: [], graph: { checked: true, nodeCount: 1 }, provenance: [{ package: item, source: "deps.dev" as const, state: "VERIFIED" as const, sourceRepository }] },
+          evidence: { source: "deps.dev", kind: "package_dependency_provenance", observedAt: "2026-01-01T00:00:00.000Z", detail: {} }
+        };
+      }
+    };
+    const repository = repositoryEvidenceWith(coordinates);
+    repository.target.repository = "github.com/circlefin/arc-nanopayments";
+    const assessment = await repositoryOmni(repository, threatIntelStore(async () => ({ checked: true, findings: [] })), capturingJournal(snapshots), staticScorecard, undefined, depsDev as never).repositoryRisk("circlefin", "arc-nanopayments");
+    const features = extractRiskFeatures(snapshots[0]!);
+
+    expect(expectedSources).toEqual(Array.from({ length: packageSources.size }, () => undefined));
+    expect(features.repository.provenanceStates).toMatchObject({ VERIFIED: 11, VERIFIED_SOURCE_MISMATCH: 0, VERIFIED_COMMIT_MISMATCH: 0 });
+    expect(assessment.dimensions.repositorySecurityPractices).toBe("low");
+    expect(assessment.riskScore).toBe(3);
+  });
+
+  test("preserves arc-nanopayments forensic risk and coverage while removing false provenance mismatches", async () => {
+    const packageSources = new Map([
+      ["@langchain/openai", "github.com/langchain-ai/langchainjs"],
+      ["@langchain/core", "github.com/langchain-ai/langchainjs"],
+      ["@supabase/ssr", "github.com/supabase/ssr"],
+      ["@supabase/supabase-js", "github.com/supabase/supabase-js"],
+      ["@tailwindcss/postcss", "github.com/tailwindlabs/tailwindcss"],
+      ["@x402/core", "github.com/coinbase/x402"],
+      ["@x402/evm", "github.com/coinbase/x402"],
+      ["deepagents", "github.com/langchain-ai/deepagentsjs"],
+      ["eslint-config-next", "github.com/vercel/next.js"],
+      ["lucide-react", "github.com/lucide-icons/lucide"],
+      ["next", "github.com/vercel/next.js"]
+    ]);
+    const coordinates = [...packageSources.keys()].map(name => exactCoordinate(name, name === "next" ? "16.1.6" : "1.0.0"));
+    // Reduced forensic fixture: preserve the reported aggregate, not live advisory
+    // identities. Synthetic padding crosses the unchanged 24-package enrichment cap.
+    const severities = (["critical", "high", "medium", "low"] as const)
+      .flatMap((severity, index) => Array.from({ length: [2, 14, 15, 3][index]! }, () => severity));
+    const findings = severities.map((severity, index) => ({
+      id: `fixture-osv-${index}`, severity, knownExploited: false, aliases: [`CVE-2026-${10000 + index}`]
+    }));
+    const repository = repositoryEvidenceWith([
+      ...coordinates, ...Array.from({ length: 14 }, (_, index) => exactCoordinate(`zz-fixture-${String(index).padStart(2, "0")}`))
+    ]);
+    repository.target.repository = "github.com/circlefin/arc-nanopayments";
+    const expectedSelection = repository.dependencies.exact.slice(0, 24).map(item => item.name).sort();
+    const deferredLimit = "dependency_enrichment_limit_reached:1_of_25_deferred";
+
+    async function assess(useLegacyTargetExpectation: boolean) {
+      const snapshots: RiskSnapshot[] = [];
+      const calls = { depsDev: [] as string[], osv: [] as string[], threatIntel: [] as string[], kev: [] as string[][] };
+      const expectedSources: Array<{ repository?: string; commit?: string } | undefined> = [];
+      const depsDev = {
+        async packageVersion(item: ExactDependencyCoordinate, expected?: { repository?: string; commit?: string }) {
+          calls.depsDev.push(item.name);
+          expectedSources.push(expected);
+          const sourceRepository = packageSources.get(item.name);
+          const provider = new DepsDevProvider({ async boundedJson(url: string) {
+            if (url.endsWith(":dependencies")) return { nodes: [{}] };
+            return sourceRepository ? {
+              relatedProjects: [{ projectKey: { id: sourceRepository }, relationType: "SOURCE_REPO", relationProvenance: "CORRECTLY_INFERRED" }],
+              slsaProvenances: [{ verified: true, sourceRepository, commit: commitSha }]
+            } : {};
+          } } as never);
+          // Reproduce the former service argument at the provider boundary only.
+          return provider.packageVersion(item, useLegacyTargetExpectation
+            ? { repository: repository.target.repository, commit: commitSha } : expected);
+        }
+      };
+      const osv = { async packageVulnerabilities(_ecosystem: string, name: string) {
+        calls.osv.push(name);
+        return { findings: findings.filter((_, index) => coordinates[index % coordinates.length]!.name === name), maliciousPackageObservations: [], evidence: [] };
+      } };
+      const kev = { async mark(ids: string[]) {
+        calls.kev.push([...ids]);
+        return { exploited: new Set<string>(), evidence: { source: "CISA KEV", kind: "known_exploitation", observedAt: "2026-01-01T00:00:00.000Z", detail: { matched: [] } } };
+      } };
+      const github = {
+        async resolve() { return { repository: repository.target.repository, requestedRef: "main", resolvedCommitSha: commitSha, rootTreeSha: treeSha }; },
+        async collectResolved() { return structuredClone(repository); }
+      };
+      const threatIntel = threatIntelStore(async item => { calls.threatIntel.push(item.name); return { checked: true, findings: [] }; });
+      const omni = new OmniIntelligence(new RiskEngine(), new CachedLoader(memoryCache()), osv as never, kev as never, staticScorecard as never, {} as never, {} as never, {} as never, {} as never, threatIntel as never, capturingJournal(snapshots), github as never, depsDev as never);
+      const assessment = await omni.repositoryRisk("circlefin", "arc-nanopayments");
+      return { assessment, snapshot: snapshots[0]!, calls, expectedSources };
+    }
+
+    const before = await assess(true);
+    const after = await assess(false);
+    expect(extractRiskFeatures(before.snapshot).repository.provenanceStates).toMatchObject({ VERIFIED: 0, VERIFIED_SOURCE_MISMATCH: 11, VERIFIED_COMMIT_MISMATCH: 0 });
+    expect(extractRiskFeatures(after.snapshot).repository.provenanceStates).toMatchObject({ VERIFIED: 11, VERIFIED_SOURCE_MISMATCH: 0, VERIFIED_COMMIT_MISMATCH: 0 });
+    expect(before.assessment.dimensions.repositorySecurityPractices).toBe("high");
+    expect(after.assessment.dimensions.repositorySecurityPractices).toBe("low");
+    for (const result of [before, after]) {
+      expect(result.expectedSources).toEqual(Array.from({ length: 24 }, () => undefined));
+      expect(result.assessment.riskScore).toBe(85);
+      expect(result.assessment.dimensions.knownVulnerabilities).toBe("critical");
+      expect(result.assessment.repositorySummary?.vulnerabilities).toEqual({ total: 34, critical: 2, high: 14, medium: 15, low: 3, unknown: 0, highestSeverity: "critical" });
+      expect(result.assessment.repositorySummary?.knownExploitation).toEqual({ kevMatches: 0, status: "CHECKED" });
+      expect(result.calls.kev).toEqual([findings.flatMap(item => item.aliases).sort()]);
+      for (const source of ["depsDev", "osv", "threatIntel"] as const) expect([...result.calls[source]].sort()).toEqual(expectedSelection);
+      const evidence = result.snapshot.repositoryEvidence!;
+      expect(evidence.dependencies.resolvedGraph).toEqual({ packagesChecked: 24, nodesObserved: 24, errors: [] });
+      expect(evidence.coverage).toMatchObject({ status: "partial", limitations: [deferredLimit] });
+      expect(evidence.dependencyVulnerabilities.limitations).toEqual([deferredLimit]);
+      expect(evidence.dependencyThreatIntel.limitations).toEqual([deferredLimit]);
+      expect(result.assessment.scoreStatus).toBe("measured_partial");
+      for (const source of ["OSV Dependency Vulnerabilities", "CISA KEV", "deps.dev Provenance", "Threat Intelligence"]) {
+        expect(result.assessment.coverage?.sources).toContainEqual({ source, execution: "QUERIED", status: "UNKNOWN", weight: 1 });
+      }
+    }
+    const previousEvidence = before.snapshot.repositoryEvidence!;
+    const currentEvidence = after.snapshot.repositoryEvidence!;
+    expect(currentEvidence.dependencyVulnerabilities).toEqual(previousEvidence.dependencyVulnerabilities);
+    expect(currentEvidence.dependencyVulnerabilities.cisaKev).toEqual({ status: "CHECKED", correlatableCveIds: findings.flatMap(item => item.aliases).sort(), matchedCveIds: [] });
+    expect(currentEvidence.dependencyThreatIntel).toEqual(previousEvidence.dependencyThreatIntel);
+    expect(currentEvidence.dependencies).toEqual(previousEvidence.dependencies);
+    expect(currentEvidence.coverage).toEqual(previousEvidence.coverage);
+    expect(after.assessment.coverage).toEqual(before.assessment.coverage);
+  });
+
+  test("preserves a real package-specific provenance disagreement as a source mismatch", async () => {
+    const coordinate = exactCoordinate("next", "16.1.6");
+    const packageSource = "github.com/vercel/next.js";
+    const observed = await new DepsDevProvider({ async boundedJson() { return {
+      relatedProjects: [{ projectKey: { id: packageSource }, relationType: "SOURCE_REPO", relationProvenance: "CORRECTLY_INFERRED" }],
+      slsaProvenances: [{ verified: true, sourceRepository: "github.com/other/next", commit: commitSha }]
+    }; } } as never).packageVersion(coordinate);
+    expect(observed.observation.provenance[0]).toMatchObject({ state: "VERIFIED_SOURCE_MISMATCH", sourceRepository: "github.com/other/next", expectedSourceMatches: false });
+  });
+
   test("scores repository dependency threat intel while separating uncertainty states", async () => {
     const baseline = new RiskEngine().assess({ subject: { type: "repository", id: "github.com/acme/demo" }, scorecard: 9.5, evidence: [{ source: "Scorecard", kind: "score", observedAt: "2026-08-26T00:00:00.000Z", detail: { score: 9.5 } }] });
     const coordinate = exactCoordinate("dangerous-package", "4.2.0");
