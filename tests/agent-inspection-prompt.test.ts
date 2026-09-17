@@ -11,6 +11,7 @@ const genericInputs: readonly InspectionInput[] = [
 ];
 
 const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.";
+const EXPECTED_OMNI_SELLER = "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5";
 
 describe("agent inspection prompt profiles", () => {
   test("homepage quick test is Arc mainnet only", () => {
@@ -48,16 +49,16 @@ describe("agent inspection prompt profiles", () => {
 
   test("payment safety rules remain explicit and compact", () => {
     for (const prompt of [AGENT_QUICK_TEST_PROMPT, ...genericInputs.map(input => buildAgentInspectionPrompt(input))]) {
-    expect(prompt).toContain("Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.");
-    expect(prompt).toContain("Require asset USDC and exactly");
-    expect(prompt).toContain("one fresh UUID v4 Idempotency-Key per logical request");
-    expect(prompt).toContain("Authorize at most one payment; any retry reuses the same request and key.");
-    expect(prompt).toContain("If validation, wallet/Gateway funds, or payment state is uncertain: STOP.");
-    expect(prompt).toContain("Never expose authentication, wallet, signing, or payment secrets.");
-    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("Retry same method, URL, POST body, and Idempotency-Key");
-    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("never re-pay automatically");
-    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("OTP, wallet");
-    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("payment authorization secrets");
+      expect(prompt).toContain("Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.");
+      expect(prompt).toContain("Require asset USDC and exactly");
+      expect(prompt).toContain("one fresh UUID v4 Idempotency-Key per logical request");
+      expect(prompt).toContain("Authorize at most one payment; any retry reuses the same request and key.");
+      expect(prompt).toContain("If validation, wallet/Gateway funds, or payment state is uncertain: STOP.");
+      expect(prompt).toContain("Never expose authentication, wallet, signing, or payment secrets.");
+      expect(AGENT_QUICK_TEST_PROMPT).not.toContain("Retry same method, URL, POST body, and Idempotency-Key");
+      expect(AGENT_QUICK_TEST_PROMPT).not.toContain("never re-pay automatically");
+      expect(AGENT_QUICK_TEST_PROMPT).not.toContain("OTP, wallet");
+      expect(AGENT_QUICK_TEST_PROMPT).not.toContain("payment authorization secrets");
     }
   });
 
@@ -244,7 +245,47 @@ describe("agent inspection prompt profiles", () => {
 
   test("copied prompts stay bounded with Circle CLI response handling", () => {
     const wordCount = (value: string) => value.trim().split(/\s+/).filter(Boolean).length;
-    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBeLessThan(250);
-    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBeLessThan(250);
+    expect(wordCount(AGENT_QUICK_TEST_PROMPT)).toBeLessThan(320);
+    expect(wordCount(buildAgentInspectionPrompt(packageInput))).toBeLessThan(320);
+  });
+
+  test("Arc quick prompt includes expected payTo validation", () => {
+    const prompt = AGENT_QUICK_TEST_PROMPT;
+    expect(prompt).toContain(`payTo must be ${EXPECTED_OMNI_SELLER}`);
+    expect(prompt).toContain("Validate the selected offer as one complete offer from PAYMENT-REQUIRED");
+  });
+
+  test("Arc quick prompt requires scheme exact", () => {
+    const prompt = AGENT_QUICK_TEST_PROMPT;
+    expect(prompt).toContain("scheme must be exact");
+  });
+
+  test("Arc quick prompt enforces same-offer field integrity", () => {
+    const prompt = AGENT_QUICK_TEST_PROMPT;
+    expect(prompt).toContain("asset/amount/network must come from the same offer entry");
+    expect(prompt).toContain("Never combine fields from different accepts[] entries");
+  });
+
+  test("Arc quick prompt requires exact offer match or STOP", () => {
+    const prompt = AGENT_QUICK_TEST_PROMPT;
+    expect(prompt).toContain("If the offer does not match exactly, STOP");
+  });
+
+  test("generic mainnet prompt validates recipient and scheme from selected offer", () => {
+    const prompt = buildAgentInspectionPrompt(packageInput);
+    expect(prompt).toContain(`payTo must be ${EXPECTED_OMNI_SELLER}`);
+    expect(prompt).toContain("scheme must be exact");
+    expect(prompt).toContain("asset/amount/network must come from the same offer entry");
+    expect(prompt).toContain("Never combine fields from different accepts[] entries");
+    expect(prompt).toContain("If payTo is not the expected seller or scheme is not exact, STOP");
+  });
+
+  test("no testnet identifiers in any prompt", () => {
+    const allPrompts = [AGENT_QUICK_TEST_PROMPT, ...genericInputs.map(input => buildAgentInspectionPrompt(input))];
+    for (const prompt of allPrompts) {
+      expect(prompt).not.toContain("eip155:5042002");
+      expect(prompt).not.toMatch(/ARC[- ]TESTNET/);
+      expect(prompt).not.toContain("TESTNET fallback");
+    }
   });
 });

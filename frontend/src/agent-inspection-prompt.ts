@@ -246,6 +246,16 @@ const UNPAID_REQUEST_RULE = "Send the request unpaid first; on 402 read the PAYM
 
 const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.";
 
+const EXPECTED_OMNI_SELLER = "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5";
+
+function buildPaymentOfferValidationRule(profile: AgentPromptProfile, endpoint: EndpointMetadata): string {
+  const base = `Validate the selected offer as one complete offer from PAYMENT-REQUIRED: scheme must be exact, payTo must be ${EXPECTED_OMNI_SELLER}, and asset/amount/network must come from the same offer entry. Never combine fields from different accepts[] entries.`;
+  if (profile === "arc-mainnet-quick-test") {
+    return `${base} For Arc mainnet, require network eip155:5042 and amount ${endpoint.atomicAmount} atomic units. If the offer does not match exactly, STOP.`;
+  }
+  return `${base} If payTo is not the expected seller or scheme is not exact, STOP.`;
+}
+
 export function buildAgentInspectionPrompt(input: InspectionInput, options: AgentPromptOptions = {}): string {
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
@@ -254,6 +264,7 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
+  const offerValidationRule = buildPaymentOfferValidationRule(options.profile ?? "generic-mainnet", endpoint);
 
   return `TASK
 ${profile.task}
@@ -267,6 +278,7 @@ ${profile.payment}
 ${UNPAID_REQUEST_RULE}
 Require asset USDC and exactly ${endpoint.atomicAmount} atomic units / ${endpoint.displayPrice} USDC.
 ${RESOURCE_VALIDATION_RULE}
+${offerValidationRule}
 Use one fresh UUID v4 Idempotency-Key per logical request. Authorize at most one payment; any retry reuses the same request and key. If validation, wallet/Gateway funds, or payment state is uncertain: STOP.
 Never expose authentication, wallet, signing, or payment secrets.
 ${preflightRule}
