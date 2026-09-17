@@ -13,42 +13,52 @@ const genericInputs: readonly InspectionInput[] = [
 const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.";
 
 describe("agent inspection prompt profiles", () => {
-  test("homepage quick test is Arc Testnet only", () => {
+  test("homepage quick test is Arc mainnet only", () => {
     expect(AGENT_QUICK_TEST_PROMPT).toContain("Accept: application/json");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("ARC TESTNET ONLY:");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("eip155:5042002");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("ARC MAINNET ONLY:");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("eip155:5042");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("Circle CLI chain ARC");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("If eip155:5042 is absent from PAYMENT-REQUIRED, STOP.");
+    expect(AGENT_QUICK_TEST_PROMPT).not.toMatch(/eip155:5042002|ARC[- ]TESTNET/);
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("No TESTNET.");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("no other chain, no network fallback");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.");
+    expect(AGENT_QUICK_TEST_PROMPT).toContain("If the Arc mainnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("official Circle Agent Wallet");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("https://agents.circle.com/skills/setup.md");
-    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("TESTNET only: choose an acceptable TESTNET option");
+    expect(AGENT_QUICK_TEST_PROMPT).not.toContain("MAINNET only: choose one acceptable Circle-supported MAINNET option actually advertised by the live challenge");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("npm:express@5.2.1");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("5000 atomic units / 0.005000 USDC");
   });
 
-  test("all API endpoint builders keep generic TESTNET behavior", () => {
+  test("all API endpoint builders select live MAINNET options", () => {
     for (const input of genericInputs) {
       const prompt = buildAgentInspectionPrompt(input);
       expect(prompt).toContain("Accept: application/json");
-      expect(prompt).toContain("TESTNET only: choose an acceptable TESTNET option");
-      expect(prompt).toContain("No network fallback.");
-      expect(prompt).toContain("If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.");
-      expect(prompt).not.toContain("ARC TESTNET ONLY:");
+      expect(prompt).toContain("MAINNET only: choose one acceptable Circle-supported MAINNET option actually advertised by the live challenge");
+      expect(prompt).toContain("No TESTNET use or fallback.");
+      expect(prompt).toContain("If the selected wallet does not support that network, is not payment-ready, or lacks Gateway funds, STOP.");
+      expect(prompt).not.toContain("ARC MAINNET ONLY:");
       expect(prompt).not.toContain("eip155:5042002");
+      expect(prompt).not.toContain("eip155:5042");
+      expect(prompt).not.toContain("TESTNET only:");
+      expect(prompt).toContain("not a static allowlist");
+      expect(prompt).toContain("If none, STOP.");
     }
   });
 
   test("payment safety rules remain explicit and compact", () => {
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("Require asset USDC and exactly 5000 atomic units / 0.005000 USDC.");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("one fresh UUID v4 Idempotency-Key per logical request");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("Authorize at most one payment; any retry reuses the same request and key.");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("If validation, wallet/Gateway funds, or payment state is uncertain: STOP.");
-    expect(AGENT_QUICK_TEST_PROMPT).toContain("Never expose authentication, wallet, signing, or payment secrets.");
+    for (const prompt of [AGENT_QUICK_TEST_PROMPT, ...genericInputs.map(input => buildAgentInspectionPrompt(input))]) {
+    expect(prompt).toContain("Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.");
+    expect(prompt).toContain("Require asset USDC and exactly");
+    expect(prompt).toContain("one fresh UUID v4 Idempotency-Key per logical request");
+    expect(prompt).toContain("Authorize at most one payment; any retry reuses the same request and key.");
+    expect(prompt).toContain("If validation, wallet/Gateway funds, or payment state is uncertain: STOP.");
+    expect(prompt).toContain("Never expose authentication, wallet, signing, or payment secrets.");
     expect(AGENT_QUICK_TEST_PROMPT).not.toContain("Retry same method, URL, POST body, and Idempotency-Key");
     expect(AGENT_QUICK_TEST_PROMPT).not.toContain("never re-pay automatically");
     expect(AGENT_QUICK_TEST_PROMPT).not.toContain("OTP, wallet");
     expect(AGENT_QUICK_TEST_PROMPT).not.toContain("payment authorization secrets");
+    }
   });
 
   test("prompt sections keep network and payment restrictions in PAYMENT", () => {
@@ -68,7 +78,7 @@ describe("agent inspection prompt profiles", () => {
     expect(requestSection).toContain("Inspect: npm:express@5.2.1");
     expect(requestSection).not.toContain("TESTNET");
     expect(requestSection).not.toContain("payment-ready");
-    expect(paymentSection).toContain("TESTNET only:");
+    expect(paymentSection).toContain("MAINNET only:");
     expect(paymentSection).toContain("payment-ready");
   });
 
@@ -155,6 +165,8 @@ describe("agent inspection prompt profiles", () => {
   test("COPY REQUEST and agent prompts use JSON", () => {
     for (const input of genericInputs) {
       const request = buildRequest(input);
+      expect(request.display).not.toMatch(/MAINNET|TESTNET|eip155:|Gateway/);
+      expect(request.curl).not.toMatch(/MAINNET|TESTNET|eip155:|Gateway/);
       expect(request.display).toContain("Accept: application/json");
       expect(request.display).not.toContain("Accept: text/markdown");
       expect(request.curl).toContain("Accept: application/json");

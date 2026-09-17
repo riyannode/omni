@@ -33,7 +33,7 @@ export type InspectionInput =
   | { endpointId: "dependencies"; values: DependencyInput[] }
   | { endpointId: "preflight"; values: PreflightInput };
 
-export type AgentPromptProfile = "generic-testnet" | "arc-testnet-quick-test";
+export type AgentPromptProfile = "generic-mainnet" | "arc-mainnet-quick-test";
 
 export type AgentPromptOptions = {
   profile?: AgentPromptProfile;
@@ -230,13 +230,13 @@ type AgentPromptProfileConfig = {
 };
 
 const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig> = {
-  "generic-testnet": {
+  "generic-mainnet": {
     task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "TESTNET only: choose an acceptable TESTNET option from the challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP. No network fallback.",
+    payment: "MAINNET only: choose one acceptable Circle-supported MAINNET option actually advertised by the live challenge, not a static allowlist. If none, STOP. No TESTNET use or fallback. If the selected wallet does not support that network, is not payment-ready, or lacks Gateway funds, STOP.",
   },
-  "arc-testnet-quick-test": {
+  "arc-mainnet-quick-test": {
     task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "ARC TESTNET ONLY: pin eip155:5042002; no other chain, no network fallback. If absent, STOP. If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.",
+    payment: "ARC MAINNET ONLY: pin eip155:5042 (Circle CLI chain ARC); no other chain, no network fallback. No TESTNET. If eip155:5042 is absent from PAYMENT-REQUIRED, STOP. If the Arc mainnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.",
   },
 };
 
@@ -249,7 +249,7 @@ const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly obser
 export function buildAgentInspectionPrompt(input: InspectionInput, options: AgentPromptOptions = {}): string {
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
-  const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-testnet"];
+  const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-mainnet"];
   const request = buildRequest(input, "application/json");
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."

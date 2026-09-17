@@ -80,7 +80,7 @@ Repository risk uses the strongest-observed-risk model: security practices, depe
 
 ```bash
 cp .env.example .env
-# Set a non-zero testnet SELLER_ADDRESS.
+# Set the existing non-zero SELLER_ADDRESS and Circle mainnet facilitator.
 bun install
 
 docker compose up -d postgres valkey

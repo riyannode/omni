@@ -2,7 +2,30 @@
 
 The buyer agent wallet is separate from the OMNI seller process. OMNI only needs the seller payout address. Buyer/test payments are signed through Circle CLI; no buyer private key belongs in the OMNI server.
 
-## Testnet login and wallet
+## Mainnet login and wallet (production)
+
+```bash
+npm install -g @circle-fin/cli@latest
+circle --version
+
+# Interactive mainnet login. Mainnet and testnet sessions are separate.
+circle wallet login <email>
+
+# Login provisions agent wallets automatically; inspect before creating anything else.
+circle wallet list --chain ARC --type agent --output json
+```
+
+For a non-interactive agent flow:
+
+```bash
+circle wallet login --init
+circle wallet login --request <REQUEST_ID> --otp <OTP>
+```
+
+Never write OTPs, Circle session files, private keys, or mnemonics into the repository.
+Mainnet payments move real funds: keep Agent Wallet spending policies enabled and never fund more than the test budget.
+
+## Testnet login and wallet (isolated development only)
 
 ```bash
 npm install -g @circle-fin/cli@latest
@@ -22,7 +45,7 @@ For a non-interactive agent flow:
 
 ```bash
 circle wallet login <email> --testnet --init
-circle wallet login --testnet --request <REQUEST_ID> --otp <OTP>
+circle wallet login <email> --testnet --request <REQUEST_ID> --otp <OTP>
 ```
 
 Never write OTPs, Circle session files, private keys, or mnemonics into the repository.
@@ -41,7 +64,7 @@ circle services pay "https://<host>/v1/package/risk?ecosystem=npm&name=express&v
   --output json
 ```
 
-After reviewing the estimate, repeat the same command without `--estimate` for a paid end-to-end test that uses Circle testnet settlement rather than a mocked facilitator. For production autonomous wallets, configure appropriate Circle Agent Wallet spending policies and test them separately from the seller service.
+After reviewing the estimate, repeat the same command without `--estimate` for a paid end-to-end test. On production, the OMNI seller facilitator is Circle mainnet (https://gateway-api.circle.com) and payments settle in USDC over the networks the challenge advertises; testnet examples above are for isolated development only. For production autonomous wallets, configure appropriate Circle Agent Wallet spending policies and test them separately from the seller service.
 
 ## Using a Circle Agent Wallet as OMNI's seller payout address
 
