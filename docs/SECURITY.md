@@ -20,6 +20,12 @@
 - Insufficient evidence or comparison context must not be interpreted as a successful match.
 - OMNI does not guarantee endpoint behaviour, prevent every loss, or decide whether a purchase is economically worthwhile for a specific user.
 
+## Mainnet payment boundary
+
+Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com`. Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Historical Arc Testnet acceptance does not verify mainnet payments; the reverse also holds — mainnet acceptance does not establish capacity or exhaustive route coverage.
+
+General API buyer guidance selects an acceptable MAINNET offer from the live PAYMENT-REQUIRED challenge, never a static allowlist or testnet fallback. Wallet policy independently verifies network support, sufficient Gateway funds, exact USDC amount, and resource binding. TRY WITH YOUR AGENT alone pins Arc mainnet `eip155:5042` (Circle CLI `ARC`); that is not a restriction on the API contract. Insufficient funds, unsupported options, or uncertain payment state require STOP, not another payment. No buyer wallet or signing secrets belong in seller configuration.
+
 ## Paid failure semantics
 
 - Package coverage uses the versioned `package-coverage-v2` model: `OBSERVED` and `ABSENT` resolve applicable evidence, `UNAVAILABLE` and `UNKNOWN` remain incomplete, and `NOT_APPLICABLE` is excluded from the denominator. Repository coverage uses the versioned `repository-coverage-v1` model with independent GitHub, Scorecard, dependency-resolution, deps.dev, and threat-intelligence source states. Repository source failures remain visible as uncertainty and do not become observed risk; Scorecard `not_indexed` means that no indexed result exists for the repository, not that it is malicious or that a generic outage occurred. Paid routes use durable idempotency, settlement reconciliation by EIP-3009 nonce, and persisted result recovery. This provides effectively-once paid-request behavior for known logical keys; it does not claim mathematical exactly-once semantics across PostgreSQL and Circle. Uncertain recovery fails closed rather than charging again.

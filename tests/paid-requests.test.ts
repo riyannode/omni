@@ -1128,7 +1128,7 @@ describe("installed Circle Gateway middleware lifecycle", () => {
     });
   }
 
-  test("v3.3.0 onBeforeSettle abort returns before facilitator.settle", async () => {
+  test("v3.5.0 onBeforeSettle abort returns before facilitator.settle", async () => {
     const settleCalls = { value: 0 };
     const circle = await facilitator(settleCalls);
     const gateway = createGatewayMiddleware({ sellerAddress: SELLER, facilitatorUrl: circle.url });
@@ -1141,7 +1141,7 @@ describe("installed Circle Gateway middleware lifecycle", () => {
     expect(settleCalls.value).toBe(0);
   });
 
-  test("v3.3.0 onAfterSettle errors are swallowed and next handler runs", async () => {
+  test("v3.5.0 onAfterSettle errors are swallowed and next handler runs", async () => {
     const settleCalls = { value: 0 };
     const circle = await facilitator(settleCalls);
     const gateway = createGatewayMiddleware({ sellerAddress: SELLER, facilitatorUrl: circle.url });

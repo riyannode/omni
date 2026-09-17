@@ -33,7 +33,7 @@ export type InspectionInput =
   | { endpointId: "dependencies"; values: DependencyInput[] }
   | { endpointId: "preflight"; values: PreflightInput };
 
-export type AgentPromptProfile = "generic-testnet" | "arc-testnet-quick-test";
+export type AgentPromptProfile = "generic-mainnet" | "arc-mainnet-quick-test";
 
 export type AgentPromptOptions = {
   profile?: AgentPromptProfile;
@@ -229,28 +229,48 @@ type AgentPromptProfileConfig = {
   payment: string;
 };
 
+const EXPECTED_OMNI_SELLER = "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5";
+
 const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig> = {
-  "generic-testnet": {
-    task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "TESTNET only: choose an acceptable TESTNET option from the challenge; if none, STOP. If the selected TESTNET wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP. No network fallback.",
+  "generic-mainnet": {
+    task: "Use/reuse the official Circle Agent Wallet. Follow https://agents.circle.com/skills/setup.md for setup/login. Ask only for OTP, login, or legal input.",
+    payment: "MAINNET only: choose from live PAYMENT-REQUIRED. No TESTNET or fallback.",
   },
-  "arc-testnet-quick-test": {
-    task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "ARC TESTNET ONLY: pin eip155:5042002; no other chain, no network fallback. If absent, STOP. If the Arc Testnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.",
+  "arc-mainnet-quick-test": {
+    task: "Use/reuse the official Circle Agent Wallet. Follow https://agents.circle.com/skills/setup.md for setup/login. Ask only for OTP, login, or legal input.",
+    payment: "ARC MAINNET ONLY: use eip155:5042 (Circle CLI ARC). No TESTNET or fallback.",
   },
 };
 
-const RESOURCE_VALIDATION_RULE = "Require the challenge resource to resolve (new URL(challengeResource, originalRequestUrl)) to the same HTTPS origin, pathname, and query names/values as the full original OMNI request URL; no missing/extra keys (order and equivalent percent-encoding are okay). Otherwise STOP before payment.";
+function buildOfferRequirements(profile: AgentPromptProfile, endpoint: EndpointMetadata): string {
+  const amount = `${endpoint.atomicAmount} / ${endpoint.displayPrice} USDC`;
+  if (profile === "arc-mainnet-quick-test") {
+    return `- network eip155:5042
+- scheme exact
+- asset USDC
+- amount ${amount}
+- payTo ${EXPECTED_OMNI_SELLER}`;
+  }
+  return `- scheme exact
+- asset USDC
+- amount ${amount}
+- payTo ${EXPECTED_OMNI_SELLER}`;
+}
 
-const UNPAID_REQUEST_RULE = "Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.";
-
-const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.";
+function buildWalletReadiness(profile: AgentPromptProfile): string {
+  if (profile === "arc-mainnet-quick-test") {
+    return "Require the wallet to support Arc and have sufficient Gateway funds.";
+  }
+  return "Require the wallet to support the selected network and have sufficient Gateway funds.";
+}
 
 export function buildAgentInspectionPrompt(input: InspectionInput, options: AgentPromptOptions = {}): string {
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === input.endpointId);
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
-  const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-testnet"];
+  const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-mainnet"];
   const request = buildRequest(input, "application/json");
+  const offerRequirements = buildOfferRequirements(options.profile ?? "generic-mainnet", endpoint);
+  const walletReadiness = buildWalletReadiness(options.profile ?? "generic-mainnet");
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
@@ -264,17 +284,25 @@ Inspect: ${targetDescription(input)}
 
 PAYMENT
 ${profile.payment}
-${UNPAID_REQUEST_RULE}
-Require asset USDC and exactly ${endpoint.atomicAmount} atomic units / ${endpoint.displayPrice} USDC.
-${RESOURCE_VALIDATION_RULE}
-Use one fresh UUID v4 Idempotency-Key per logical request. Authorize at most one payment; any retry reuses the same request and key. If validation, wallet/Gateway funds, or payment state is uncertain: STOP.
-Never expose authentication, wallet, signing, or payment secrets.
+
+Send the request unpaid first and read PAYMENT-REQUIRED from HTTP 402. Body {} is expected.
+
+Select exactly one accepts[] offer and require:
+${offerRequirements}
+
+All fields must come from that same offer. Never combine offers.
+
+Require challenge resource to resolve to the same HTTPS origin, path, and query as the original request. Otherwise STOP.
+
+${walletReadiness} Use one fresh UUID v4 Idempotency-Key per logical request. Authorize at most one payment; retries reuse the same request and key. If validation or payment state is uncertain, STOP.
+
+Never expose wallet/signing/authentication secrets.
 ${preflightRule}
 
 OUTPUT
-Use only the successful paid OMNI JSON response; if Circle CLI returns an envelope, unwrap data.response.
-Return a concise human-readable risk report. Do not make another paid request or request another representation.
-${GROUNDING_RULE}`;
+Use only the successful OMNI JSON response. If Circle CLI wraps it, use data.response.
+Return a concise risk report. Do not make another paid request.
+Report only facts from OMNI JSON or observed payment. Do not infer omitted details or map riskScore to severity. OMNI dimensions are risk levels.`;
 }
 
 export async function copyText(value: string): Promise<void> {

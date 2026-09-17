@@ -5,7 +5,7 @@
     "": {
       "name": "omni",
       "dependencies": {
-        "@circle-fin/x402-batching": "3.3.0",
+        "@circle-fin/x402-batching": "3.5.0",
         "@renovatebot/pep440": "5.0.1",
         "@x402/core": "2.21.0",
         "@x402/evm": "2.21.0",
@@ -26,7 +26,7 @@
   "packages": {
     "@adraffy/ens-normalize": ["@adraffy/ens-normalize@1.11.1", "", {}, "sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ=="],
 
-    "@circle-fin/x402-batching": ["@circle-fin/x402-batching@3.3.0", "", { "peerDependencies": { "@x402/core": "^2.3.0", "@x402/evm": "^2.3.0", "viem": "^2.0.0" }, "optionalPeers": ["@x402/evm"] }, "sha512-xEgluhpqdexSrEhQ8nSPzhx6UNbZOybZrmJKZPVNhEQVW1r3IuLROJEDApdLgAI8kb0APm+kAUYOxSFQVSTruw=="],
+    "@circle-fin/x402-batching": ["@circle-fin/x402-batching@3.5.0", "", { "peerDependencies": { "@x402/core": "^2.3.0", "@x402/evm": "^2.3.0", "viem": "^2.0.0" }, "optionalPeers": ["@x402/evm"] }, "sha512-BG4weseV3Q9Qpoo1MmFz588t5PQ210s6KxS1qVs9xEj6V4f771/JMrc7C4q/9pqnokl5wXxSxq6SGcsB5mL9SQ=="],
 
     "@noble/ciphers": ["@noble/ciphers@1.3.0", "", {}, "sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw=="],
 

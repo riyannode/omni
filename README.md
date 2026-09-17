@@ -40,7 +40,7 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 
 Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
-Successful paid results keep the canonical structured assessment fields inline. The default response, `Accept: application/json`, and `Accept: */*` additionally include an additive deterministic Markdown artifact payload (`filename`, `mediaType: text/markdown`, and `content`) generated from that same canonical result. Fixed service filenames are `package.risk.md`, `repo.risk.md`, `dependencies.risk.md`, and `x402.endpoint.preflight.md`; they are never derived from user-controlled targets. Callers that send `Accept: text/markdown` receive only the deterministic Markdown rendering. Artifact-capable clients may materialize the supplied filename/content; OMNI does not write client files. Unsupported or zero-quality `Accept` values return HTTP 406 before payment. The representation is selected at the HTTP response seam, `Vary: Accept` is returned, and replaying a completed request in another representation does not execute or settle again. Payment errors remain JSON.
+Successful paid results keep the canonical structured assessment fields inline. `Accept: application/json` is the compact machine/agent interface; it contains authoritative decision fields, bounded scoring-relevant signals, repository summaries, bounded package `MAL-*` observation counts, coverage, bounded source errors, freshness, and explicit omission counts. It does **not** contain `artifact`, Markdown, raw `evidence[]`, provider payloads, full advisory objects, or full dependency lists. `Accept: text/markdown` is a concise deterministic human summary; it is not a second copy of the JSON payload and never serializes raw evidence details. Unsupported or zero-quality `Accept` values return HTTP 406 before payment. The representation is selected at the HTTP response seam, `Vary: Accept` is returned, and replaying a completed request in another representation does not execute or settle again. Payment errors remain JSON.
 
 ## Data sources
 
@@ -71,7 +71,7 @@ Repository risk uses the strongest-observed-risk model: security practices, depe
 - Bun 1.3.14
 - TypeScript 7 strict mode
 - Express 5.2.1
-- `@circle-fin/x402-batching` 3.3.0
+- `@circle-fin/x402-batching` 3.5.0
 - PostgreSQL 18.4
 - Valkey 9.1.1 through Bun's native Redis client
 - Zod 4.4.3
@@ -80,7 +80,7 @@ Repository risk uses the strongest-observed-risk model: security practices, depe
 
 ```bash
 cp .env.example .env
-# Set a non-zero testnet SELLER_ADDRESS.
+# Set the existing non-zero SELLER_ADDRESS and Circle mainnet facilitator.
 bun install
 
 docker compose up -d postgres valkey
@@ -94,7 +94,7 @@ Buyer clients can compare the selected official x402 `PaymentRequirements` from 
 
 ## Maturity
 
-This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Real Arc Testnet x402 paid lifecycle has been verified on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. This does not claim exhaustive route-by-route paid acceptance, mainnet readiness, multi-chain support, or fleet capacity. Remaining work includes licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, broader route acceptance, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`. The Arc mainnet target is `https://gateway-api.circle.com`. General API prompts select acceptable mainnet options from the live challenge; TRY WITH YOUR AGENT pins Arc mainnet (`eip155:5042`, Circle CLI `ARC`). This does not claim exhaustive route coverage, multi-chain acceptance, fleet capacity, or payment execution against every endpoint on mainnet. Remaining work includes licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, broader route acceptance, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
 
 See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.
 

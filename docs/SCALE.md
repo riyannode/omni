@@ -21,12 +21,14 @@ For a 100k-connection target, size replicas from measured per-replica concurrenc
 ## Load-test gates before claiming capacity
 
 - 402-only path: 100k open connections fleet-wide, p99 response < 500ms, no 5xx from OMNI.
-- paid path: non-mocked Circle testnet settlement; ramp 100 → 1k → 10k concurrent requests only while Circle testnet and deployment limits permit.
+- isolated development paid path: non-mocked Circle testnet settlement; ramp 100 → 1k → 10k concurrent requests only while Circle testnet and deployment limits permit. These are planned load-test gates, not measured results or mainnet capacity evidence.
 - hot cached package assessment: target application p99 < 250ms, measured separately from external payment-settlement latency.
 - cold upstream path: enforce finite queue limits and request timeouts; reject excess work instead of growing an unbounded queue.
 
 ## Kubernetes deployment baseline
 
 `deploy/kubernetes.yaml` allows up to 300 API replicas. That ceiling is capacity headroom, not a throughput claim. Size replicas from measured paid-path latency and Circle Gateway throughput. PostgreSQL and Valkey should be external HA services in production.
+
+Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com`. Remaining: broader route-by-route acceptance, multi-chain acceptance, fleet validation, and separately authorized capacity testing remain distinct gates; testnet load results cannot establish production mainnet capacity.
 
 Run the free 402 path load probe with `CONCURRENCY=100 REQUESTS=10000 bun run load:unpaid`, then perform paid testnet ramps separately with real Circle settlement.
