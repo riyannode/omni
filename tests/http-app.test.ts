@@ -135,7 +135,14 @@ describe("HTTP machine-readable documents", () => {
       expect(Object.keys(api.paths[path])).toEqual([method]);
       const operation = api.paths[path][method];
       expect(operation["x-payment-info"].price).toEqual({ mode: "fixed", currency: "USDC", amount });
-      expect(operation["x-payment-info"].protocols).toEqual([{ x402: {} }]);
+      const protocols = operation["x-payment-info"].protocols;
+      expect(protocols).toBeDefined();
+      const x402Entry = protocols.find((p: any) => p.x402);
+      expect(x402Entry).toBeDefined();
+      expect(x402Entry.x402.networks).toBeDefined();
+      expect(new Set(x402Entry.x402.networks).size).toBeGreaterThanOrEqual(2);
+      expect(x402Entry.x402.networks).toContain("eip155:5042");
+      expect(x402Entry.x402.networks).not.toContain("eip155:5042002");
       expect(operation.parameters).toContainEqual({ $ref: "#/components/parameters/IdempotencyKey" });
       expect(operation.responses["200"].content["application/json"]).toBeDefined();
       expect(operation.responses["402"]).toEqual({ $ref: "#/components/responses/PaymentRequired" });
