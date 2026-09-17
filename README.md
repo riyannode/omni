@@ -38,6 +38,8 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 | `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
 | `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
 
+OMNI's paid API can be purchased over any compatible mainnet option currently offered by the live Circle Gateway x402 challenge. Arc Mainnet is the pinned network only for the Try with your agent demo flow.
+
 Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
 Successful paid results keep the canonical structured assessment fields inline. `Accept: application/json` is the compact machine/agent interface; it contains authoritative decision fields, bounded scoring-relevant signals, repository summaries, bounded package `MAL-*` observation counts, coverage, bounded source errors, freshness, and explicit omission counts. It does **not** contain `artifact`, Markdown, raw `evidence[]`, provider payloads, full advisory objects, or full dependency lists. `Accept: text/markdown` is a concise deterministic human summary; it is not a second copy of the JSON payload and never serializes raw evidence details. Unsupported or zero-quality `Accept` values return HTTP 406 before payment. The representation is selected at the HTTP response seam, `Vary: Accept` is returned, and replaying a completed request in another representation does not execute or settle again. Payment errors remain JSON.
@@ -92,9 +94,40 @@ Health endpoints are `GET /health` and `GET /ready`. `openapi.yaml` is served at
 
 Buyer clients can compare the selected official x402 `PaymentRequirements` from a `PaymentRequired` response with the configuration observed during preflight (`preflightContext.paymentOptions`) and request a fresh assessment when they differ. Circle Gateway observations retain `maxTimeoutSeconds` and observed `extra.name`, `extra.version`, and `extra.verifyingContract`; atomic amounts are integer strings with no floating-point or exponent normalization. A match is consistency evidence, not payment authorization; see `/llms.txt`.
 
+## Arc Mainnet — Verified Paid Lifecycle
+
+- Date: September 17, 2026
+- Network: Arc Mainnet / `eip155:5042`
+- Tested paid route: `GET /v1/package/risk`
+- Real x402 amount: `5000` atomic / `0.005` USDC
+- Payment path: Circle Agent Wallet + Circle Gateway
+- Production facilitator: `https://gateway-api.circle.com`
+- HTTP result: `200`
+- OMNI assessment executed
+- Result durably persisted
+- Payment/request reconciliation passed
+- Replay of the same logical request returned the completed result
+- Replay did not create a duplicate settlement
+
+Scope: this verifies the tested `package-risk` paid lifecycle on Arc Mainnet. It does not claim that every OMNI paid route or every supported mainnet network has been paid-tested.
+
+### Mainnet payment behavior
+
+OMNI exposes the mainnet payment options returned by Circle Gateway through the live x402 PAYMENT-REQUIRED challenge.
+
+The general agent flow dynamically selects a compatible mainnet offer from the live challenge rather than relying on a static network allowlist.
+
+The Try with your agent demo is intentionally pinned to Arc Mainnet (`eip155:5042`) to provide a deterministic Arc-specific test flow.
+
+At the September 17, 2026 production verification, the live challenge exposed 12 mainnet payment options, including Arc Mainnet.
+
 ## Maturity
 
-This repository is a production-shaped MVP, not a proven production deployment. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path. Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Arc Mainnet paid lifecycle: verified on a real eip155:5042 x402 payment on the package-risk route, including Gateway-funded payment, successful OMNI execution, durable persistence, reconciliation, and replay without duplicate settlement. Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`. The Arc mainnet target is `https://gateway-api.circle.com`. General API prompts select acceptable mainnet options from the live challenge; TRY WITH YOUR AGENT pins Arc mainnet (`eip155:5042`, Circle CLI `ARC`). This does not claim exhaustive route coverage, multi-chain acceptance, fleet capacity, or payment execution against every endpoint on mainnet. Remaining work includes licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, broader route acceptance, and measured fleet load/soak tests. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
+OMNI is deployed and operating in production on Arc mainnet. The API/payment architecture is real, and durable paid-request recovery/idempotency is verified against the PostgreSQL-backed recovery path.
+
+Historical note: the Arc Testnet paid lifecycle was verified earlier on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation. Historical Testnet evidence is not mainnet evidence.
+
+Remaining work includes licensed threat-feed contracts, distributed observability, provider quota/circuit-breaker validation, security isolation, broader route-by-route acceptance, multi-chain acceptance, fleet-scale validation, and measured load/soak testing. The high concurrent paid-call figure remains a horizontal capacity objective, not a verified throughput claim.
 
 See `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/SCALE.md`, and `docs/MARKETPLACE.md`.
 
