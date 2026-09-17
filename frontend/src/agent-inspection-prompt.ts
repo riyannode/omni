@@ -229,31 +229,39 @@ type AgentPromptProfileConfig = {
   payment: string;
 };
 
+const EXPECTED_OMNI_SELLER = "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5";
+
 const AGENT_PROMPT_PROFILES: Record<AgentPromptProfile, AgentPromptProfileConfig> = {
   "generic-mainnet": {
-    task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "MAINNET only: choose one acceptable Circle-supported MAINNET option actually advertised by the live challenge, not a static allowlist. If none, STOP. No TESTNET use or fallback. If the selected wallet does not support that network, is not payment-ready, or lacks Gateway funds, STOP.",
+    task: "Use/reuse the official Circle Agent Wallet. Follow https://agents.circle.com/skills/setup.md for setup/login. Ask only for OTP, login, or legal input.",
+    payment: "MAINNET only: choose from live PAYMENT-REQUIRED. No TESTNET or fallback.",
   },
   "arc-mainnet-quick-test": {
-    task: "Use/reuse the official Circle Agent Wallet. For setup/login, follow https://agents.circle.com/skills/setup.md. Ask only for OTP, login, or legal input.",
-    payment: "ARC MAINNET ONLY: pin eip155:5042 (Circle CLI chain ARC); no other chain, no network fallback. No TESTNET. If eip155:5042 is absent from PAYMENT-REQUIRED, STOP. If the Arc mainnet wallet is not payment-ready or its Gateway balance cannot cover the payment, STOP.",
+    task: "Use/reuse the official Circle Agent Wallet. Follow https://agents.circle.com/skills/setup.md for setup/login. Ask only for OTP, login, or legal input.",
+    payment: "ARC MAINNET ONLY: use eip155:5042 (Circle CLI ARC). No TESTNET or fallback.",
   },
 };
 
-const RESOURCE_VALIDATION_RULE = "Require the challenge resource to resolve (new URL(challengeResource, originalRequestUrl)) to the same HTTPS origin, pathname, and query names/values as the full original OMNI request URL; no missing/extra keys (order and equivalent percent-encoding are okay). Otherwise STOP before payment.";
-
-const UNPAID_REQUEST_RULE = "Send the request unpaid first; on 402 read the PAYMENT-REQUIRED header and status. Body {} is valid.";
-
-const GROUNDING_RULE = "Report only facts present in OMNI JSON or directly observed during payment. Do not infer omitted details or map riskScore to a severity. OMNI dimension values are risk levels, not quality ratings.";
-
-const EXPECTED_OMNI_SELLER = "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5";
-
-function buildPaymentOfferValidationRule(profile: AgentPromptProfile, endpoint: EndpointMetadata): string {
-  const base = `Validate the selected offer as one complete offer from PAYMENT-REQUIRED: scheme must be exact, payTo must be ${EXPECTED_OMNI_SELLER}, and asset/amount/network must come from the same offer entry. Never combine fields from different accepts[] entries.`;
+function buildOfferRequirements(profile: AgentPromptProfile, endpoint: EndpointMetadata): string {
+  const amount = `${endpoint.atomicAmount} / ${endpoint.displayPrice} USDC`;
   if (profile === "arc-mainnet-quick-test") {
-    return `${base} For Arc mainnet, require network eip155:5042 and amount ${endpoint.atomicAmount} atomic units. If the offer does not match exactly, STOP.`;
+    return `- network eip155:5042
+- scheme exact
+- asset USDC
+- amount ${amount}
+- payTo ${EXPECTED_OMNI_SELLER}`;
   }
-  return `${base} If payTo is not the expected seller or scheme is not exact, STOP.`;
+  return `- scheme exact
+- asset USDC
+- amount ${amount}
+- payTo ${EXPECTED_OMNI_SELLER}`;
+}
+
+function buildWalletReadiness(profile: AgentPromptProfile): string {
+  if (profile === "arc-mainnet-quick-test") {
+    return "Require the wallet to support Arc and have sufficient Gateway funds.";
+  }
+  return "Require the wallet to support the selected network and have sufficient Gateway funds.";
 }
 
 export function buildAgentInspectionPrompt(input: InspectionInput, options: AgentPromptOptions = {}): string {
@@ -261,10 +269,11 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
   if (!endpoint) throw new Error("Unknown OMNI endpoint");
   const profile = AGENT_PROMPT_PROFILES[options.profile ?? "generic-mainnet"];
   const request = buildRequest(input, "application/json");
+  const offerRequirements = buildOfferRequirements(options.profile ?? "generic-mainnet", endpoint);
+  const walletReadiness = buildWalletReadiness(options.profile ?? "generic-mainnet");
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
-  const offerValidationRule = buildPaymentOfferValidationRule(options.profile ?? "generic-mainnet", endpoint);
 
   return `TASK
 ${profile.task}
@@ -275,18 +284,25 @@ Inspect: ${targetDescription(input)}
 
 PAYMENT
 ${profile.payment}
-${UNPAID_REQUEST_RULE}
-Require asset USDC and exactly ${endpoint.atomicAmount} atomic units / ${endpoint.displayPrice} USDC.
-${RESOURCE_VALIDATION_RULE}
-${offerValidationRule}
-Use one fresh UUID v4 Idempotency-Key per logical request. Authorize at most one payment; any retry reuses the same request and key. If validation, wallet/Gateway funds, or payment state is uncertain: STOP.
-Never expose authentication, wallet, signing, or payment secrets.
+
+Send the request unpaid first and read PAYMENT-REQUIRED from HTTP 402. Body {} is expected.
+
+Select exactly one accepts[] offer and require:
+${offerRequirements}
+
+All fields must come from that same offer. Never combine offers.
+
+Require challenge resource to resolve to the same HTTPS origin, path, and query as the original request. Otherwise STOP.
+
+${walletReadiness} Use one fresh UUID v4 Idempotency-Key per logical request. Authorize at most one payment; retries reuse the same request and key. If validation or payment state is uncertain, STOP.
+
+Never expose wallet/signing/authentication secrets.
 ${preflightRule}
 
 OUTPUT
-Use only the successful paid OMNI JSON response; if Circle CLI returns an envelope, unwrap data.response.
-Return a concise human-readable risk report. Do not make another paid request or request another representation.
-${GROUNDING_RULE}`;
+Use only the successful OMNI JSON response. If Circle CLI wraps it, use data.response.
+Return a concise risk report. Do not make another paid request.
+Report only facts from OMNI JSON or observed payment. Do not infer omitted details or map riskScore to severity. OMNI dimensions are risk levels.`;
 }
 
 export async function copyText(value: string): Promise<void> {
