@@ -5,8 +5,8 @@ info:
   description: >
     Machine-consumable pre-execution risk evidence for software supply chain and
     x402 services, paid per request with Circle Gateway nanopayments.
-    Mainnet-ready configuration targets https://gateway-api.circle.com; activation
-    requires a separate deployment and production environment switch.
+    Production facilitator selection is controlled at runtime by CIRCLE_FACILITATOR_URL.
+    The Arc mainnet target is https://gateway-api.circle.com.
     Arc Mainnet configuration: prepared / pending live acceptance.
     Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path,
     including settlement, persistence, replay, and reconciliation; this is not

@@ -10,7 +10,7 @@ Mainnet-ready production configuration targets:
 CIRCLE_FACILITATOR_URL=https://gateway-api.circle.com
 ```
 
-Activation requires a separate deployment and production environment switch. Keep `SELLER_ADDRESS` and endpoint prices unchanged.
+Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com`. Keep `SELLER_ADDRESS` and endpoint prices unchanged.
 
 - Arc Testnet paid lifecycle: verified historically on the tested OMNI paid path, including Circle Agent Wallet payment, Gateway settlement, durable persistence, execution, recovery/replay, and Circle transfer reconciliation.
 - Arc Mainnet configuration: prepared / pending live acceptance. Actual mainnet payment, settlement, persistence, replay, and reconciliation remain acceptance gates. Historical Testnet evidence is not mainnet evidence.

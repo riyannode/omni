@@ -29,6 +29,6 @@ For a 100k-connection target, size replicas from measured per-replica concurrenc
 
 `deploy/kubernetes.yaml` allows up to 300 API replicas. That ceiling is capacity headroom, not a throughput claim. Size replicas from measured paid-path latency and Circle Gateway throughput. PostgreSQL and Valkey should be external HA services in production.
 
-Arc Mainnet configuration: prepared / pending live acceptance. Mainnet-ready configuration targets `https://gateway-api.circle.com` after a separate deployment/environment switch. Live mainnet lifecycle acceptance and separately authorized, budgeted mainnet capacity testing remain distinct gates; testnet load results cannot establish production mainnet capacity.
+Arc Mainnet configuration: prepared / pending live acceptance. Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com`. Live mainnet lifecycle acceptance and separately authorized, budgeted mainnet capacity testing remain distinct gates; testnet load results cannot establish production mainnet capacity.
 
 Run the free 402 path load probe with `CONCURRENCY=100 REQUESTS=10000 bun run load:unpaid`, then perform paid testnet ramps separately with real Circle settlement.

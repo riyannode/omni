@@ -22,7 +22,7 @@
 
 ## Mainnet payment boundary
 
-Mainnet-ready production configuration targets `https://gateway-api.circle.com`; activation requires a separate deployment/environment switch. Arc Mainnet configuration: prepared / pending live acceptance. Historical Arc Testnet acceptance does not verify mainnet payments.
+Production facilitator selection is controlled at runtime by `CIRCLE_FACILITATOR_URL`; the Arc mainnet target is `https://gateway-api.circle.com`. Arc Mainnet configuration: prepared / pending live acceptance. Historical Arc Testnet acceptance does not verify mainnet payments.
 
 General API buyer guidance selects an acceptable MAINNET offer from the live PAYMENT-REQUIRED challenge, never a static allowlist or testnet fallback. Wallet policy independently verifies network support, sufficient Gateway funds, exact USDC amount, and resource binding. TRY WITH YOUR AGENT alone pins Arc mainnet `eip155:5042` (Circle CLI `ARC`); that is not a restriction on the API contract. Insufficient funds, unsupported options, or uncertain payment state require STOP, not another payment. No buyer wallet or signing secrets belong in seller configuration.
 

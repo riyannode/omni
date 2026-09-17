@@ -26,7 +26,7 @@ Repository JSON includes bounded `repositorySummary` sections for dependency res
 
 ## Mainnet payment guidance
 
-Production configuration targets the Circle MAINNET facilitator https://gateway-api.circle.com. Activation requires a separate deployment and production environment switch; these instructions are not proof that a live network is offered.
+Production facilitator selection is controlled at runtime by CIRCLE_FACILITATOR_URL. The Arc mainnet target is https://gateway-api.circle.com. These instructions are not proof that a live network is offered.
 
 General API / COPY AGENT PROMPT uses `generic-mainnet`, not an Arc-only policy:
 
