@@ -9,6 +9,7 @@ import type { OmniIntelligence } from "../src/services.ts";
 import type { PaidRequestStore } from "../src/data/paid-requests.ts";
 import { createPaidRequestStore } from "../src/data/paid-requests.ts";
 import { CircleTransferLookup } from "../src/payments/circle-transfers.ts";
+import type { CircleDiscovery } from "../src/payments/circle.ts";
 
 const servers: Array<ReturnType<ReturnType<typeof createApp>["listen"]>> = [];
 
@@ -130,7 +131,7 @@ describe("HTTP machine-readable documents", () => {
       ["/v1/dependencies/risk", "post", "0.050000", "$0.05"],
       ["/v1/x402/endpoint/preflight", "get", "0.010000", "$0.01"]
     ] as const;
-    expect(Object.keys(api.paths).sort()).toEqual(["/health", "/ready", ...routes.map(([path]) => path)].sort());
+    expect(Object.keys(api.paths).sort()).toEqual(["/.well-known/x402", "/health", "/ready", ...routes.map(([path]) => path)].sort());
     for (const [path, method, amount, price] of routes) {
       expect(Object.keys(api.paths[path])).toEqual([method]);
       const operation = api.paths[path][method];
@@ -252,7 +253,8 @@ describe("API root response", () => {
       service: "OMNI",
       status: "online",
       docs: "/openapi.json",
-      health: "/health"
+      health: "/health",
+      x402: "/.well-known/x402"
     });
 
     const healthRes = await fetch(`${origin}/health`);
@@ -265,5 +267,279 @@ describe("API root response", () => {
 
     const openapiRes = await fetch(`${origin}/openapi.json`);
     expect(openapiRes.status).toBe(200);
+  });
+});
+
+describe("x402 discovery manifest", () => {
+  function mockDiscovery(networks: string[]): CircleDiscovery {
+    return {
+      async getNetworks() {
+        return networks;
+      }
+    };
+  }
+
+  function failingDiscovery(): CircleDiscovery {
+    return {
+      async getNetworks() {
+        throw new Error("circle_gateway_discovery_unavailable");
+      }
+    };
+  }
+
+  test("GET /.well-known/x402 returns discovery manifest with correct structure", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz",
+      circleDiscovery: mockDiscovery(["eip155:1", "eip155:8453", "eip155:5042"])
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/.well-known/x402`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = await res.json();
+
+    expect(body.x402Version).toBe(2);
+    expect(body.service).toBe("OMNI");
+    expect(body.openapi).toBe("https://api.askomni.xyz/openapi.json");
+    expect(body.paymentTerms).toBe("live_402_authoritative");
+    expect(body.networks).toEqual(["eip155:1", "eip155:5042", "eip155:8453"]);
+    expect(body.resources).toHaveLength(4);
+    expect(body.resources[0]).toEqual({
+      method: "GET",
+      resource: "https://api.askomni.xyz/v1/package/risk",
+      price: { currency: "USDC", amount: "0.005000" }
+    });
+  });
+
+  test("paid resources are derived from OpenAPI x-payment-info", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz",
+      circleDiscovery: mockDiscovery(["eip155:8453"])
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/.well-known/x402`);
+    const body = await res.json();
+    const expected = [
+      { method: "GET", resource: "https://api.askomni.xyz/v1/package/risk", price: { currency: "USDC", amount: "0.005000" } },
+      { method: "GET", resource: "https://api.askomni.xyz/v1/repo/risk", price: { currency: "USDC", amount: "0.010000" } },
+      { method: "POST", resource: "https://api.askomni.xyz/v1/dependencies/risk", price: { currency: "USDC", amount: "0.050000" } },
+      { method: "GET", resource: "https://api.askomni.xyz/v1/x402/endpoint/preflight", price: { currency: "USDC", amount: "0.010000" } }
+    ];
+    expect(body.resources).toEqual(expected);
+  });
+
+  test("networks are deduplicated and sorted deterministically", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz",
+      circleDiscovery: mockDiscovery(["eip155:8453", "eip155:1", "eip155:8453", "eip155:5042"])
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/.well-known/x402`);
+    const body = await res.json();
+    expect(body.networks).toEqual(["eip155:1", "eip155:5042", "eip155:8453"]);
+  });
+
+  test("testnet network from mocked provider is included (no silent fallback override)", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz",
+      circleDiscovery: mockDiscovery(["eip155:8453", "eip155:11155111"])
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/.well-known/x402`);
+    const body = await res.json();
+    expect(body.networks).toEqual(["eip155:11155111", "eip155:8453"]);
+  });
+
+  test("returns 503 when Gateway discovery fails and no cache exists", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz",
+      circleDiscovery: failingDiscovery()
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/.well-known/x402`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "gateway_discovery_unavailable" });
+  });
+
+  test("returns 503 when no circleDiscovery is configured", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz"
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/.well-known/x402`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "discovery_unavailable" });
+  });
+
+  test("API root advertises x402 discovery manifest", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz",
+      circleDiscovery: mockDiscovery(["eip155:8453"])
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      service: "OMNI",
+      status: "online",
+      docs: "/openapi.json",
+      health: "/health",
+      x402: "/.well-known/x402"
+    });
+  });
+
+  test("existing routes remain accessible after manifest addition", async () => {
+    const passThrough: RequestHandler = (_req, _res, next) => next();
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+      publicBaseUrl: "https://api.askomni.xyz",
+      circleDiscovery: mockDiscovery(["eip155:8453"])
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const [health, ready, yamlRes, jsonRes] = await Promise.all([
+      fetch(`${origin}/health`),
+      fetch(`${origin}/ready`),
+      fetch(`${origin}/openapi.yaml`),
+      fetch(`${origin}/openapi.json`)
+    ]);
+
+    expect(health.status).toBe(200);
+    expect(ready.status).toBe(503);
+    expect(yamlRes.status).toBe(200);
+    expect(jsonRes.status).toBe(200);
   });
 });
