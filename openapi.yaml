@@ -108,6 +108,20 @@ paths:
           amount: "0.005000"
         protocols:
           - x402: {}
+        accepts:
+          - scheme: exact
+            network: "eip155:5042"
+            asset: "0x3600000000000000000000000000000000000000"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:8453"
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:1"
+            asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -142,6 +156,20 @@ paths:
           amount: "0.010000"
         protocols:
           - x402: {}
+        accepts:
+          - scheme: exact
+            network: "eip155:5042"
+            asset: "0x3600000000000000000000000000000000000000"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:8453"
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:1"
+            asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -175,6 +203,20 @@ paths:
           amount: "0.050000"
         protocols:
           - x402: {}
+        accepts:
+          - scheme: exact
+            network: "eip155:5042"
+            asset: "0x3600000000000000000000000000000000000000"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:8453"
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:1"
+            asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
@@ -220,6 +262,20 @@ paths:
           amount: "0.010000"
         protocols:
           - x402: {}
+        accepts:
+          - scheme: exact
+            network: "eip155:5042"
+            asset: "0x3600000000000000000000000000000000000000"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:8453"
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:1"
+            asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
