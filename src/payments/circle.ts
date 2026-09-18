@@ -22,32 +22,39 @@ const DISCOVERY_TTL_MS = 300_000;
 
 export function createCircleDiscovery(facilitatorUrl?: string): CircleDiscovery {
   let cache: DiscoveryCache | undefined;
+  const client = new BatchFacilitatorClient({ url: facilitatorUrl ?? "https://gateway-api.circle.com" });
 
   return {
     async getNetworks(): Promise<string[]> {
-      const client = new BatchFacilitatorClient({ url: facilitatorUrl ?? "https://gateway-api.circle.com" });
-
-      try {
-        const supported = await client.getSupported();
-        const networks = [...new Set(
-          supported.kinds
-            .filter(kind => kind.x402Version === 2 && kind.scheme === "exact" && kind.network.trim() !== "")
-            .map(kind => kind.network)
-        )].sort();
-
-        if (networks.length > 0) {
-          cache = { networks, fetchedAt: Date.now() };
-          return networks;
-        }
-      } catch {
-        // fall through to cache
-      }
-
       if (cache !== undefined && Date.now() - cache.fetchedAt < DISCOVERY_TTL_MS) {
-        return cache.networks;
+        return [...cache.networks];
       }
 
-      throw new Error("circle_gateway_discovery_unavailable");
+      let supported: { kinds: { x402Version: number; scheme: string; network: string }[] };
+      try {
+        supported = await client.getSupported();
+      } catch {
+        if (cache !== undefined) {
+          return [...cache.networks];
+        }
+        throw new Error("circle_gateway_discovery_unavailable");
+      }
+
+      const networks = [...new Set(
+        supported.kinds
+          .filter(kind => kind.x402Version === 2 && kind.scheme === "exact" && kind.network.trim() !== "")
+          .map(kind => kind.network)
+      )].sort();
+
+      if (networks.length === 0) {
+        if (cache !== undefined) {
+          return [...cache.networks];
+        }
+        throw new Error("circle_gateway_discovery_unavailable");
+      }
+
+      cache = { networks, fetchedAt: Date.now() };
+      return [...networks];
     }
   };
 }
@@ -88,7 +95,17 @@ function isPaidOperation(op: unknown): op is OpenApiOperation {
   return typeof op === "object" && op !== null && "x-payment-info" in op && typeof (op as Record<string, unknown>)["x-payment-info"] === "object";
 }
 
+let cachedResources: { baseUrl: string; resources: PaidResource[] } | undefined;
+
+export function clearPaidResourcesCache(): void {
+  cachedResources = undefined;
+}
+
 export async function loadPaidResources(publicBaseUrl: string): Promise<PaidResource[]> {
+  if (cachedResources !== undefined && cachedResources.baseUrl === publicBaseUrl) {
+    return cachedResources.resources;
+  }
+
   const raw = await readFile(new URL("../../openapi.yaml", import.meta.url), "utf8");
   const doc = parseYaml(raw) as { paths?: Record<string, Record<string, unknown>> };
   const paths = doc.paths ?? {};
@@ -108,5 +125,6 @@ export async function loadPaidResources(publicBaseUrl: string): Promise<PaidReso
     }
   }
 
+  cachedResources = { baseUrl: publicBaseUrl, resources };
   return resources;
 }
