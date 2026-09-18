@@ -6,6 +6,8 @@ import type { ThreatIntelStore } from "../data/threat-intel.ts";
 import type { OmniIntelligence } from "../services.ts";
 import type { PaidRequestStore } from "../data/paid-requests.ts";
 import { CircleTransferLookup } from "../payments/circle-transfers.ts";
+import type { CircleDiscovery, X402Manifest } from "../payments/circle.ts";
+import { loadPaidResources } from "../payments/circle.ts";
 import { concurrencyGate } from "./concurrency-gate.ts";
 import { PaidRouteIntegration, type GatewayWithHooks } from "./paid-route.ts";
 import { dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./validation.ts";
@@ -57,6 +59,7 @@ export function createApp(options: {
   maxInFlight: number;
   executionLeaseMs?: number;
   publicBaseUrl?: string | undefined;
+  circleDiscovery?: CircleDiscovery;
 }) {
   const app = express();
   app.disable("x-powered-by");
@@ -69,7 +72,8 @@ export function createApp(options: {
       service: "OMNI",
       status: "online",
       docs: "/openapi.json",
-      health: "/health"
+      health: "/health",
+      x402: "/.well-known/x402"
     });
   });
   app.get("/ready", asyncRoute(async (_req, res) => {
@@ -105,6 +109,34 @@ export function createApp(options: {
     const yaml = await loadOpenApi(baseUrl);
     const parsed = parseYaml(yaml) as Record<string, unknown>;
     res.type("application/json").send(JSON.stringify(parsed));
+  }));
+
+  app.get("/.well-known/x402", asyncRoute(async (req, res) => {
+    const baseUrl = resolvePublicBaseUrl(req, options.publicBaseUrl);
+    if (!baseUrl || !options.circleDiscovery) {
+      res.status(503).json({ error: "discovery_unavailable" });
+      return;
+    }
+
+    let networks: string[];
+    try {
+      networks = await options.circleDiscovery.getNetworks();
+    } catch {
+      res.status(503).json({ error: "gateway_discovery_unavailable" });
+      return;
+    }
+
+    const resources = await loadPaidResources(baseUrl);
+    const manifest: X402Manifest = {
+      x402Version: 2,
+      service: "OMNI",
+      description: "Pre-execution trust and risk API for autonomous agents.",
+      openapi: `${baseUrl}/openapi.json`,
+      paymentTerms: "live_402_authoritative",
+      networks: [...new Set(networks)].sort(),
+      resources
+    };
+    res.json(manifest);
   }));
 
   const gate = concurrencyGate(options.maxInFlight);

@@ -240,6 +240,60 @@ paths:
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
         '406': { $ref: '#/components/responses/NotAcceptable' }
+  /.well-known/x402:
+    get:
+      operationId: getX402DiscoveryManifest
+      summary: Free public x402 discovery manifest for agent discoverability.
+      description: |
+        Returns a machine-readable x402 discovery manifest describing supported payment
+        networks and paid resources. This endpoint is FREE (no payment required).
+
+        The networks listed are the currently supported Circle Gateway payment kinds,
+        discovered live from the configured facilitator. Payment terms (networks,
+        amounts, assets) can change. The actual PAYMENT-REQUIRED challenge from a paid
+        request is authoritative at execution time.
+      responses:
+        '200':
+          description: x402 discovery manifest.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [x402Version, service, openapi, paymentTerms, networks, resources]
+                properties:
+                  x402Version: { type: integer, enum: [2] }
+                  service: { type: string }
+                  description: { type: string }
+                  openapi: { type: string, format: uri }
+                  paymentTerms: { type: string, enum: [live_402_authoritative] }
+                  networks:
+                    type: array
+                    items: { type: string }
+                  resources:
+                    type: array
+                    items:
+                      type: object
+                      required: [method, resource, price]
+                      properties:
+                        method: { type: string }
+                        resource: { type: string, format: uri }
+                        price:
+                          type: object
+                          required: [currency, amount]
+                          properties:
+                            currency: { type: string }
+                            amount: { type: string }
+        '503':
+          description: Gateway discovery is unavailable and no cached capability exists.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: string
+                    enum: [discovery_unavailable, gateway_discovery_unavailable]
 components:
   headers:
     PaymentResponse:
