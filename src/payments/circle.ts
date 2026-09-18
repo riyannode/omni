@@ -34,9 +34,6 @@ export function createCircleDiscovery(facilitatorUrl?: string): CircleDiscovery 
       try {
         supported = await client.getSupported();
       } catch {
-        if (cache !== undefined) {
-          return [...cache.networks];
-        }
         throw new Error("circle_gateway_discovery_unavailable");
       }
 
@@ -47,9 +44,6 @@ export function createCircleDiscovery(facilitatorUrl?: string): CircleDiscovery 
       )].sort();
 
       if (networks.length === 0) {
-        if (cache !== undefined) {
-          return [...cache.networks];
-        }
         throw new Error("circle_gateway_discovery_unavailable");
       }
 

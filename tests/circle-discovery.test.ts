@@ -96,9 +96,7 @@ describe("createCircleDiscovery TTL cache", () => {
     expect(calls.count).toBe(2);
   });
 
-  test("upstream failure after cache expired but still within stale window returns stale cache", async () => {
-    // Note: current implementation returns stale cache on failure regardless of TTL
-    // This test documents that behavior
+  test("expired cache + upstream failure rejects (no stale fallback)", async () => {
     const calls = { count: 0 };
     let mockTime = 1_000_000;
 
@@ -123,10 +121,45 @@ describe("createCircleDiscovery TTL cache", () => {
     expect(first).toEqual(["eip155:8453"]);
     expect(calls.count).toBe(1);
 
-    // After TTL expires + upstream fails: returns stale cache
-    mockTime = 1_000_000 + 600_001; // 10 minutes later
-    const second = await discovery.getNetworks();
-    expect(second).toEqual(["eip155:8453"]); // stale cache returned
+    // After TTL expires + upstream fails: reject (no stale cache served)
+    mockTime = 1_000_000 + 300_001;
+    await expect(discovery.getNetworks()).rejects.toThrow("circle_gateway_discovery_unavailable");
+    expect(calls.count).toBe(2);
+  });
+
+  test("expired cache + empty valid network set rejects (no stale fallback)", async () => {
+    const calls = { count: 0 };
+    let mockTime = 1_000_000;
+
+    BatchFacilitatorClient.prototype.getSupported = mock(async () => {
+      calls.count++;
+      if (calls.count === 1) {
+        return {
+          kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" }],
+          extensions: [],
+          signers: {}
+        };
+      }
+      // Second call: return only invalid entries (wrong version)
+      return {
+        kinds: [{ x402Version: 1, scheme: "exact", network: "eip155:1" }],
+        extensions: [],
+        signers: {}
+      };
+    });
+
+    Date.now = () => mockTime;
+
+    const discovery = createCircleDiscovery("http://mock");
+
+    // First call: upstream invoked, cache populated
+    const first = await discovery.getNetworks();
+    expect(first).toEqual(["eip155:8453"]);
+    expect(calls.count).toBe(1);
+
+    // After TTL expires + Gateway returns zero valid networks: reject
+    mockTime = 1_000_000 + 300_001;
+    await expect(discovery.getNetworks()).rejects.toThrow("circle_gateway_discovery_unavailable");
     expect(calls.count).toBe(2);
   });
 
@@ -169,9 +202,9 @@ describe("createCircleDiscovery cache isolation", () => {
   });
 
   test("separate discovery instances have separate caches", async () => {
-    const calls1 = { count: 0 };
+    const calls = { count: 0 };
     BatchFacilitatorClient.prototype.getSupported = mock(async () => {
-      calls1.count++;
+      calls.count++;
       return {
         kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" }],
         extensions: [],
@@ -185,6 +218,6 @@ describe("createCircleDiscovery cache isolation", () => {
     await discovery1.getNetworks();
     await discovery2.getNetworks();
 
-    expect(calls1.count).toBe(2); // Each instance has its own cache
+    expect(calls.count).toBe(2); // Each instance has its own cache
   });
 });
