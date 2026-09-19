@@ -214,6 +214,12 @@ function compactRiskAssessment(value: Record<string, unknown>): CompactRiskAsses
     if (paymentOptionsOmitted > 0) result.omissions.paymentOptionsOmitted = paymentOptionsOmitted;
     if (resource !== undefined) (result as Record<string, unknown>).preflightContext = { resource, paymentOptions };
   }
+
+  // Pass through the agentRisk extension verbatim — it is already scoped and bounded.
+  if (isRecord(value.agentRisk)) {
+    (result as Record<string, unknown>).agentRisk = value.agentRisk;
+  }
+
   return result;
 }
 

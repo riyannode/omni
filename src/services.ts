@@ -1,4 +1,4 @@
-import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryDependencyVulnerabilitySummary, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RepositoryThreatIntelFinding, type RepositoryThreatIntelSummary, type RiskAssessment, type RiskSnapshot, type ThreatFinding, type RiskLevel } from "./domain/risk.ts";
+import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, AGENT_COVERAGE_MODEL_VERSION, type AgentRisk, type AgentRiskAssessment, type AgentChainIdentityResult, type AgentReputationSummary, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryDependencyVulnerabilitySummary, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RepositoryThreatIntelFinding, type RepositoryThreatIntelSummary, type RiskAssessment, type RiskSnapshot, type ThreatFinding, type RiskLevel } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import { RISK_POLICY_VERSION } from "./domain/risk-policy.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
@@ -16,6 +16,16 @@ import { DepsDevProvider } from "./providers/deps-dev.ts";
 import { NpmRegistryProvider } from "./providers/npm-registry.ts";
 import { CircleDiscoveryProvider } from "./providers/circle-discovery.ts";
 import { X402Probe } from "./providers/x402-probe.ts";
+import {
+  ERC8004_PRODUCTION_CHAINS,
+  readAgentIdentity,
+  scanAgentReputation,
+  fetchAgentCard,
+  probeTargetUrlRedirectsToPrivate,
+  extractServices,
+  type Erc8004ChainConfig,
+  REPUTATION_DEFAULT_MAX_CHUNKS,
+} from "./providers/erc8004.ts";
 
 const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
 const REPOSITORY_ENRICHMENT_CONCURRENCY = 4;
@@ -835,5 +845,307 @@ export class OmniIntelligence {
         }
       };
     })();
+  }
+
+  /**
+   * Assesses an ERC-8004 registered agent by agentId.
+   *
+   * @param agentId - The ERC-721 token id in the ERC-8004 IdentityRegistry.
+   * @param chains  - Override the default production chains (for testing).
+   * @param targetUrl - Optional caller-supplied target URL. If advertised in the
+   *                    agent's verified card, a redirect-to-private probe is run.
+   * @param trustedReviewers - Operator-configured allowlist for on-chain feedback
+   *                           (lowercase addresses). Default null = public feedback
+   *                           treated as evidence-only (not trust score input).
+   * @param reputationMaxChunkAttempts - Maximum eth_getLogs chunk attempts per chain.
+   */
+  async agentRisk(
+    agentId: string,
+    chains: readonly Erc8004ChainConfig[] = ERC8004_PRODUCTION_CHAINS,
+    targetUrl?: string,
+    trustedReviewers: Set<string> | null = null,
+    reputationMaxChunkAttempts = REPUTATION_DEFAULT_MAX_CHUNKS,
+  ): Promise<AgentRiskAssessment> {
+    const observedAt = new Date().toISOString();
+    const errors: string[] = [];
+    const evidence: RiskSnapshot["evidence"] = [];
+    const coverageSources: EvidenceCoverageSource[] = [];
+
+    // Parse agentId: accept decimal string or 0x hex string
+    let agentIdBigInt: bigint;
+    try {
+      agentIdBigInt = agentId.startsWith("0x") || agentId.startsWith("0X")
+        ? BigInt(agentId)
+        : BigInt(agentId);
+    } catch {
+      // Propagate as assessment error with insufficient_evidence
+      const agentRisk: AgentRisk = {
+        agentId,
+        primaryChainId: chains[0]?.chainId ?? 1,
+        dimensions: { agentIdentity: "unknown", agentReputation: "unknown", agentValidation: "unknown" },
+        chainEvidence: [],
+      };
+      const baseAssessment = await this.assessAndJournal({
+        subject: { type: "agent", id: agentId },
+        coverage: { modelVersion: AGENT_COVERAGE_MODEL_VERSION, sources: [coverageSource("ERC-8004 Identity Registry", "NOT_QUERIED", "UNKNOWN")] },
+        evidence: [],
+        sourceErrors: [`invalid agentId: ${agentId}`],
+      });
+      return { ...baseAssessment, agentRisk };
+    }
+
+    // --- Phase 1: Identity (parallel across production chains) ---
+    const chainResults: AgentChainIdentityResult[] = await Promise.all(
+      chains.map(async chain => {
+        try {
+          return await readAgentIdentity(chain, agentIdBigInt);
+        } catch (e) {
+          return { chainId: chain.chainId, registered: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      })
+    );
+
+    const registeredResults = chainResults.filter(r => r.registered);
+    const isRegistered = registeredResults.length > 0;
+
+    // Identity coverage source: OBSERVED if registered on at least one chain, ABSENT if all responded but none registered, UNAVAILABLE if all failed.
+    const identityErrors = chainResults.filter(r => !r.registered && r.error);
+    const identityResponded = chainResults.filter(r => !r.error);
+    const identityExecution: EvidenceCoverageSource["execution"] = "QUERIED";
+    const identityStatus: EvidenceCoverageSource["status"] =
+      isRegistered ? "OBSERVED"
+      : identityErrors.length === chains.length ? "UNAVAILABLE"
+      : identityResponded.length === 0 ? "UNAVAILABLE"
+      : "ABSENT";
+    coverageSources.push(coverageSource("ERC-8004 Identity Registry", identityExecution, identityStatus));
+    for (const r of identityErrors) {
+      errors.push(`ERC-8004 identity chain ${r.chainId}: ${r.error ?? "unknown error"}`);
+    }
+
+    evidence.push({
+      source: "ERC-8004 IdentityRegistry",
+      kind: "agent_identity",
+      observedAt,
+      detail: {
+        agentId,
+        registered: isRegistered,
+        chains: chainResults.map(r => ({
+          chainId: r.chainId,
+          registered: r.registered,
+          ...(r.ownerAddress ? { ownerAddress: r.ownerAddress } : {}),
+          ...(r.agentWallet ? { agentWallet: r.agentWallet } : {}),
+          ...(r.registrationUri ? { registrationUri: r.registrationUri } : {}),
+          ...(r.error ? { error: r.error } : {}),
+        })),
+      },
+    });
+
+    // Pick the primary registration (first registered chain, or first chain overall).
+    const primary = registeredResults[0] ?? chainResults[0];
+    const primaryChainId = primary?.chainId ?? chains[0]?.chainId ?? 1;
+    const primaryAgentWallet = primary?.agentWallet;
+    const primaryRegistrationUri = primary?.registrationUri;
+
+    // --- Phase 2: Agent card fetch (if registered and URI available) ---
+    let agentName: string | undefined;
+    let agentDescription: string | undefined;
+    let services: AgentRisk["services"];
+    let agentValidation: AgentRisk["dimensions"]["agentValidation"] = "unknown";
+
+    if (isRegistered && primaryRegistrationUri) {
+      try {
+        const cardResult = await fetchAgentCard(primaryRegistrationUri);
+        if (cardResult.error) {
+          errors.push(`agent card: ${cardResult.error}`);
+          agentValidation = "card_unavailable";
+          coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "UNAVAILABLE"));
+        } else if (cardResult.card) {
+          const card = cardResult.card;
+          if (typeof card.name === "string") agentName = card.name.slice(0, 256);
+          if (typeof card.description === "string") agentDescription = card.description.slice(0, 1024);
+          services = extractServices(card);
+          agentValidation = services.length > 0 ? "services_observed" : "no_services";
+          coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", services.length > 0 ? "OBSERVED" : "ABSENT"));
+          evidence.push({
+            source: "ERC-8004 Agent Card",
+            kind: "agent_card",
+            observedAt,
+            detail: {
+              registrationUri: primaryRegistrationUri,
+              name: agentName ?? null,
+              serviceCount: services.length,
+            },
+          });
+        } else {
+          agentValidation = "card_unavailable";
+          coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "UNAVAILABLE"));
+        }
+      } catch (e) {
+        errors.push(`agent card fetch: ${e instanceof Error ? e.message : String(e)}`);
+        agentValidation = "card_unavailable";
+        coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "UNAVAILABLE"));
+      }
+    } else if (isRegistered) {
+      // Registered but no URI — card is absent
+      agentValidation = "card_unavailable";
+      coverageSources.push(coverageSource("ERC-8004 Agent Card", "NOT_QUERIED", "ABSENT"));
+    } else {
+      // Not registered — card is not applicable
+      agentValidation = "unknown";
+      coverageSources.push(coverageSource("ERC-8004 Agent Card", "NOT_QUERIED", "NOT_APPLICABLE"));
+    }
+
+    // --- Phase 3: Reputation scan (only if registered) ---
+    let reputationSummary: AgentReputationSummary | undefined;
+    let agentReputation: AgentRisk["dimensions"]["agentReputation"] = "unknown";
+
+    if (isRegistered && primary) {
+      // Find the chain config for the primary chain
+      const primaryChain = chains.find(c => c.chainId === primary.chainId) ?? chains[0];
+      if (primaryChain) {
+        try {
+          const scan = await scanAgentReputation(primaryChain, agentIdBigInt, trustedReviewers, reputationMaxChunkAttempts);
+          const active = scan.feedback.filter(f => !f.revoked);
+          const positiveRatings = active.filter(f => f.rating === "positive").length;
+          const negativeRatings = active.filter(f => f.rating === "negative").length;
+          const neutralRatings = active.filter(f => f.rating === "neutral").length;
+          reputationSummary = {
+            chainId: primary.chainId,
+            totalFeedback: scan.feedback.length,
+            activeFeedback: active.length,
+            revokedFeedback: scan.feedback.filter(f => f.revoked).length,
+            positiveRatings,
+            negativeRatings,
+            neutralRatings,
+            historyCoverage: scan.historyCoverage,
+            blocksScanned: scan.blocksScanned.toString(10),
+            errors: scan.errors,
+          };
+          for (const e of scan.errors) errors.push(`reputation scan: ${e}`);
+
+          // Derive agentReputation from aggregated feedback (trusted reviewers only per policy)
+          if (active.length === 0) {
+            agentReputation = "insufficient";
+          } else if (negativeRatings > positiveRatings) {
+            agentReputation = "negative";
+          } else if (positiveRatings > 0 && negativeRatings === 0) {
+            agentReputation = "positive";
+          } else if (positiveRatings > 0 && negativeRatings > 0) {
+            agentReputation = "neutral";
+          } else {
+            agentReputation = "insufficient";
+          }
+
+          // Coverage: "complete" scan is OBSERVED evidence; partial scan is UNKNOWN (reduces coverage)
+          const reputationEvidenceStatus: EvidenceCoverageSource["status"] =
+            active.length > 0
+              ? scan.historyCoverage === "complete" ? "OBSERVED" : "UNKNOWN"
+              : "ABSENT";
+          coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "QUERIED", reputationEvidenceStatus));
+          const reputationCompletenessStatus: EvidenceCoverageSource["status"] =
+            scan.historyCoverage === "complete" ? "OBSERVED" : "UNKNOWN";
+          coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "QUERIED", reputationCompletenessStatus));
+
+          evidence.push({
+            source: "ERC-8004 ReputationRegistry",
+            kind: "agent_reputation_scan",
+            observedAt,
+            detail: {
+              chainId: primary.chainId,
+              totalFeedback: reputationSummary.totalFeedback,
+              activeFeedback: reputationSummary.activeFeedback,
+              positiveRatings,
+              negativeRatings,
+              neutralRatings,
+              historyCoverage: scan.historyCoverage,
+              blocksScanned: reputationSummary.blocksScanned,
+              errorCount: scan.errors.length,
+            },
+          });
+        } catch (e) {
+          errors.push(`reputation scan: ${e instanceof Error ? e.message : String(e)}`);
+          agentReputation = "unknown";
+          coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "QUERIED", "UNAVAILABLE"));
+          coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "QUERIED", "UNAVAILABLE"));
+        }
+      } else {
+        coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "NOT_QUERIED", "UNKNOWN"));
+        coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "NOT_QUERIED", "UNKNOWN"));
+      }
+    } else {
+      // Not registered: reputation is not applicable (no registry entry to scan)
+      agentReputation = "unknown";
+      coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "NOT_QUERIED", "NOT_APPLICABLE"));
+      coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "NOT_QUERIED", "NOT_APPLICABLE"));
+    }
+
+    // --- Phase 4: targetUrl redirect-to-private probe ---
+    let targetUrlVerified: boolean | undefined;
+    let targetUrlRedirectsToPrivate: boolean | undefined;
+
+    if (targetUrl && isRegistered && services && services.length > 0) {
+      // Check if the targetUrl was advertised in the agent's verified card.
+      const advertisedEndpoints = services.map(s => s.endpoint).filter((e): e is string => typeof e === "string");
+      const isAdvertised = advertisedEndpoints.some(ep => ep === targetUrl || ep.startsWith(targetUrl) || targetUrl.startsWith(ep.replace(/\/$/, "")));
+      targetUrlVerified = isAdvertised;
+
+      if (isAdvertised) {
+        // Only probe if the targetUrl was advertised
+        try {
+          const probe = await probeTargetUrlRedirectsToPrivate(targetUrl);
+          targetUrlRedirectsToPrivate = probe.redirectsToPrivate;
+          if (probe.error) errors.push(`targetUrl probe: ${probe.error}`);
+          if (probe.redirectsToPrivate) {
+            evidence.push({
+              source: "OMNI active probe",
+              kind: "agent_target_redirect_to_private",
+              observedAt,
+              detail: { targetUrl, redirectsToPrivate: true },
+            });
+          }
+        } catch (e) {
+          errors.push(`targetUrl probe: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    } else if (targetUrl) {
+      // Caller-supplied URL not in advertised services: coverage effect only, no risk increase.
+      targetUrlVerified = false;
+    }
+
+    // --- Phase 5: assemble agentIdentity dimension ---
+    const agentIdentity: AgentRisk["dimensions"]["agentIdentity"] =
+      !isRegistered ? "not_registered"
+      : identityErrors.length > 0 && identityResponded.length === 0 ? "unknown"
+      : "registered_verified";
+
+    // --- Phase 6: assemble AgentRisk extension ---
+    const agentRisk: AgentRisk = {
+      agentId,
+      primaryChainId,
+      ...(primaryAgentWallet ? { agentWallet: primaryAgentWallet } : {}),
+      ...(primaryRegistrationUri ? { registrationUri: primaryRegistrationUri } : {}),
+      ...(agentName ? { agentName } : {}),
+      ...(agentDescription ? { agentDescription } : {}),
+      dimensions: {
+        agentIdentity,
+        agentReputation,
+        agentValidation,
+      },
+      chainEvidence: chainResults,
+      ...(reputationSummary ? { reputationSummary } : {}),
+      ...(services && services.length > 0 ? { services } : {}),
+      ...(targetUrlVerified !== undefined ? { targetUrlVerified } : {}),
+      ...(targetUrlRedirectsToPrivate !== undefined ? { targetUrlRedirectsToPrivate } : {}),
+    };
+
+    // --- Phase 7: RiskAssessment base ---
+    const baseAssessment = await this.assessAndJournal({
+      subject: { type: "agent", id: agentId },
+      coverage: { modelVersion: AGENT_COVERAGE_MODEL_VERSION, sources: coverageSources },
+      evidence,
+      sourceErrors: errors,
+    });
+
+    return { ...baseAssessment, agentRisk };
   }
 }

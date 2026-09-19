@@ -132,7 +132,8 @@ describe("HTTP machine-readable documents", () => {
       ["/v1/package/risk", "get", "0.005000", "$0.005"],
       ["/v1/repo/risk", "get", "0.010000", "$0.01"],
       ["/v1/dependencies/risk", "post", "0.050000", "$0.05"],
-      ["/v1/x402/endpoint/preflight", "get", "0.010000", "$0.01"]
+      ["/v1/x402/endpoint/preflight", "get", "0.010000", "$0.01"],
+      ["/v1/agent/risk", "get", "0.050000", "$0.05"]
     ] as const;
     expect(Object.keys(api.paths).sort()).toEqual(["/.well-known/x402", "/health", "/ready", ...routes.map(([path]) => path)].sort());
     for (const [path, method, amount, price] of routes) {
@@ -323,7 +324,7 @@ describe("x402 discovery manifest", () => {
     expect(body.openapi).toBe("https://api.askomni.xyz/openapi.json");
     expect(body.paymentTerms).toBe("live_402_authoritative");
     expect(body.networks).toEqual(["eip155:1", "eip155:5042", "eip155:8453"]);
-    expect(body.resources).toHaveLength(4);
+    expect(body.resources).toHaveLength(5);
     expect(body.resources[0]).toEqual({
       method: "GET",
       resource: "https://api.askomni.xyz/v1/package/risk",
@@ -360,7 +361,8 @@ describe("x402 discovery manifest", () => {
       { method: "GET", resource: "https://api.askomni.xyz/v1/package/risk", price: { currency: "USDC", amount: "0.005000" } },
       { method: "GET", resource: "https://api.askomni.xyz/v1/repo/risk", price: { currency: "USDC", amount: "0.010000" } },
       { method: "POST", resource: "https://api.askomni.xyz/v1/dependencies/risk", price: { currency: "USDC", amount: "0.050000" } },
-      { method: "GET", resource: "https://api.askomni.xyz/v1/x402/endpoint/preflight", price: { currency: "USDC", amount: "0.010000" } }
+      { method: "GET", resource: "https://api.askomni.xyz/v1/x402/endpoint/preflight", price: { currency: "USDC", amount: "0.010000" } },
+      { method: "GET", resource: "https://api.askomni.xyz/v1/agent/risk", price: { currency: "USDC", amount: "0.050000" } }
     ];
     expect(body.resources).toEqual(expected);
   });

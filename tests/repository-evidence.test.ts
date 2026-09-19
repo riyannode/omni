@@ -649,25 +649,26 @@ describe("repository evidence foundation", () => {
 
     expect(available.signals.map(signal => signal.code)).toContain("INSTALL_LIFECYCLE_SCRIPT_OBSERVED");
     expect(partial.signals.map(signal => signal.code)).toContain("REPOSITORY_EVIDENCE_PARTIAL");
-    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(4);
+    expect(RISK_SNAPSHOT_SCHEMA_VERSION).toBe(5);
     expect(extractRiskFeatures({ ...base, repositoryEvidence: evidence }).schemaVersion).toBe(RISK_FEATURE_SCHEMA_VERSION);
   });
 
   test("replays v1 package and x402 rows safely but never reinterprets v1 repository rows", () => {
     const rows = [
-      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "package" as const, id: "old-package" },
-      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "x402_endpoint" as const, id: "old-endpoint" },
-      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "repository" as const, id: "old-repository" },
-      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "package" as const, id: "historical-package" },
-      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "x402_endpoint" as const, id: "historical-endpoint" },
-      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "dependency_set" as const, id: "historical-dependencies" },
-      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "historical-repository" },
-      { snapshotSchemaVersion: 4, featureSchemaVersion: 4, subjectType: "repository" as const, id: "current-repository" }
+      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "package" as const, id: "old-package" },           // 0: compatible (safe replay)
+      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "x402_endpoint" as const, id: "old-endpoint" },    // 1: compatible (safe replay)
+      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "repository" as const, id: "old-repository" },     // 2: incompatible (repo not in SAFE_REPLAY)
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "package" as const, id: "historical-package" },    // 3: compatible (safe replay)
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "x402_endpoint" as const, id: "historical-endpoint" }, // 4: compatible
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "dependency_set" as const, id: "historical-dependencies" }, // 5: compatible
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "historical-repository" }, // 6: incompatible
+      { snapshotSchemaVersion: 4, featureSchemaVersion: 4, subjectType: "repository" as const, id: "v4-repository" },      // 7: incompatible (v4 repo → not SAFE_REPLAY)
+      { snapshotSchemaVersion: RISK_SNAPSHOT_SCHEMA_VERSION, featureSchemaVersion: RISK_FEATURE_SCHEMA_VERSION, subjectType: "repository" as const, id: "current-repository" } // 8: compatible (current schema)
     ];
     expect(partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION)).toEqual({
-      compatible: [rows[0]!, rows[1]!, rows[3]!, rows[4]!, rows[5]!, rows[7]!],
-      incompatible: [rows[2]!, rows[6]!],
-      schemaVersionsPresent: { snapshot: [1, 3, 4], feature: [1, 3, 4] }
+      compatible: [rows[0]!, rows[1]!, rows[3]!, rows[4]!, rows[5]!, rows[8]!],
+      incompatible: [rows[2]!, rows[6]!, rows[7]!],
+      schemaVersionsPresent: { snapshot: [1, 3, 4, RISK_SNAPSHOT_SCHEMA_VERSION], feature: [1, 3, 4, RISK_FEATURE_SCHEMA_VERSION] }
     });
   });
 

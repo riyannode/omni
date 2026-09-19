@@ -1,6 +1,6 @@
 import type { EvidenceCoverageSource, ProvenanceState, RepositoryDependencyVulnerabilityFinding, RepositoryDependencyVulnerabilityStatus, RepositoryDependencyVulnerabilitySummary, RepositoryMaliciousPackageObservation, RepositorySummaryStatus, RepositoryThreatIntelFinding, RepositoryThreatIntelStatus, RepositoryThreatIntelSummary, RiskLevel, RiskSnapshot, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
 
-export const RISK_FEATURE_SCHEMA_VERSION = 4 as const;
+export const RISK_FEATURE_SCHEMA_VERSION = 5 as const;
 
 type KnownSeverity = Exclude<RiskLevel, "unknown">;
 type SeverityCounts = Record<KnownSeverity, number>;
@@ -126,6 +126,7 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
       case "repository": expected = 1; completed = snapshot.scorecard === undefined ? 0 : 1; break;
       case "x402_endpoint": { const checks = [snapshot.endpoint?.listedOnCircle !== undefined, snapshot.activeProbeChecked === true, snapshot.historyChecked === true, snapshot.threatIntelChecked === true]; expected = checks.length; completed = checks.filter(Boolean).length; break; }
       case "dependency_set": expected = 1; completed = snapshot.evidence.length === 0 ? 0 : 1; break;
+      case "agent": expected = 1; completed = snapshot.evidence.length > 0 ? 1 : 0; break;
     }
   }
 

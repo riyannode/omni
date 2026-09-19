@@ -1,4 +1,4 @@
-export const RISK_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+export const RISK_SNAPSHOT_SCHEMA_VERSION = 5 as const;
 export const MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION = 1 as const;
 export const PACKAGE_COVERAGE_MODEL_VERSION = "package-coverage-v2" as const;
 export const REPOSITORY_COVERAGE_MODEL_VERSION = "repository-coverage-v1" as const;
@@ -136,7 +136,7 @@ export type RepositoryEvidence = {
 };
 
 export type RiskSnapshot = {
-  subject: { type: "package" | "repository" | "dependency_set" | "x402_endpoint"; id: string };
+  subject: { type: "package" | "repository" | "dependency_set" | "x402_endpoint" | "agent"; id: string };
   vulnerabilities?: VulnerabilityFinding[];
   scorecard?: number;
   exploitationChecked?: boolean;
@@ -162,4 +162,77 @@ export type RiskAssessment = {
   repositorySummary?: RepositoryRiskSummary;
   maliciousPackageObservations?: MaliciousPackageObservation[];
   freshness: { oldestEvidenceAt: string | null; newestEvidenceAt: string | null; expiresAt?: string };
+};
+
+// ---------------------------------------------------------------------------
+// Agent-specific types (ERC-8004 subject extension, v5 schema)
+// ---------------------------------------------------------------------------
+
+export const AGENT_COVERAGE_MODEL_VERSION = "agent-coverage-v1" as const;
+
+export type AgentIdentityRisk = "registered" | "unregistered" | "unknown";
+export type AgentReputationRisk = "positive" | "neutral" | "negative" | "insufficient" | "unknown";
+
+/** Agent-specific risk dimensions, surfaced as a nested optional extension on RiskAssessment. */
+export type AgentRiskDimensions = {
+  /** Whether the agent is verifiably registered in the ERC-8004 IdentityRegistry on a production chain. */
+  agentIdentity: "registered_verified" | "not_registered" | "unknown";
+  /** Aggregated reputation signal derived from on-chain feedback, filtered to trusted reviewers when configured. */
+  agentReputation: AgentReputationRisk;
+  /** Service / x402 endpoint validity evidence from the agent card. */
+  agentValidation: "services_observed" | "no_services" | "card_unavailable" | "unknown";
+};
+
+/** Per-chain identity probe result surfaced inside agentRisk.chainEvidence. */
+export type AgentChainIdentityResult = {
+  chainId: number;
+  registered: boolean;
+  ownerAddress?: string;
+  agentWallet?: string;
+  registrationUri?: string;
+  error?: string;
+};
+
+/** Aggregated reputation summary derived from on-chain feedback. */
+export type AgentReputationSummary = {
+  chainId: number;
+  totalFeedback: number;
+  activeFeedback: number;
+  revokedFeedback: number;
+  positiveRatings: number;
+  negativeRatings: number;
+  neutralRatings: number;
+  /** Whether the scan covered the full block history (complete) or was bounded. */
+  historyCoverage: "complete" | "partial";
+  blocksScanned: string; // bigint serialized as decimal string
+  errors: string[];
+};
+
+/** Service entry from the agent card, used for payload evidence. */
+export type AgentServiceObservation = {
+  type: string;
+  endpoint?: string;
+  schema?: string;
+};
+
+/** Optional agentRisk extension on RiskAssessment. Present only when subject.type === "agent". */
+export type AgentRisk = {
+  agentId: string;
+  primaryChainId: number;
+  agentWallet?: string;
+  registrationUri?: string;
+  agentName?: string;
+  agentDescription?: string;
+  dimensions: AgentRiskDimensions;
+  chainEvidence: AgentChainIdentityResult[];
+  reputationSummary?: AgentReputationSummary;
+  services?: AgentServiceObservation[];
+  /** True when the caller-supplied targetUrl matches a service endpoint advertised in the verified agent card. */
+  targetUrlVerified?: boolean;
+  /** True when OMNI observed the targetUrl redirect to a private/internal address. Only set when targetUrl was caller-supplied AND advertised in the agent's verified card. */
+  targetUrlRedirectsToPrivate?: boolean;
+};
+
+export type AgentRiskAssessment = RiskAssessment & {
+  agentRisk: AgentRisk;
 };

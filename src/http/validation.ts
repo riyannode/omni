@@ -18,3 +18,10 @@ export const dependenciesBody = z.object({
 export const endpointQuery = z.object({
   url: z.string().url().max(2048)
 });
+
+export const agentQuery = z.object({
+  /** ERC-8004 agent token id. Accepts decimal or 0x-prefixed hex string. */
+  agentId: z.string().regex(/^(0x[0-9a-fA-F]{1,64}|[0-9]{1,78})$/, "agentId must be a decimal integer or 0x-prefixed hex"),
+  /** Optional target URL to check for redirect-to-private (caller-supplied, opt-in). */
+  targetUrl: z.string().url().max(2048).optional(),
+});

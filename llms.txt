@@ -6,7 +6,7 @@ This document is rendered with the configured public base URL at runtime. Produc
 
 ## Paid API
 
-All four endpoints require x402 payment per request.
+All five endpoints require x402 payment per request.
 
 Paid calls also require an `Idempotency-Key` header containing a UUID v4. Reuse the same value when retrying one logical request; using it with different validated input returns a conflict. Completed results replay without another payment, and already-paid incomplete requests recover without another payment.
 
@@ -23,6 +23,7 @@ Repository JSON includes bounded `repositorySummary` sections for dependency res
 - [GET /v1/repo/risk](https://omni.example.com/v1/repo/risk): repository risk assessment ($0.01 USDC). Query: `owner`, `repo`.
 - [POST /v1/dependencies/risk](https://omni.example.com/v1/dependencies/risk): per-package assessment for up to 100 packages plus an aggregate summary ($0.05 USDC). Body: `packages[]`.
 - [GET /v1/x402/endpoint/preflight](https://omni.example.com/v1/x402/endpoint/preflight): x402 endpoint preflight assessment ($0.01 USDC). Query: `url`.
+- [GET /v1/agent/risk](https://omni.example.com/v1/agent/risk): ERC-8004 agent risk assessment — identity, reputation, and service evidence ($0.05 USDC). Query: `agentId` (decimal or 0x-hex ERC-8004 token id), optional `targetUrl`.
 
 ## Mainnet payment guidance
 
