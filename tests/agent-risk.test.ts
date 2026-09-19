@@ -758,6 +758,9 @@ describe("OmniIntelligence agent service path", () => {
     expect(higher.riskScore).toBe(70);
     expect(higher.agentRisk.reputationSummary?.totalFeedback).toBe(2);
     expect(higher.agentRisk.reputationSummary?.scoreEligibleFeedback).toBe(1);
+    const untrustedOnly = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [feedback[1]!]), { trustedReviewers: new Set<string>(), recognizedTags: policy.recognizedTags }).agentRisk("42", "eip155:1");
+    expect(untrustedOnly.agentRisk.dimensions.agentReputation).toBe("insufficient");
+    expect(untrustedOnly.riskScore).toBe(0);
 
     const lowerPolicy = { trustedReviewers: new Set([trusted]), recognizedTags: [{ tag: "quality", direction: "lower_is_better", threshold: "0.8", expectedDecimals: 1, riskWeight: 70 }] };
     const lowerFeedback = [{ ...feedback[0]!, value: 9n }];

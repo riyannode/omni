@@ -73,7 +73,7 @@ export function featuresEqualForCohort(left: unknown, right: unknown, snapshotSc
   const canProjectLegacySurface = subjectType === undefined
     ? snapshotSchemaVersion === 1
     : snapshotSchemaVersion === 4
-      ? SAFE_REPLAY_V4_SUBJECT_KINDS.includes(subjectType)
+      ? subjectType !== "repository" && SAFE_REPLAY_V4_SUBJECT_KINDS.includes(subjectType)
       : SAFE_REPLAY_LEGACY_SUBJECT_KINDS.includes(subjectType);
   if (snapshotSchemaVersion < 5 && canProjectLegacySurface) {
     return { equal: featuresEqual(projectLegacyFeatures(left), projectLegacyFeatures(right)), comparison: "legacy-projected" };

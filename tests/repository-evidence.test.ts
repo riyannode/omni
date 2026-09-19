@@ -688,6 +688,8 @@ describe("repository evidence foundation", () => {
       expect(featuresEqualForCohort(fresh, legacyRow, 3, snapshot.subject.type)).toEqual({ equal: true, comparison: "legacy-projected" });
       // v3 repository rows retain the pre-repair current-schema comparison.
       expect(featuresEqualForCohort({ repository: { old: true } }, { repository: { old: false } }, 3, "repository")).toEqual({ equal: false, comparison: "current-schema" });
+      // v4 repository replay is allowed, but repository features remain strict.
+      expect(featuresEqualForCohort({ repository: { old: true } }, { repository: { old: false } }, 4, "repository")).toEqual({ equal: false, comparison: "current-schema" });
       // Real semantic change on the shared surface still counts as drift.
       const driftedLegacy = { ...legacyRow, vulnerabilityCount: 7 };
       expect(featuresEqualForCohort(fresh, driftedLegacy, 1)).toEqual({ equal: false, comparison: "legacy-projected" });

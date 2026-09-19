@@ -22,7 +22,7 @@ const reputationPolicySchema = z.object({
   recognizedTags: z.array(z.object({
     tag: z.string().min(1).max(128),
     direction: z.enum(["higher_is_better", "lower_is_better"]),
-    threshold: z.union([z.string().min(1).max(128), z.number().finite()]),
+    threshold: z.union([z.string().min(1).max(128), z.number().finite().refine(value => !String(value).toLowerCase().includes("e"), "threshold must use decimal notation")]),
     expectedDecimals: z.number().int().min(0).max(18).optional(),
     allowedDecimals: z.array(z.number().int().min(0).max(18)).max(19).optional(),
     riskWeight: z.number().int().min(0).max(100)

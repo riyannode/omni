@@ -1151,6 +1151,9 @@ export class OmniIntelligence {
           } else if (recognizedTags === 0) {
             // No recognized tags — feedback is evidence only, no score effect
             agentReputation = "insufficient";
+          } else if (scoreEligibleFeedback === 0) {
+            // Recognized public feedback without score-eligible trusted entries is not positive evidence.
+            agentReputation = "insufficient";
           } else if (maxRiskFromTrusted >= 60) {
             agentReputation = "negative";
           } else if (maxRiskFromTrusted > 0) {
@@ -1277,7 +1280,7 @@ export class OmniIntelligence {
       evidence.push({ source: "OMNI active probe", kind: "agent_target_probe_unavailable", observedAt, detail: { targetUrl, reason: "verified_agent_card_unavailable" } });
     } else if (targetUrl && !isRegistered) {
       targetUrlVerified = false;
-      targetUrlStatus = identityProbeStatus === "UNAVAILABLE" ? "PROBE_UNAVAILABLE" : "NOT_ADVERTISED";
+      targetUrlStatus = identityProbeStatus === "UNAVAILABLE" ? "PROBE_UNAVAILABLE" : "NOT_APPLICABLE";
     } else {
       targetUrlStatus = "NOT_APPLICABLE";
     }

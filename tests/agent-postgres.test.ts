@@ -10,6 +10,7 @@ import { RiskEngine } from "../src/domain/risk-engine.ts";
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const postgresTest = test.if(Boolean(databaseUrl));
 let setupDb: SQL | undefined;
+let journalSetupDb: SQL | undefined;
 let isolatedSchema = "";
 
 beforeAll(async () => {
@@ -19,12 +20,15 @@ beforeAll(async () => {
   await setupDb.unsafe(`CREATE SCHEMA ${isolatedSchema}`);
   await setupDb.unsafe(`SET search_path TO ${isolatedSchema}`);
   await setupDb.unsafe(await readFile(new URL("../db/schema.sql", import.meta.url), "utf8"));
+  journalSetupDb = new SQL(databaseUrl, { max: 1, idleTimeout: 30, connectionTimeout: 5 });
+  await journalSetupDb.unsafe(await readFile(new URL("../db/schema.sql", import.meta.url), "utf8"));
 });
 
 afterAll(async () => {
   if (setupDb && isolatedSchema) {
     await setupDb.unsafe(`DROP SCHEMA IF EXISTS ${isolatedSchema} CASCADE`);
   }
+  await journalSetupDb?.close();
   await setupDb?.close();
 });
 
