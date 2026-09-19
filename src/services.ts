@@ -1,4 +1,4 @@
-import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, AGENT_COVERAGE_MODEL_VERSION, type AgentRisk, type AgentRiskAssessment, type AgentChainIdentityResult, type AgentReputationSummary, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryDependencyVulnerabilitySummary, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RepositoryThreatIntelFinding, type RepositoryThreatIntelSummary, type RiskAssessment, type RiskSnapshot, type ThreatFinding, type RiskLevel } from "./domain/risk.ts";
+import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, AGENT_COVERAGE_MODEL_VERSION, DEFAULT_AGENT_REPUTATION_POLICY, type AgentReputationPolicy, type AgentRisk, type AgentRiskAssessment, type AgentChainIdentityResult, type AgentReputationSummary, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryDependencyVulnerabilitySummary, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RepositoryThreatIntelFinding, type RepositoryThreatIntelSummary, type RiskAssessment, type RiskSnapshot, type ThreatFinding, type RiskLevel } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
 import { RISK_POLICY_VERSION } from "./domain/risk-policy.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
@@ -30,6 +30,20 @@ import {
   FEEDBACK_REVOKED_TOPIC,
 } from "./providers/erc8004.ts";
 
+type AgentRiskProvider = {
+  readAgentIdentity: typeof readAgentIdentity;
+  scanAgentReputation: typeof scanAgentReputation;
+  fetchAgentCard: typeof fetchAgentCard;
+  probeTargetUrlRedirectsToPrivate: typeof probeTargetUrlRedirectsToPrivate;
+};
+
+const DEFAULT_AGENT_RISK_PROVIDER: AgentRiskProvider = {
+  readAgentIdentity,
+  scanAgentReputation,
+  fetchAgentCard,
+  probeTargetUrlRedirectsToPrivate,
+};
+
 const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
 const REPOSITORY_ENRICHMENT_CONCURRENCY = 4;
 const REPOSITORY_ASSESSMENT_CACHE_TTL_SECONDS = 600;
@@ -57,6 +71,24 @@ function cachePart(value: string): string { return `${value.length}:${value}`; }
 
 function coverageSource(source: string, execution: EvidenceCoverageSource["execution"], status: EvidenceCoverageSource["status"]): EvidenceCoverageSource {
   return { source, execution, status, weight: 1 };
+}
+
+function decimalParts(value: string | number): { coefficient: bigint; scale: number } | undefined {
+  const text = String(value);
+  const match = /^(?<sign>-?)(?<whole>\d+)(?:\.(?<fraction>\d+))?$/.exec(text);
+  if (!match?.groups) return undefined;
+  const fraction = match.groups.fraction ?? "";
+  if (fraction.length > 18) return undefined;
+  const coefficient = BigInt(`${match.groups.sign === "-" ? "-" : ""}${match.groups.whole}${fraction}`);
+  return { coefficient, scale: fraction.length };
+}
+
+function thresholdBreached(value: bigint, valueDecimals: number, policy: AgentReputationPolicy["recognizedTags"][number]): boolean {
+  const threshold = decimalParts(policy.threshold);
+  if (!threshold || valueDecimals < 0 || valueDecimals > 18) return false;
+  const left = value * (10n ** BigInt(threshold.scale));
+  const right = threshold.coefficient * (10n ** BigInt(valueDecimals));
+  return policy.direction === "higher_is_better" ? left < right : left > right;
 }
 
 function githubCollectionFallback(repositoryEvidence: RepositoryEvidence): RepositoryCollectionCoverage {
@@ -581,7 +613,9 @@ export class OmniIntelligence {
     private readonly threatIntel: ThreatIntelStore,
     private readonly journal: AssessmentJournal = new NoopAssessmentJournal(),
     private readonly github: GitHubRepositoryProvider = {} as GitHubRepositoryProvider,
-    private readonly depsDev: DepsDevProvider = {} as DepsDevProvider
+    private readonly depsDev: DepsDevProvider = {} as DepsDevProvider,
+    private readonly agentReputationPolicy: AgentReputationPolicy = DEFAULT_AGENT_REPUTATION_POLICY,
+    private readonly agentProvider: AgentRiskProvider = DEFAULT_AGENT_RISK_PROVIDER
   ) {}
 
   private async assessAndJournal(snapshot: RiskSnapshot): Promise<RiskAssessment> {
@@ -924,48 +958,47 @@ export class OmniIntelligence {
     const chainResults: AgentChainIdentityResult[] = await Promise.all(
       chains.map(async c => {
         try {
-          return await readAgentIdentity(c, agentIdBigInt);
+          return await this.agentProvider.readAgentIdentity(c, agentIdBigInt);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          if (msg.includes("revert") || msg.includes("execution reverted")) {
-            return { chainId: c.chainId, registered: false, status: "NOT_REGISTERED" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: undefined };
-          }
           return { chainId: c.chainId, registered: false, status: "UNAVAILABLE" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: msg };
         }
       })
     );
 
-    const registeredResults = chainResults.filter(r => r.registered);
+    const registeredResults = chainResults.filter(r => r.status === "REGISTERED");
     const isRegistered = registeredResults.length > 0;
+    const identityProbeStatus: AgentChainIdentityResult["status"] = isRegistered
+      ? "REGISTERED"
+      : chainResults.some(result => result.status === "UNAVAILABLE")
+        ? "UNAVAILABLE"
+        : "NOT_REGISTERED";
 
     // Classify identity errors
     const identityErrors = chainResults.filter(r => r.error);
-    const identityRpcErrors = identityErrors.filter(r => !r.error?.includes("revert"));
-    const identityResponded = chainResults.filter(r => !r.error);
     const identityExecution: EvidenceCoverageSource["execution"] = "QUERIED";
-    const identityStatus: EvidenceCoverageSource["status"] =
-      isRegistered ? "OBSERVED"
-      : identityRpcErrors.length === chains.length ? "UNAVAILABLE"
-      : identityResponded.length === 0 ? "UNAVAILABLE"
+    const identityCoverageStatus: EvidenceCoverageSource["status"] =
+      identityProbeStatus === "REGISTERED" ? "OBSERVED"
+      : identityProbeStatus === "UNAVAILABLE" ? "UNAVAILABLE"
       : "ABSENT";
-    coverageSources.push(coverageSource("ERC-8004 Identity Registry", identityExecution, identityStatus));
+    coverageSources.push(coverageSource("ERC-8004 Identity Registry", identityExecution, identityCoverageStatus));
     for (const r of identityErrors) {
       errors.push(`ERC-8004 identity chain ${r.chainId}: ${r.error ?? "unknown error"}`);
     }
 
     // Track identity evidence for scoring
-    const identityRpcFailed = identityRpcErrors.length > 0;
-
     evidence.push({
       source: "ERC-8004 IdentityRegistry",
       kind: "agent_identity",
       observedAt,
       detail: {
         agentId,
+        status: identityProbeStatus,
         registered: isRegistered,
         chainRef,
         chains: chainResults.map(r => ({
           chainId: r.chainId,
+          status: r.status,
           registered: r.registered,
           ...(r.ownerAddress ? { ownerAddress: r.ownerAddress } : {}),
           ...(r.agentWallet ? { agentWallet: r.agentWallet } : {}),
@@ -991,8 +1024,16 @@ export class OmniIntelligence {
 
     if (isRegistered && primaryRegistrationUri) {
       try {
-        const cardResult = await fetchAgentCard(primaryRegistrationUri);
-        if (cardResult.error) {
+        const cardResult = await this.agentProvider.fetchAgentCard(primaryRegistrationUri, {
+          agentRegistry: `eip155:${primary.chainId}:${chain.identityRegistry}`,
+          agentId: agentIdBigInt,
+        });
+        if (cardResult.status === "SELF_REFERENCE_MISMATCH") {
+          registrationMismatch = true;
+          agentValidation = "unknown";
+          evidence.push({ source: "ERC-8004 Agent Card", kind: "agent_registration_mismatch", observedAt, detail: { reason: "self_reference_mismatch", registrationUri: primaryRegistrationUri } });
+          coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "ABSENT"));
+        } else if (cardResult.error) {
           errors.push(`agent card: ${cardResult.error}`);
           agentValidation = "card_unavailable";
           cardUnavailable = true;
@@ -1022,15 +1063,7 @@ export class OmniIntelligence {
             },
           });
           // Check registration match
-          if (card.active === false) {
-            registrationMismatch = true;
-            evidence.push({
-              source: "ERC-8004 Agent Card",
-              kind: "agent_registration_mismatch",
-              observedAt,
-              detail: { reason: "registration inactive" },
-            });
-          }
+
         } else {
           agentValidation = "card_unavailable";
           cardUnavailable = true;
@@ -1045,7 +1078,7 @@ export class OmniIntelligence {
     } else if (isRegistered) {
       agentValidation = "card_unavailable";
       cardUnavailable = true;
-      coverageSources.push(coverageSource("ERC-8004 Agent Card", "NOT_QUERIED", "ABSENT"));
+      coverageSources.push(coverageSource("ERC-8004 Agent Card", "NOT_QUERIED", "NOT_APPLICABLE"));
     } else {
       agentValidation = "unknown";
       coverageSources.push(coverageSource("ERC-8004 Agent Card", "NOT_QUERIED", "NOT_APPLICABLE"));
@@ -1061,34 +1094,29 @@ export class OmniIntelligence {
       const primaryChain = chains.find(c => c.chainId === primary.chainId) ?? chain;
       if (primaryChain) {
         try {
-          const scan = await scanAgentReputation(primaryChain, agentIdBigInt, trustedReviewers, reputationMaxChunkAttempts);
+          const configuredReviewers = trustedReviewers ?? this.agentReputationPolicy.trustedReviewers;
+          const scan = await this.agentProvider.scanAgentReputation(primaryChain, agentIdBigInt, configuredReviewers, reputationMaxChunkAttempts);
           const active = scan.feedback.filter(f => !f.revoked);
           const uniqueReviewers = new Set(scan.feedback.map(f => f.clientAddress)).size;
-
-          // Count recognized vs unrecognized tags (operator policy determines this)
-          // For v1, all tags are unrecognized unless operator configures recognized tags
-          const recognizedTagPolicy: Record<string, { direction: "higher_is_better" | "lower_is_better"; threshold: number; weight: number }> = {};
-          // Default: no recognized tags. Public feedback is evidence-only.
 
           let recognizedTags = 0;
           let unrecognizedTags = 0;
           let validDecimalsFeedback = 0;
           let maxRiskFromTrusted = 0;
+          let scoreEligibleFeedback = 0;
 
           for (const fb of active) {
-            const policy = recognizedTagPolicy[fb.tag1];
+            const policy = this.agentReputationPolicy.recognizedTags.find(item => item.tag === fb.tag1);
             if (policy) {
               recognizedTags++;
-              if (fb.valueDecimals <= 18) {
+              const decimalsAllowed = policy.expectedDecimals === undefined
+                ? policy.allowedDecimals === undefined || policy.allowedDecimals.includes(fb.valueDecimals)
+                : fb.valueDecimals === policy.expectedDecimals;
+              const reviewerTrusted = configuredReviewers.has(fb.clientAddress.toLowerCase());
+              if (decimalsAllowed && reviewerTrusted && decimalParts(policy.threshold) && fb.valueDecimals <= 18) {
                 validDecimalsFeedback++;
-                // Evaluate against policy
-                const normalizedValue = Number(fb.value) / Math.pow(10, fb.valueDecimals);
-                let riskScore = 0;
-                if (policy.direction === "lower_is_better" && normalizedValue < policy.threshold) {
-                  riskScore = policy.weight;
-                } else if (policy.direction === "higher_is_better" && normalizedValue > policy.threshold) {
-                  riskScore = policy.weight;
-                }
+                scoreEligibleFeedback++;
+                const riskScore = thresholdBreached(fb.value, fb.valueDecimals, policy) ? policy.riskWeight : 0;
                 maxRiskFromTrusted = Math.max(maxRiskFromTrusted, riskScore);
               }
             } else {
@@ -1096,8 +1124,8 @@ export class OmniIntelligence {
             }
           }
 
-          trustedFeedbackExists = active.length > 0 && Object.keys(recognizedTagPolicy).length > 0;
-          strongestTrustedRisk = maxRiskFromTrusted > 0 ? maxRiskFromTrusted : undefined;
+          trustedFeedbackExists = scoreEligibleFeedback > 0;
+          strongestTrustedRisk = trustedFeedbackExists ? maxRiskFromTrusted : undefined;
 
           reputationSummary = {
             chainId: primary.chainId,
@@ -1108,6 +1136,7 @@ export class OmniIntelligence {
             recognizedTags,
             unrecognizedTags,
             validDecimalsFeedback,
+            scoreEligibleFeedback,
             historyCoverage: scan.historyCoverage,
             blocksScanned: scan.blocksScanned.toString(10),
             errors: scan.errors,
@@ -1148,6 +1177,7 @@ export class OmniIntelligence {
               uniqueReviewers: reputationSummary.uniqueReviewers,
               recognizedTags: reputationSummary.recognizedTags,
               unrecognizedTags: reputationSummary.unrecognizedTags,
+              scoreEligibleFeedback,
               historyCoverage: scan.historyCoverage,
               blocksScanned: reputationSummary.blocksScanned,
               errorCount: scan.errors.length,
@@ -1160,7 +1190,7 @@ export class OmniIntelligence {
               source: "ERC-8004 ReputationRegistry",
               kind: "agent_trusted_feedback",
               observedAt,
-              detail: { strongestRisk: strongestTrustedRisk },
+              detail: { strongestRisk: strongestTrustedRisk, scoreEligibleFeedback },
             });
           }
         } catch (e) {
@@ -1182,7 +1212,7 @@ export class OmniIntelligence {
     // --- Phase 4: targetUrl probe with canonical URL matching ---
     let targetUrlVerified: boolean | undefined;
     let targetUrlRedirectsToPrivate: boolean | undefined;
-    let targetUrlAdvertised = false;
+    let targetUrlStatus: AgentRisk["targetUrlStatus"];
 
     if (targetUrl && isRegistered && services && services.length > 0) {
       const advertisedEndpoints = services.map(s => s.endpoint).filter((e): e is string => typeof e === "string");
@@ -1197,26 +1227,32 @@ export class OmniIntelligence {
         }
       });
       targetUrlVerified = isAdvertised;
-      targetUrlAdvertised = isAdvertised;
 
       if (isAdvertised) {
         try {
-          const probe = await probeTargetUrlRedirectsToPrivate(targetUrl);
+          const probe = await this.agentProvider.probeTargetUrlRedirectsToPrivate(targetUrl);
           targetUrlRedirectsToPrivate = probe.redirectsToPrivate;
           if (probe.error) errors.push(`targetUrl probe: ${probe.error}`);
           if (probe.redirectsToPrivate) {
+            targetUrlStatus = "ADVERTISED_REDIRECT_TO_PRIVATE";
             evidence.push({
               source: "OMNI active probe",
               kind: "agent_target_redirect_to_private",
               observedAt,
               detail: { targetUrl, redirectsToPrivate: true },
             });
+          } else if (probe.error) {
+            targetUrlStatus = "PROBE_UNAVAILABLE";
+            evidence.push({ source: "OMNI active probe", kind: "agent_target_probe_unavailable", observedAt, detail: { targetUrl, error: probe.error } });
+          } else {
+            targetUrlStatus = "ADVERTISED_VERIFIED";
+            evidence.push({ source: "OMNI active probe", kind: "agent_target_verified", observedAt, detail: { targetUrl } });
           }
         } catch (e) {
           errors.push(`targetUrl probe: ${e instanceof Error ? e.message : String(e)}`);
         }
       } else {
-        // Not advertised: coverage effect only
+        targetUrlStatus = "NOT_ADVERTISED";
         evidence.push({
           source: "OMNI active probe",
           kind: "agent_target_not_advertised",
@@ -1227,7 +1263,7 @@ export class OmniIntelligence {
     } else if (targetUrl && isRegistered && (!services || services.length === 0)) {
       // No services advertised — target URL cannot match
       targetUrlVerified = false;
-      targetUrlAdvertised = false;
+      targetUrlStatus = "NOT_ADVERTISED";
       evidence.push({
         source: "OMNI active probe",
         kind: "agent_target_not_advertised",
@@ -1236,13 +1272,16 @@ export class OmniIntelligence {
       });
     } else if (targetUrl && !isRegistered) {
       targetUrlVerified = false;
+      targetUrlStatus = identityProbeStatus === "UNAVAILABLE" ? "PROBE_UNAVAILABLE" : "NOT_ADVERTISED";
+    } else {
+      targetUrlStatus = "NOT_APPLICABLE";
     }
 
     // --- Phase 5: assemble agentIdentity dimension ---
     const agentIdentity: AgentRisk["dimensions"]["agentIdentity"] =
-      !isRegistered ? "not_registered"
-      : identityRpcFailed ? "unknown"
-      : "registered_verified";
+      identityProbeStatus === "REGISTERED" ? "registered_verified"
+      : identityProbeStatus === "NOT_REGISTERED" ? "not_registered"
+      : "unknown";
 
     // --- Phase 6: assemble AgentRisk extension ---
     const agentRisk: AgentRisk = {
@@ -1261,6 +1300,7 @@ export class OmniIntelligence {
       ...(reputationSummary ? { reputationSummary } : {}),
       ...(services && services.length > 0 ? { services } : {}),
       ...(targetUrlVerified !== undefined ? { targetUrlVerified } : {}),
+      ...(targetUrlStatus ? { targetUrlStatus } : {}),
       ...(targetUrlRedirectsToPrivate !== undefined ? { targetUrlRedirectsToPrivate } : {}),
       policyVersion: "omni-agent-risk-v1",
       coverageVersion: AGENT_COVERAGE_MODEL_VERSION,

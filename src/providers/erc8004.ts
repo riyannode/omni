@@ -16,6 +16,8 @@
 
 import * as https from "node:https";
 import * as dns from "node:dns/promises";
+import * as net from "node:net";
+import type { ClientRequest, IncomingMessage } from "node:http";
 import { decodeEventLog, type AbiEvent } from "viem";
 import type { AgentChainIdentityResult, AgentIdentityStatus, AgentReputationSummary, AgentServiceObservation } from "../domain/risk.ts";
 
@@ -56,6 +58,19 @@ const FEEDBACK_REVOKED_EVENT = {
 // Computed topic hashes (verified against official ABI)
 export const NEW_FEEDBACK_TOPIC = "0x6a4a61743519c9d648a14e6493f47dbe3ff1aa29e7785c96c8326a205e58febc";
 export const FEEDBACK_REVOKED_TOPIC = "0x25156fd3288212246d8b008d5921fde376c71ed14ac2e072a506eb06fde6d09d";
+
+export type Erc8004Network = {
+  resolve4: (hostname: string) => Promise<string[]>;
+  resolve6: (hostname: string) => Promise<string[]>;
+  request: (options: https.RequestOptions, callback: (response: IncomingMessage) => void) => ClientRequest;
+  rpcPost?: (rpcUrl: string, method: string, params: unknown[], timeoutMs: number) => Promise<unknown>;
+};
+
+const DEFAULT_NETWORK: Erc8004Network = {
+  resolve4: hostname => dns.resolve4(hostname),
+  resolve6: hostname => dns.resolve6(hostname),
+  request: https.request as unknown as Erc8004Network["request"],
+};
 
 // ---------------------------------------------------------------------------
 // Chain configuration (data-driven)
@@ -119,10 +134,7 @@ export function getChainConfig(chainRef: string): Erc8004ChainConfig | undefined
 export function getChainRpcUrl(config: Erc8004ChainConfig): string {
   const override = process.env[`ERC8004_RPC_OVERRIDE_${config.chainId}`];
   if (override) return override;
-  if (config.chainId === 1) return "https://eth.llamarpc.com";
-  if (config.chainId === 8453) return "https://mainnet.base.org";
-  if (config.chainId === 11155111) return "https://rpc.sepolia.org";
-  throw new Error(`No RPC configured for chain ${config.chainId}`);
+  throw new Error(`No operator RPC configured for chain ${config.chainId}; set ERC8004_RPC_OVERRIDE_${config.chainId}`);
 }
 
 export const ERC8004_PRODUCTION_CHAINS: readonly Erc8004ChainConfig[] = Object.values(ERC8004_CHAINS).filter(c => c.enabled);
@@ -148,43 +160,76 @@ const PRIVATE_RANGES: Array<{ start: bigint; end: bigint }> = (function () {
   ].map(range);
 })();
 
-function isPrivateIpv4(ip: string): boolean {
-  try {
-    const n = ip.split(".").reduce((acc, p) => (acc << 8n) | BigInt(parseInt(p, 10)), 0n);
-    return PRIVATE_RANGES.some(r => n >= r.start && n <= r.end);
-  } catch {
-    return false;
+function parseIpv4(ip: string): number[] | undefined {
+  const parts = ip.split(".");
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return undefined;
+  return parts.map(Number);
+}
+
+function parseIpv6(ip: string): number[] | undefined {
+  if (net.isIP(ip) !== 6) return undefined;
+  const [leftRaw, rightRaw, ...extra] = ip.toLowerCase().split("::");
+  if (extra.length > 0) return undefined;
+  const expand = (part: string): number[] | undefined => {
+    if (!part) return [];
+    const pieces = part.split(":");
+    const result: number[] = [];
+    for (let index = 0; index < pieces.length; index++) {
+      const piece = pieces[index]!;
+      if (piece.includes(".")) {
+        if (index !== pieces.length - 1) return undefined;
+        const octets = parseIpv4(piece);
+        if (!octets) return undefined;
+        result.push((octets[0]! << 8) | octets[1]!, (octets[2]! << 8) | octets[3]!);
+      } else if (/^[0-9a-f]{1,4}$/.test(piece)) {
+        result.push(parseInt(piece, 16));
+      } else return undefined;
+    }
+    return result;
+  };
+  const left = expand(leftRaw ?? "");
+  const right = expand(rightRaw ?? "");
+  if (!left || !right) return undefined;
+  const units = left.length + right.length;
+  if (ip.includes("::")) {
+    if (units >= 8) return undefined;
+    return [...left, ...Array.from({ length: 8 - units }, () => 0), ...right];
   }
+  return units === 8 ? [...left, ...right] : undefined;
+}
+
+function isPrivateIpv4(ip: string): boolean {
+  const octets = parseIpv4(ip);
+  if (!octets) return false;
+  const n = octets.reduce((acc, part) => (acc << 8n) | BigInt(part), 0n);
+  return PRIVATE_RANGES.some(r => n >= r.start && n <= r.end);
 }
 
 function isPrivateIpv6(ip: string): boolean {
-  return (
-    ip === "::1" ||
-    ip.startsWith("fe80:") || ip.startsWith("FE80:") ||
-    ip.startsWith("fc") || ip.startsWith("FC") ||
-    ip.startsWith("fd") || ip.startsWith("FD") ||
-    ip === "::"
-  );
-}
-
-function isPrivateIpv4MappedIpv6(ip: string): boolean {
-  if (!ip.toLowerCase().startsWith("::ffff:")) return false;
-  const ipv4Part = ip.slice(7);
-  return isPrivateIpv4(ipv4Part);
+  const units = parseIpv6(ip);
+  if (!units) return false;
+  const first = units[0]!;
+  const isMapped = units.slice(0, 5).every(unit => unit === 0) && units[5] === 0xffff;
+  if (isMapped) {
+    const mapped = `${units[6]! >> 8}.${units[6]! & 0xff}.${units[7]! >> 8}.${units[7]! & 0xff}`;
+    return isPrivateIpv4(mapped);
+  }
+  return units.every(unit => unit === 0) || (units.slice(0, 7).every(unit => unit === 0) && units[7] === 1)
+    || (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
 }
 
 export function isPrivateIp(ip: string): boolean {
-  return isPrivateIpv4(ip) || isPrivateIpv6(ip) || isPrivateIpv4MappedIpv6(ip);
+  return isPrivateIpv4(ip) || isPrivateIpv6(ip);
 }
 
 /**
  * SAFE POLICY: reject if ANY resolved address is private.
  */
-export async function hostnameResolvesToPrivate(hostname: string): Promise<boolean> {
+export async function hostnameResolvesToPrivate(hostname: string, network: Erc8004Network = DEFAULT_NETWORK): Promise<boolean> {
   try {
     const [ipv4Results, ipv6Results] = await Promise.all([
-      dns.resolve4(hostname).catch(() => [] as string[]),
-      dns.resolve6(hostname).catch(() => [] as string[]),
+      network.resolve4(hostname).catch(() => [] as string[]),
+      network.resolve6(hostname).catch(() => [] as string[]),
     ]);
     const allIps = [...ipv4Results, ...ipv6Results];
     if (allIps.length === 0) return true;
@@ -200,14 +245,14 @@ export async function hostnameResolvesToPrivate(hostname: string): Promise<boole
 
 const MAX_REGISTRATION_BODY_BYTES = 256 * 1024;
 
-async function hardenedFetch(url: string, timeoutMs = 5000): Promise<{ status: number; body: string; finalUrl: string }> {
+async function hardenedFetch(url: string, timeoutMs = 5000, network: Erc8004Network = DEFAULT_NETWORK): Promise<{ status: number; body: string; finalUrl: string }> {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:") {
     throw new Error(`hardenedFetch: only https:// is supported (got ${parsed.protocol})`);
   }
   const hostname = parsed.hostname;
-  const addrs4 = await dns.resolve4(hostname).catch(() => [] as string[]);
-  const addrs6 = await dns.resolve6(hostname).catch(() => [] as string[]);
+  const addrs4 = await network.resolve4(hostname).catch(() => [] as string[]);
+  const addrs6 = await network.resolve6(hostname).catch(() => [] as string[]);
   const allIps = [...addrs4, ...addrs6];
   if (allIps.length === 0) throw new Error(`hardenedFetch: DNS resolution failed for ${hostname}`);
   if (allIps.some(ip => isPrivateIp(ip))) {
@@ -228,7 +273,7 @@ async function hardenedFetch(url: string, timeoutMs = 5000): Promise<{ status: n
       },
       timeout: timeoutMs,
     };
-    const req = https.request(options, (res) => {
+    const req = network.request(options, (res) => {
       const location = res.headers.location;
       if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) && location) {
         res.resume();
@@ -261,10 +306,11 @@ async function hardenedFetch(url: string, timeoutMs = 5000): Promise<{ status: n
 
 type JsonRpcResponse = { id: number; jsonrpc: string; result?: unknown; error?: { code: number; message: string } };
 
-async function rpcPost(rpcUrl: string, method: string, params: unknown[], timeoutMs = 8000): Promise<unknown> {
+async function rpcPost(rpcUrl: string, method: string, params: unknown[], timeoutMs = 8000, network: Erc8004Network = DEFAULT_NETWORK): Promise<unknown> {
+  if (network.rpcPost) return network.rpcPost(rpcUrl, method, params, timeoutMs);
   const hostname = new URL(rpcUrl).hostname;
-  const addrs4 = await dns.resolve4(hostname).catch(() => [] as string[]);
-  const addrs6 = await dns.resolve6(hostname).catch(() => [] as string[]);
+  const addrs4 = await network.resolve4(hostname).catch(() => [] as string[]);
+  const addrs6 = await network.resolve6(hostname).catch(() => [] as string[]);
   const allIps = [...addrs4, ...addrs6];
   if (allIps.length === 0) throw new Error(`rpcPost: DNS resolution failed for ${hostname}`);
   if (allIps.some(ip => isPrivateIp(ip))) {
@@ -288,7 +334,7 @@ async function rpcPost(rpcUrl: string, method: string, params: unknown[], timeou
       },
       timeout: timeoutMs,
     };
-    const req = https.request(options, (res) => {
+    const req = network.request(options, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
       res.on("end", () => {
@@ -354,44 +400,69 @@ export type AgentCard = {
   services?: AgentCardService[];
   x402Support?: unknown;
   active?: unknown;
-  registrations?: unknown;
+  registrations?: Array<Record<string, unknown>>;
   supportedTrust?: unknown;
 };
 
 export type AgentCardValidationResult = {
   card?: AgentCard;
+  status: "PARSED" | "VALID" | "SELF_REFERENCE_MATCH" | "SELF_REFERENCE_MISMATCH" | "INVALID" | "UNAVAILABLE";
   parseError?: string;
   structuralError?: string;
   selfReferenceMatch?: boolean;
 };
 
+export type AgentCardExpectation = { agentRegistry: string; agentId: bigint | string };
+
 function validateAgentCardStructure(card: AgentCard): string | undefined {
-  if (card.services !== undefined) {
-    if (!Array.isArray(card.services)) return "services must be an array";
-    for (const svc of card.services) {
-      if (typeof svc !== "object" || svc === null) return "service must be an object";
-      const s = svc as Record<string, unknown>;
-      if (s.endpoint !== undefined && typeof s.endpoint !== "string") return "service endpoint must be a string";
-      if (s.name !== undefined && typeof s.name !== "string") return "service name must be a string";
-    }
+  if (card.type !== "https://eips.ethereum.org/EIPS/eip-8004#registration-v1") return "type must be the ERC-8004 registration-v1 type";
+  if (!Array.isArray(card.services) || card.services.length > 64) return "services must be a bounded array";
+  for (const svc of card.services) {
+    if (typeof svc !== "object" || svc === null || Array.isArray(svc)) return "service must be an object";
+    const s = svc as Record<string, unknown>;
+    const serviceName = s.name ?? s.type;
+    if (typeof serviceName !== "string" || serviceName.length === 0 || serviceName.length > 128) return "service name/type must be a bounded string";
+    if (typeof s.endpoint !== "string" || s.endpoint.length === 0 || s.endpoint.length > 2048) return "service endpoint must be a bounded string";
+    if (s.type !== undefined && typeof s.type !== "string") return "service type must be a string";
+    if (s.name !== undefined && typeof s.name !== "string") return "service name must be a string";
   }
+  if (typeof card.x402Support !== "boolean") return "x402Support must be a boolean";
+  if (typeof card.active !== "boolean") return "active must be a boolean";
+  if (card.active === false) return "registration is inactive";
+  if (!Array.isArray(card.registrations) || card.registrations.length > 32) return "registrations must be a bounded array";
+  for (const registration of card.registrations) {
+    if (typeof registration !== "object" || registration === null || Array.isArray(registration)) return "registration must be an object";
+    const entry = registration as Record<string, unknown>;
+    if (typeof entry.agentRegistry !== "string" || !/^eip155:\d+:0x[a-fA-F0-9]{40}$/.test(entry.agentRegistry)) return "registration agentRegistry is invalid";
+    const agentId = entry.agentId;
+    if (!((typeof agentId === "string" && /^(0|[1-9]\d*)$/.test(agentId)) || (typeof agentId === "number" && Number.isSafeInteger(agentId) && agentId >= 0))) return "registration agentId is invalid";
+  }
+  if (card.supportedTrust !== undefined && (!Array.isArray(card.supportedTrust) || card.supportedTrust.length > 32 || card.supportedTrust.some(item => typeof item !== "string" || item.length > 128))) return "supportedTrust must be a bounded string array";
   return undefined;
 }
 
-export function parseAgentCard(uri: string, json: unknown): AgentCardValidationResult {
+export function parseAgentCard(uri: string, json: unknown, expected?: AgentCardExpectation): AgentCardValidationResult {
+  void uri;
   if (typeof json !== "object" || json === null || Array.isArray(json)) {
-    return { parseError: "agent card is not an object" };
+    return { status: "INVALID", parseError: "agent card is not an object" };
   }
   const card = json as AgentCard;
   const structuralError = validateAgentCardStructure(card);
-  return structuralError ? { parseError: structuralError, structuralError } : { card };
+  if (structuralError) return { status: "INVALID", card, parseError: structuralError, structuralError };
+  if (!expected) return { status: "VALID", card };
+  const expectedId = String(expected.agentId);
+  const matches = card.registrations?.some(registration => {
+    const entry = registration as Record<string, unknown>;
+    return typeof entry.agentRegistry === "string" && entry.agentRegistry.toLowerCase() === expected.agentRegistry.toLowerCase() && String(entry.agentId) === expectedId;
+  }) ?? false;
+  return { status: matches ? "SELF_REFERENCE_MATCH" : "SELF_REFERENCE_MISMATCH", card, selfReferenceMatch: matches };
 }
 
 export function extractServices(card: AgentCard): AgentServiceObservation[] {
   if (!Array.isArray(card.services)) return [];
   return card.services.flatMap(service => {
     if (typeof service !== "object" || service === null) return [];
-    const obs: AgentServiceObservation = { type: typeof service.type === "string" ? service.type : "unknown" };
+    const obs: AgentServiceObservation = { type: typeof service.type === "string" ? service.type : typeof service.name === "string" ? service.name : "unknown" };
     if (typeof service.endpoint === "string") obs.endpoint = service.endpoint;
     if (typeof service.schema === "string") obs.schema = service.schema;
     return [obs];
@@ -404,7 +475,8 @@ export function extractServices(card: AgentCard): AgentServiceObservation[] {
 
 export async function readAgentIdentity(
   config: Erc8004ChainConfig,
-  agentId: bigint
+  agentId: bigint,
+  network: Erc8004Network = DEFAULT_NETWORK
 ): Promise<AgentChainIdentityResult> {
   const { chainId, identityRegistry } = config;
   const rpcUrl = getChainRpcUrl(config);
@@ -412,7 +484,7 @@ export async function readAgentIdentity(
   let ownerAddress: string | undefined;
   try {
     const callData = "0x" + SEL.ownerOf + encodeUint256(agentId);
-    const result = await rpcPost(rpcUrl, "eth_call", [{ to: identityRegistry, data: callData }, "latest"]) as string;
+    const result = await rpcPost(rpcUrl, "eth_call", [{ to: identityRegistry, data: callData }, "latest"], 8000, network) as string;
     if (typeof result === "string" && result.length >= 42) {
       ownerAddress = decodeAddress(result.replace(/^0x/i, ""));
     }
@@ -431,7 +503,7 @@ export async function readAgentIdentity(
   let agentWallet: string | undefined;
   try {
     const callData = "0x" + SEL.getAgentWallet + encodeUint256(agentId);
-    const result = await rpcPost(rpcUrl, "eth_call", [{ to: identityRegistry, data: callData }, "latest"]) as string;
+    const result = await rpcPost(rpcUrl, "eth_call", [{ to: identityRegistry, data: callData }, "latest"], 8000, network) as string;
     if (typeof result === "string" && result.length >= 42) {
       agentWallet = decodeAddress(result.replace(/^0x/i, ""));
       if (agentWallet === "0x0000000000000000000000000000000000000000") agentWallet = undefined;
@@ -443,7 +515,7 @@ export async function readAgentIdentity(
   let registrationUri: string | undefined;
   try {
     const callData = "0x" + SEL.tokenURI + encodeUint256(agentId);
-    const result = await rpcPost(rpcUrl, "eth_call", [{ to: identityRegistry, data: callData }, "latest"]) as string;
+    const result = await rpcPost(rpcUrl, "eth_call", [{ to: identityRegistry, data: callData }, "latest"], 8000, network) as string;
     if (typeof result === "string" && result.length > 2) {
       registrationUri = decodeString(result);
     }
@@ -492,8 +564,8 @@ export type ReputationScanResult = {
   errors: string[];
 };
 
-async function getLatestBlock(rpcUrl: string): Promise<bigint> {
-  const result = await rpcPost(rpcUrl, "eth_blockNumber", []) as string;
+async function getLatestBlock(rpcUrl: string, network: Erc8004Network): Promise<bigint> {
+  const result = await rpcPost(rpcUrl, "eth_blockNumber", [], 8000, network) as string;
   return BigInt(result);
 }
 
@@ -561,7 +633,8 @@ export async function scanAgentReputation(
   config: Erc8004ChainConfig,
   agentId: bigint,
   trustedReviewers: Set<string> | null,
-  maxChunks = REPUTATION_DEFAULT_MAX_CHUNKS
+  maxChunks = REPUTATION_DEFAULT_MAX_CHUNKS,
+  network: Erc8004Network = DEFAULT_NETWORK
 ): Promise<ReputationScanResult> {
   const { reputationRegistry } = config;
   const rpcUrl = getChainRpcUrl(config);
@@ -569,7 +642,7 @@ export async function scanAgentReputation(
 
   let latestBlock: bigint;
   try {
-    latestBlock = await getLatestBlock(rpcUrl);
+    latestBlock = await getLatestBlock(rpcUrl, network);
   } catch (e) {
     return {
       feedback: [],
@@ -606,7 +679,7 @@ export async function scanAgentReputation(
         topics: [newFeedbackTopic, agentIdPaddedTopic],
         fromBlock: "0x" + fromBlock.toString(16),
         toBlock: "0x" + currentBlock.toString(16),
-      }]) ?? []) as EthLog[];
+      }], 8000, network) ?? []) as EthLog[];
     } catch (e) {
       errors.push(`eth_getLogs(NewFeedback) ${chunkLabel}: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -617,7 +690,7 @@ export async function scanAgentReputation(
         topics: [feedbackRevokedTopic, agentIdPaddedTopic],
         fromBlock: "0x" + fromBlock.toString(16),
         toBlock: "0x" + currentBlock.toString(16),
-      }]) ?? []) as EthLog[];
+      }], 8000, network) ?? []) as EthLog[];
     } catch (e) {
       errors.push(`eth_getLogs(FeedbackRevoked) ${chunkLabel}: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -641,8 +714,9 @@ export async function scanAgentReputation(
     for (const log of newLogs) {
       const decoded = decodeNewFeedback(log);
       if (!decoded) continue;
+      // The provider returns the complete bounded observation. Trust filtering is
+      // a scoring concern so public feedback remains evidence/statistics.
       const clientAddress = decoded.clientAddress.toLowerCase();
-      if (trustedReviewers !== null && !trustedReviewers.has(clientAddress)) continue;
       const key = `${clientAddress}:${decoded.feedbackIndex.toString()}`;
       feedbackMap.set(key, {
         ...decoded,
@@ -657,7 +731,10 @@ export async function scanAgentReputation(
       }
     }
 
-    if (fromBlock === 0n) break;
+    if (fromBlock === 0n) {
+      currentBlock = 0n;
+      break;
+    }
     currentBlock = fromBlock - 1n;
   }
 
@@ -679,75 +756,76 @@ export async function scanAgentReputation(
 // ---------------------------------------------------------------------------
 
 export type AgentCardResult = {
+  status: AgentCardValidationResult["status"];
   card?: AgentCard;
   rawUri?: string;
   error?: string;
   selfReferenceMatch?: boolean;
 };
 
-export async function fetchAgentCard(registrationUri: string): Promise<AgentCardResult> {
-  if (!registrationUri) return { error: "no registration URI" };
+export async function fetchAgentCard(registrationUri: string, expected?: AgentCardExpectation, network: Erc8004Network = DEFAULT_NETWORK): Promise<AgentCardResult> {
+  if (!registrationUri) return { status: "UNAVAILABLE", error: "no registration URI" };
 
   try {
     if (registrationUri.startsWith("data:application/json;base64,")) {
       const b64 = registrationUri.slice("data:application/json;base64,".length);
       if (b64.length > MAX_REGISTRATION_BODY_BYTES) {
-        return { rawUri: registrationUri, error: `data URI payload exceeds ${MAX_REGISTRATION_BODY_BYTES} bytes` };
+        return { status: "UNAVAILABLE", rawUri: registrationUri, error: `data URI payload exceeds ${MAX_REGISTRATION_BODY_BYTES} bytes` };
       }
       const decoded = Buffer.from(b64, "base64");
       if (decoded.length > MAX_REGISTRATION_BODY_BYTES) {
-        return { rawUri: registrationUri, error: `decoded data URI exceeds ${MAX_REGISTRATION_BODY_BYTES} bytes` };
+        return { status: "UNAVAILABLE", rawUri: registrationUri, error: `decoded data URI exceeds ${MAX_REGISTRATION_BODY_BYTES} bytes` };
       }
       const json = JSON.parse(decoded.toString("utf8")) as unknown;
-      const parsed = parseAgentCard(registrationUri, json);
-      if (parsed.parseError) return { rawUri: registrationUri, error: parsed.parseError };
-      return { card: parsed.card, rawUri: registrationUri };
+      const parsed = parseAgentCard(registrationUri, json, expected);
+      if (parsed.parseError) return { status: parsed.status, rawUri: registrationUri, error: parsed.parseError };
+      return { status: parsed.status, rawUri: registrationUri, ...(parsed.card ? { card: parsed.card } : {}), ...(parsed.selfReferenceMatch === undefined ? {} : { selfReferenceMatch: parsed.selfReferenceMatch }) };
     }
 
     const parsed = new URL(registrationUri);
 
     if (parsed.protocol === "ipfs:") {
       const cid = parsed.hostname || parsed.pathname.replace(/^\//, "");
-      if (!cid) return { rawUri: registrationUri, error: "IPFS URI has no CID" };
+      if (!cid) return { status: "INVALID", rawUri: registrationUri, error: "IPFS URI has no CID" };
       const gatewayUrl = `https://ipfs.io/ipfs/${cid}${parsed.pathname !== "/" ? parsed.pathname : ""}${parsed.search}`;
-      return fetchAgentCardFromHttps(gatewayUrl, registrationUri);
+      return fetchAgentCardFromHttps(gatewayUrl, registrationUri, expected, network);
     }
 
     if (parsed.protocol === "https:") {
-      return fetchAgentCardFromHttps(registrationUri, registrationUri);
+      return fetchAgentCardFromHttps(registrationUri, registrationUri, expected, network);
     }
 
-    return { rawUri: registrationUri, error: `unsupported URI scheme: ${parsed.protocol}` };
+    return { status: "INVALID", rawUri: registrationUri, error: `unsupported URI scheme: ${parsed.protocol}` };
   } catch (e) {
-    return { rawUri: registrationUri, error: `invalid registration URI: ${e instanceof Error ? e.message : String(e)}` };
+    return { status: "UNAVAILABLE", rawUri: registrationUri, error: `invalid registration URI: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 
-async function fetchAgentCardFromHttps(url: string, rawUri: string): Promise<AgentCardResult> {
+async function fetchAgentCardFromHttps(url: string, rawUri: string, expected?: AgentCardExpectation, network: Erc8004Network = DEFAULT_NETWORK): Promise<AgentCardResult> {
   try {
-    const result = await hardenedFetch(url, 6000);
+    const result = await hardenedFetch(url, 6000, network);
     if (result.status === 0 && result.body) {
       const redirectUrl = result.body;
       const redirectParsed = new URL(redirectUrl);
       if (redirectParsed.protocol !== "https:") {
-        return { rawUri, error: `redirect to non-HTTPS protocol rejected: ${redirectParsed.protocol}` };
+        return { status: "UNAVAILABLE", rawUri, error: `redirect to non-HTTPS protocol rejected: ${redirectParsed.protocol}` };
       }
-      const redirected = await hardenedFetch(redirectUrl, 5000);
+      const redirected = await hardenedFetch(redirectUrl, 5000, network);
       if (redirected.status !== 200) {
-        return { rawUri, error: `agent card HTTP ${redirected.status} after redirect` };
+        return { status: "UNAVAILABLE", rawUri, error: `agent card HTTP ${redirected.status} after redirect` };
       }
       const json = JSON.parse(redirected.body) as unknown;
-      const parsed = parseAgentCard(rawUri, json);
-      if (parsed.parseError) return { rawUri, error: parsed.parseError };
-      return { card: parsed.card, rawUri };
+      const parsed = parseAgentCard(rawUri, json, expected);
+      if (parsed.parseError) return { status: parsed.status, rawUri, error: parsed.parseError };
+      return { status: parsed.status, rawUri, ...(parsed.card ? { card: parsed.card } : {}), ...(parsed.selfReferenceMatch === undefined ? {} : { selfReferenceMatch: parsed.selfReferenceMatch }) };
     }
-    if (result.status !== 200) return { rawUri, error: `agent card HTTP ${result.status}` };
+    if (result.status !== 200) return { status: "UNAVAILABLE", rawUri, error: `agent card HTTP ${result.status}` };
     const json = JSON.parse(result.body) as unknown;
-    const parsed = parseAgentCard(rawUri, json);
-    if (parsed.parseError) return { rawUri, error: parsed.parseError };
-    return { card: parsed.card, rawUri };
+    const parsed = parseAgentCard(rawUri, json, expected);
+    if (parsed.parseError) return { status: parsed.status, rawUri, error: parsed.parseError };
+    return { status: parsed.status, rawUri, ...(parsed.card ? { card: parsed.card } : {}), ...(parsed.selfReferenceMatch === undefined ? {} : { selfReferenceMatch: parsed.selfReferenceMatch }) };
   } catch (e) {
-    return { rawUri, error: e instanceof Error ? e.message : String(e) };
+    return { status: "UNAVAILABLE", rawUri, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -755,12 +833,12 @@ async function fetchAgentCardFromHttps(url: string, rawUri: string): Promise<Age
 // Redirect-to-private probe
 // ---------------------------------------------------------------------------
 
-export async function probeTargetUrlRedirectsToPrivate(targetUrl: string): Promise<{ redirectsToPrivate: boolean; error?: string }> {
+export async function probeTargetUrlRedirectsToPrivate(targetUrl: string, network: Erc8004Network = DEFAULT_NETWORK): Promise<{ redirectsToPrivate: boolean; error?: string }> {
   try {
     const parsed = new URL(targetUrl);
     if (parsed.protocol !== "https:") return { redirectsToPrivate: false };
 
-    const result = await hardenedFetch(targetUrl, 5000).catch(e => {
+    const result = await hardenedFetch(targetUrl, 5000, network).catch(e => {
       if (e instanceof Error && e.message.includes("SSRF rejected")) {
         return { status: 0, body: "", finalUrl: targetUrl, ssrfRejected: true } as { status: number; body: string; finalUrl: string; ssrfRejected?: boolean };
       }
@@ -771,7 +849,7 @@ export async function probeTargetUrlRedirectsToPrivate(targetUrl: string): Promi
 
     if (result.status === 0 && result.body) {
       const redirectHostname = new URL(result.body).hostname;
-      const isPrivate = await hostnameResolvesToPrivate(redirectHostname);
+      const isPrivate = await hostnameResolvesToPrivate(redirectHostname, network);
       return { redirectsToPrivate: isPrivate };
     }
 

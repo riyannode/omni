@@ -187,7 +187,7 @@ export type RecognizedTagPolicy = {
   /** Direction: higher value = better, or lower value = better */
   direction: "higher_is_better" | "lower_is_better";
   /** Threshold for determining if feedback indicates risk */
-  threshold: number;
+  threshold: string | number;
   /** Expected decimal places for valid feedback */
   expectedDecimals?: number;
   /** Allowed decimal places (if undefined, any 0-18 accepted) */
@@ -207,6 +207,11 @@ export type AgentReputationPolicy = {
   recognizedTags: RecognizedTagPolicy[];
 };
 
+export const DEFAULT_AGENT_REPUTATION_POLICY: AgentReputationPolicy = {
+  trustedReviewers: new Set<string>(),
+  recognizedTags: [],
+};
+
 /**
  * Target URL probe status for feature extraction.
  */
@@ -214,7 +219,8 @@ export type TargetUrlProbeStatus =
   | "NOT_APPLICABLE" // No targetUrl provided
   | "ADVERTISED_VERIFIED" // targetUrl matches advertised endpoint, no issues
   | "ADVERTISED_REDIRECT_TO_PRIVATE" // targetUrl advertised but redirects to private
-  | "NOT_ADVERTISED"; // targetUrl provided but not advertised
+  | "NOT_ADVERTISED" // targetUrl provided but not advertised
+  | "PROBE_UNAVAILABLE"; // target was advertised but the active probe failed
 
 /** Agent-specific risk dimensions, surfaced as a nested optional extension on RiskAssessment. */
 export type AgentRiskDimensions = {
@@ -251,6 +257,8 @@ export type AgentReputationSummary = {
   unrecognizedTags: number;
   /** Number of feedback entries with valid expected decimals. */
   validDecimalsFeedback: number;
+  /** Number of active feedback entries eligible for operator scoring. */
+  scoreEligibleFeedback: number;
   /** Whether the scan covered the full block history (complete) or was bounded. */
   historyCoverage: "complete" | "partial";
   blocksScanned: string; // bigint serialized as decimal string
@@ -278,6 +286,8 @@ export type AgentRisk = {
   services?: AgentServiceObservation[];
   /** True when the caller-supplied targetUrl matches a service endpoint advertised in the verified agent card. */
   targetUrlVerified?: boolean;
+  /** Explicit target attribution state used by the risk engine. */
+  targetUrlStatus?: TargetUrlProbeStatus;
   /** True when OMNI observed the targetUrl redirect to a private/internal address. Only set when targetUrl was caller-supplied AND advertised in the agent's verified card. */
   targetUrlRedirectsToPrivate?: boolean;
   /** ERC-8004 specific policy version for agent scoring. */

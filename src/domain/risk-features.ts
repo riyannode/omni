@@ -1,4 +1,4 @@
-import type { EvidenceCoverageSource, ProvenanceState, RepositoryDependencyVulnerabilityFinding, RepositoryDependencyVulnerabilityStatus, RepositoryDependencyVulnerabilitySummary, RepositoryMaliciousPackageObservation, RepositorySummaryStatus, RepositoryThreatIntelFinding, RepositoryThreatIntelStatus, RepositoryThreatIntelSummary, RiskLevel, RiskSnapshot, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
+import type { AgentIdentityStatus, EvidenceCoverageSource, ProvenanceState, RepositoryDependencyVulnerabilityFinding, RepositoryDependencyVulnerabilityStatus, RepositoryDependencyVulnerabilitySummary, RepositoryMaliciousPackageObservation, RepositorySummaryStatus, RepositoryThreatIntelFinding, RepositoryThreatIntelStatus, RepositoryThreatIntelSummary, RiskLevel, RiskSnapshot, TargetUrlProbeStatus, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
 
 export const RISK_FEATURE_SCHEMA_VERSION = 5 as const;
 
@@ -7,6 +7,7 @@ type SeverityCounts = Record<KnownSeverity, number>;
 type VulnerabilitySeverityCounts = Record<RiskLevel, number>;
 
 export type AgentFeatures = {
+  identityStatus: AgentIdentityStatus | undefined;
   registered: boolean;
   registrationChecked: boolean;
   servicesObserved: boolean;
@@ -17,6 +18,7 @@ export type AgentFeatures = {
   targetUrlAdvertised: boolean;
   targetUrlVerified: boolean;
   targetUrlRedirectsToPrivate: boolean;
+  targetUrlStatus: TargetUrlProbeStatus;
   identityRpcError: boolean;
 };
 
@@ -120,6 +122,7 @@ function threatCounts(summary: RepositoryThreatIntelSummary | undefined): Severi
 function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
   // Default: no agent evidence
   const features: AgentFeatures = {
+    identityStatus: undefined,
     registered: false,
     registrationChecked: false,
     servicesObserved: false,
@@ -130,6 +133,7 @@ function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
     targetUrlAdvertised: false,
     targetUrlVerified: false,
     targetUrlRedirectsToPrivate: false,
+    targetUrlStatus: "NOT_APPLICABLE",
     identityRpcError: false,
   };
 
@@ -138,10 +142,13 @@ function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
   // Extract from evidence
   for (const ev of snapshot.evidence) {
     if (ev.kind === "agent_identity") {
-      const detail = ev.detail as { registered?: boolean; error?: string };
-      features.registered = detail.registered === true;
-      features.registrationChecked = detail.registered === false || detail.registered === true;
-      if (detail.error) features.identityRpcError = true;
+      const detail = ev.detail as { status?: AgentIdentityStatus };
+      if (detail.status === "REGISTERED" || detail.status === "NOT_REGISTERED" || detail.status === "UNAVAILABLE") {
+        features.identityStatus = detail.status;
+        features.registered = detail.status === "REGISTERED";
+        features.registrationChecked = detail.status !== "UNAVAILABLE";
+        features.identityRpcError = detail.status === "UNAVAILABLE";
+      }
     }
     if (ev.kind === "agent_card") {
       const detail = ev.detail as { serviceCount?: number };
@@ -160,14 +167,22 @@ function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
     }
     if (ev.kind === "agent_target_redirect_to_private") {
       features.targetUrlRedirectsToPrivate = true;
+      features.targetUrlStatus = "ADVERTISED_REDIRECT_TO_PRIVATE";
     }
     if (ev.kind === "agent_target_verified") {
       features.targetUrlVerified = true;
       features.targetUrlAdvertised = true;
+      features.targetUrlStatus = "ADVERTISED_VERIFIED";
     }
     if (ev.kind === "agent_target_not_advertised") {
       features.targetUrlAdvertised = false;
       features.targetUrlVerified = false;
+      features.targetUrlStatus = "NOT_ADVERTISED";
+    }
+    if (ev.kind === "agent_target_probe_unavailable") {
+      features.targetUrlAdvertised = true;
+      features.targetUrlVerified = true;
+      features.targetUrlStatus = "PROBE_UNAVAILABLE";
     }
   }
 

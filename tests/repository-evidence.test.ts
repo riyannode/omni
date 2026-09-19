@@ -653,21 +653,21 @@ describe("repository evidence foundation", () => {
     expect(extractRiskFeatures({ ...base, repositoryEvidence: evidence }).schemaVersion).toBe(RISK_FEATURE_SCHEMA_VERSION);
   });
 
-  test("replays v1/v3/v4 package, repository, dependency_set, x402 rows safely", () => {
+  test("replays only v4 repository rows while preserving v1/v3 repository incompatibility", () => {
     const rows = [
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "package" as const, id: "old-package" },           // 0: compatible (safe replay)
       { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "x402_endpoint" as const, id: "old-endpoint" },    // 1: compatible (safe replay)
-      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "repository" as const, id: "old-repository" },     // 2: compatible (safe replay)
+      { snapshotSchemaVersion: 1, featureSchemaVersion: 1, subjectType: "repository" as const, id: "old-repository" },     // 2: incompatible (historical behavior)
       { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "package" as const, id: "historical-package" },    // 3: compatible (safe replay)
       { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "x402_endpoint" as const, id: "historical-endpoint" }, // 4: compatible
       { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "dependency_set" as const, id: "historical-dependencies" }, // 5: compatible
-      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "historical-repository" }, // 6: compatible
+      { snapshotSchemaVersion: 3, featureSchemaVersion: 3, subjectType: "repository" as const, id: "historical-repository" }, // 6: incompatible (historical behavior)
       { snapshotSchemaVersion: 4, featureSchemaVersion: 4, subjectType: "repository" as const, id: "v4-repository" },      // 7: compatible (v4 repo → SAFE_REPLAY)
       { snapshotSchemaVersion: RISK_SNAPSHOT_SCHEMA_VERSION, featureSchemaVersion: RISK_FEATURE_SCHEMA_VERSION, subjectType: "repository" as const, id: "current-repository" } // 8: compatible (current schema)
     ];
     expect(partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION)).toEqual({
-      compatible: [rows[0]!, rows[1]!, rows[2]!, rows[3]!, rows[4]!, rows[5]!, rows[6]!, rows[7]!, rows[8]!],
-      incompatible: [],
+      compatible: [rows[0]!, rows[1]!, rows[3]!, rows[4]!, rows[5]!, rows[7]!, rows[8]!],
+      incompatible: [rows[2]!, rows[6]!],
       schemaVersionsPresent: { snapshot: [1, 3, 4, RISK_SNAPSHOT_SCHEMA_VERSION], feature: [1, 3, 4, RISK_FEATURE_SCHEMA_VERSION] }
     });
   });
@@ -686,8 +686,8 @@ describe("repository evidence foundation", () => {
       expect(featuresEqual(fresh, legacyRow)).toBe(false);
       expect(featuresEqualForCohort(fresh, legacyRow, 1)).toEqual({ equal: true, comparison: "legacy-projected" });
       expect(featuresEqualForCohort(fresh, legacyRow, 3, snapshot.subject.type)).toEqual({ equal: true, comparison: "legacy-projected" });
-      // Repository is now in SAFE_REPLAY_SUBJECT_KINDS, so v3 repository rows use legacy-projected comparison
-      expect(featuresEqualForCohort({ repository: { old: true } }, { repository: { old: false } }, 3, "repository")).toEqual({ equal: true, comparison: "legacy-projected" });
+      // v3 repository rows retain the pre-repair current-schema comparison.
+      expect(featuresEqualForCohort({ repository: { old: true } }, { repository: { old: false } }, 3, "repository")).toEqual({ equal: false, comparison: "current-schema" });
       // Real semantic change on the shared surface still counts as drift.
       const driftedLegacy = { ...legacyRow, vulnerabilityCount: 7 };
       expect(featuresEqualForCohort(fresh, driftedLegacy, 1)).toEqual({ equal: false, comparison: "legacy-projected" });

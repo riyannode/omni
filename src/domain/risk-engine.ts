@@ -87,6 +87,7 @@ function repositoryRiskSummary(snapshot: RiskSnapshot, features: RiskFeatures, p
 }
 
 function scoreStatus(features: RiskFeatures): ScoreStatus {
+  if (features.subject.type === "agent" && features.agent.identityStatus !== "REGISTERED") return "insufficient_evidence";
   if (features.coverage.expected === 0 || features.coverage.completed === 0) return "insufficient_evidence";
   if (features.subject.type === "repository" && features.repository.present && (
     (features.repository.dependencyVulnerabilityStatus !== undefined && features.repository.dependencyVulnerabilityStatus !== "NOT_CHECKED" && !features.repository.dependencyVulnerabilitySummaryValid)
@@ -160,10 +161,10 @@ function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, pol
   // --- agentIdentity dimension ---
   let agentIdentityRisk: RiskLevel = "unknown";
   let identityRiskScore = 0;
-  if (agent.registered) {
+  if (agent.identityStatus === "REGISTERED") {
     agentIdentityRisk = "low";
     identityRiskScore = 0;
-  } else if (agent.registrationChecked) {
+  } else if (agent.identityStatus === "NOT_REGISTERED") {
     // Confirmed nonexistent token
     agentIdentityRisk = "unknown"; // not_registered is not itself malicious
     identityRiskScore = 0;
@@ -203,8 +204,8 @@ function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, pol
   if (agent.targetUrlRedirectsToPrivate) {
     targetUrlRiskScore = policy.score.maximum; // Critical contradiction
     push(signals, "AGENT_TARGET_REDIRECT_TO_PRIVATE", "critical", "OMNI active probe", { targetUrl: snapshot.evidence.find(e => e.kind === "agent_target_redirect_to_private")?.detail ?? {} });
-  } else if (agent.targetUrlAdvertised && !agent.targetUrlVerified) {
-    // Supplied URL not advertised — mild observation
+  } else if (agent.targetUrlStatus === "NOT_ADVERTISED") {
+    // Supplied URL was not advertised — deterministic contradiction.
     targetUrlRiskScore = policy.endpoint.unlisted;
     push(signals, "AGENT_TARGET_NOT_ADVERTISED", "medium", "OMNI active probe", {});
   }
@@ -224,13 +225,13 @@ function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, pol
 
   // Agent floor: if registered but no real contradictions observed, score can be 0
   // Missing evidence affects coverage, not observed risk
-  if (!agent.registered && agent.registrationChecked) {
+  if (agent.identityStatus === "NOT_REGISTERED") {
     // Confirmed unregistered: score stays 0, force manual_review (never auto proceed/do_not_proceed)
     score = 0;
   }
 
   // Confirmed unregistered => manual_review (not proceed, not do_not_proceed)
-  const finalRecommendation = (!agent.registered && agent.registrationChecked)
+  const finalRecommendation = (agent.identityStatus === "NOT_REGISTERED")
     ? "manual_review" as Recommendation
     : recommendation(score, policy, status, snapshot.subject.type);
 

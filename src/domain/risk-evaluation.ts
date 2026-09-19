@@ -10,20 +10,21 @@ export type SubjectKind = "package" | "repository" | "dependency_set" | "x402_en
 export type ReplayableRow = VersionedSchemaRow & { subjectType: SubjectKind };
 
 // Historical rows whose feature extraction is semantically identical under the
-// current extractor: supported non-repository subjects never read repository
-// evidence, so replaying them cannot reinterpret historical repository facts.
+// current extractor. The v4 cohort is the only historical cohort widened by
+// the agent schema repair; v1/v3 repository rows retain their prior behavior.
 // NOTE: "agent" is intentionally excluded — agent rows carry ERC-8004
 // on-chain evidence whose semantics are subject to change; they are never
 // replayed from historical snapshots until explicitly added here.
-const SAFE_REPLAY_SUBJECT_KINDS: readonly SubjectKind[] = ["package", "repository", "x402_endpoint", "dependency_set"];
+const SAFE_REPLAY_V4_SUBJECT_KINDS: readonly SubjectKind[] = ["package", "repository", "x402_endpoint", "dependency_set"];
+const SAFE_REPLAY_LEGACY_SUBJECT_KINDS: readonly SubjectKind[] = ["package", "x402_endpoint", "dependency_set"];
 
 function isSafeReplay(row: ReplayableRow, snapshotSchemaVersion: number, featureSchemaVersion: number): boolean {
   if (row.snapshotSchemaVersion === snapshotSchemaVersion && row.featureSchemaVersion === featureSchemaVersion) return true;
   // v4→v5: agent subject type is new; all other v4 subject kinds have identical
   // feature extraction semantics (agent subject wasn't captured in v4).
-  if (row.snapshotSchemaVersion === 4 && row.featureSchemaVersion === 4) return SAFE_REPLAY_SUBJECT_KINDS.includes(row.subjectType);
-  if (row.snapshotSchemaVersion === 3 && row.featureSchemaVersion === 3) return SAFE_REPLAY_SUBJECT_KINDS.includes(row.subjectType);
-  if (row.snapshotSchemaVersion === 1 && row.featureSchemaVersion === 1) return SAFE_REPLAY_SUBJECT_KINDS.includes(row.subjectType);
+  if (row.snapshotSchemaVersion === 4 && row.featureSchemaVersion === 4) return SAFE_REPLAY_V4_SUBJECT_KINDS.includes(row.subjectType);
+  if (row.snapshotSchemaVersion === 3 && row.featureSchemaVersion === 3) return SAFE_REPLAY_LEGACY_SUBJECT_KINDS.includes(row.subjectType);
+  if (row.snapshotSchemaVersion === 1 && row.featureSchemaVersion === 1) return SAFE_REPLAY_LEGACY_SUBJECT_KINDS.includes(row.subjectType);
   return false;
 }
 
@@ -69,7 +70,11 @@ export function featuresEqual(left: unknown, right: unknown): boolean {
 // later feature schemas. Project those rows to their shared non-repository
 // surface; current-cohort rows remain byte-exact.
 export function featuresEqualForCohort(left: unknown, right: unknown, snapshotSchemaVersion: number, subjectType?: SubjectKind): { equal: boolean; comparison: "current-schema" | "legacy-projected" } {
-  const canProjectLegacySurface = subjectType === undefined ? snapshotSchemaVersion === 1 : SAFE_REPLAY_SUBJECT_KINDS.includes(subjectType);
+  const canProjectLegacySurface = subjectType === undefined
+    ? snapshotSchemaVersion === 1
+    : snapshotSchemaVersion === 4
+      ? SAFE_REPLAY_V4_SUBJECT_KINDS.includes(subjectType)
+      : SAFE_REPLAY_LEGACY_SUBJECT_KINDS.includes(subjectType);
   if (snapshotSchemaVersion < 5 && canProjectLegacySurface) {
     return { equal: featuresEqual(projectLegacyFeatures(left), projectLegacyFeatures(right)), comparison: "legacy-projected" };
   }
