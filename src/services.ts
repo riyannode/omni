@@ -1113,8 +1113,8 @@ export class OmniIntelligence {
                 ? policy.allowedDecimals === undefined || policy.allowedDecimals.includes(fb.valueDecimals)
                 : fb.valueDecimals === policy.expectedDecimals;
               const reviewerTrusted = configuredReviewers.has(fb.clientAddress.toLowerCase());
+              if (decimalsAllowed && fb.valueDecimals <= 18) validDecimalsFeedback++;
               if (decimalsAllowed && reviewerTrusted && decimalParts(policy.threshold) && fb.valueDecimals <= 18) {
-                validDecimalsFeedback++;
                 scoreEligibleFeedback++;
                 const riskScore = thresholdBreached(fb.value, fb.valueDecimals, policy) ? policy.riskWeight : 0;
                 maxRiskFromTrusted = Math.max(maxRiskFromTrusted, riskScore);
