@@ -19,9 +19,17 @@ export const endpointQuery = z.object({
   url: z.string().url().max(2048)
 });
 
+/**
+ * Agent risk query parameters.
+ *
+ * chain: CAIP-2 chain reference (e.g. "eip155:1"). REQUIRED.
+ * agentId: decimal uint256 string only (NO hex). REQUIRED.
+ * targetUrl: optional HTTPS URL (caller-supplied, opt-in).
+ */
 export const agentQuery = z.object({
-  /** ERC-8004 agent token id. Accepts decimal or 0x-prefixed hex string. */
-  agentId: z.string().regex(/^(0x[0-9a-fA-F]{1,64}|[0-9]{1,78})$/, "agentId must be a decimal integer or 0x-prefixed hex"),
-  /** Optional target URL to check for redirect-to-private (caller-supplied, opt-in). */
-  targetUrl: z.string().url().max(2048).optional(),
+  chain: z.string().regex(/^eip155:[0-9]+$/, "chain must be a CAIP-2 chain reference (e.g. eip155:1)"),
+  agentId: z.string().regex(/^[0-9]{1,78}$/, "agentId must be a decimal uint256 string (hex not accepted)"),
+  targetUrl: z.string().url().max(2048)
+    .refine((url) => url.startsWith("https://"), "targetUrl must be HTTPS in v1")
+    .optional(),
 });

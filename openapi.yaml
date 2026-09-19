@@ -321,12 +321,22 @@ paths:
         - { $ref: '#/components/parameters/IdempotencyKey' }
         - { $ref: '#/components/parameters/Accept' }
         - in: query
-          name: agentId
+          name: chain
           required: true
-          description: ERC-8004 agent token id. Accepts decimal or 0x-prefixed hex string.
+          description: >
+            CAIP-2 chain reference (e.g. eip155:1 for Ethereum mainnet, eip155:8453 for Base mainnet).
+            ERC-8004 identity is chain-specific — the same token ID on different chains is a different subject.
           schema:
             type: string
-            pattern: '^(0x[0-9a-fA-F]{1,64}|[0-9]{1,78})$'
+            pattern: '^eip155:[0-9]+$'
+          example: "eip155:1"
+        - in: query
+          name: agentId
+          required: true
+          description: ERC-8004 agent token id as a decimal uint256 string (hex not accepted).
+          schema:
+            type: string
+            pattern: '^[0-9]{1,78}$'
           example: "42"
         - in: query
           name: targetUrl
@@ -335,6 +345,7 @@ paths:
             Optional HTTPS URL to probe for redirect-to-private. Only probed when it matches
             a service endpoint advertised in the verified agent card. Caller-supplied URLs that
             are not advertised in the agent card are rejected before any probe (no risk increase).
+            HTTP (non-HTTPS) URLs are rejected during input validation before payment.
           schema:
             type: string
             format: uri
@@ -478,7 +489,9 @@ components:
       required: [type, id]
       properties:
         type: { type: string, enum: [package, repository, dependency_set, x402_endpoint, agent] }
-        id: { type: string }
+        id:
+          type: string
+          description: "Canonical subject ID. For agents: eip155:<chainId>:<identityRegistry>:<agentId>"
     Evidence:
       type: object
       required: [source, kind, observedAt, detail]

@@ -169,6 +169,7 @@ export type RiskAssessment = {
 // ---------------------------------------------------------------------------
 
 export const AGENT_COVERAGE_MODEL_VERSION = "agent-coverage-v1" as const;
+export const AGENT_POLICY_VERSION = "omni-agent-risk-v1" as const;
 
 export type AgentIdentityRisk = "registered" | "unregistered" | "unknown";
 export type AgentReputationRisk = "positive" | "neutral" | "negative" | "insufficient" | "unknown";
@@ -199,9 +200,14 @@ export type AgentReputationSummary = {
   totalFeedback: number;
   activeFeedback: number;
   revokedFeedback: number;
-  positiveRatings: number;
-  negativeRatings: number;
-  neutralRatings: number;
+  /** Number of unique reviewers observed. */
+  uniqueReviewers: number;
+  /** Number of recognized tags (operator policy). */
+  recognizedTags: number;
+  /** Number of unrecognized tags. */
+  unrecognizedTags: number;
+  /** Number of feedback entries with valid expected decimals. */
+  validDecimalsFeedback: number;
   /** Whether the scan covered the full block history (complete) or was bounded. */
   historyCoverage: "complete" | "partial";
   blocksScanned: string; // bigint serialized as decimal string
@@ -231,6 +237,10 @@ export type AgentRisk = {
   targetUrlVerified?: boolean;
   /** True when OMNI observed the targetUrl redirect to a private/internal address. Only set when targetUrl was caller-supplied AND advertised in the agent's verified card. */
   targetUrlRedirectsToPrivate?: boolean;
+  /** ERC-8004 specific policy version for agent scoring. */
+  policyVersion: string;
+  /** Coverage model version for agent assessment. */
+  coverageVersion: string;
 };
 
 export type AgentRiskAssessment = RiskAssessment & {

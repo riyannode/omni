@@ -80,7 +80,7 @@ function projectLegacyFeatures(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "schemaVersion" || key === "repository") continue;
+    if (key === "schemaVersion" || key === "repository" || key === "agent") continue;
     result[key] = canonicalize(item);
   }
   return result;

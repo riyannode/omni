@@ -6,6 +6,20 @@ type KnownSeverity = Exclude<RiskLevel, "unknown">;
 type SeverityCounts = Record<KnownSeverity, number>;
 type VulnerabilitySeverityCounts = Record<RiskLevel, number>;
 
+export type AgentFeatures = {
+  registered: boolean;
+  registrationChecked: boolean;
+  servicesObserved: boolean;
+  cardUnavailable: boolean;
+  registrationMismatch: boolean;
+  trustedFeedbackExists: boolean;
+  strongestTrustedRisk: number | undefined;
+  targetUrlAdvertised: boolean;
+  targetUrlVerified: boolean;
+  targetUrlRedirectsToPrivate: boolean;
+  identityRpcError: boolean;
+};
+
 export type RiskFeatures = {
   schemaVersion: typeof RISK_FEATURE_SCHEMA_VERSION;
   subject: RiskSnapshot["subject"];
@@ -43,6 +57,7 @@ export type RiskFeatures = {
     dependencyThreatIntelCountsBySeverity: SeverityCounts;
     retainedDependencyThreatIntelFindings: RepositoryThreatIntelFinding[];
   };
+  agent: AgentFeatures;
   scorecard: number | undefined;
   threatIntel: { checked: boolean; findings: ThreatFinding[]; matchCount: number; countsBySeverity: SeverityCounts };
   endpoint: { present: boolean; listedOnCircle: boolean | undefined; supportsGateway: boolean | undefined; supportsVanilla: boolean | undefined; responseStatus: number | undefined };
@@ -100,6 +115,63 @@ function threatCounts(summary: RepositoryThreatIntelSummary | undefined): Severi
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) result[level] = value;
   }
   return result;
+}
+
+function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
+  // Default: no agent evidence
+  const features: AgentFeatures = {
+    registered: false,
+    registrationChecked: false,
+    servicesObserved: false,
+    cardUnavailable: false,
+    registrationMismatch: false,
+    trustedFeedbackExists: false,
+    strongestTrustedRisk: undefined,
+    targetUrlAdvertised: false,
+    targetUrlVerified: false,
+    targetUrlRedirectsToPrivate: false,
+    identityRpcError: false,
+  };
+
+  if (snapshot.subject.type !== "agent") return features;
+
+  // Extract from evidence
+  for (const ev of snapshot.evidence) {
+    if (ev.kind === "agent_identity") {
+      const detail = ev.detail as { registered?: boolean; error?: string };
+      features.registered = detail.registered === true;
+      features.registrationChecked = detail.registered === false || detail.registered === true;
+      if (detail.error) features.identityRpcError = true;
+    }
+    if (ev.kind === "agent_card") {
+      const detail = ev.detail as { serviceCount?: number };
+      features.servicesObserved = (detail.serviceCount ?? 0) > 0;
+    }
+    if (ev.kind === "agent_card_unavailable") {
+      features.cardUnavailable = true;
+    }
+    if (ev.kind === "agent_registration_mismatch") {
+      features.registrationMismatch = true;
+    }
+    if (ev.kind === "agent_trusted_feedback") {
+      features.trustedFeedbackExists = true;
+      const detail = ev.detail as { strongestRisk?: number };
+      if (detail.strongestRisk !== undefined) features.strongestTrustedRisk = detail.strongestRisk;
+    }
+    if (ev.kind === "agent_target_redirect_to_private") {
+      features.targetUrlRedirectsToPrivate = true;
+    }
+    if (ev.kind === "agent_target_verified") {
+      features.targetUrlVerified = true;
+      features.targetUrlAdvertised = true;
+    }
+    if (ev.kind === "agent_target_not_advertised") {
+      features.targetUrlAdvertised = false;
+      features.targetUrlVerified = false;
+    }
+  }
+
+  return features;
 }
 
 export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
@@ -177,6 +249,7 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
       dependencyThreatIntelCountsBySeverity: threatCounts(threatObservation?.summary),
       retainedDependencyThreatIntelFindings: threatObservation?.findings ?? []
     },
+    agent: extractAgentFeatures(snapshot),
     scorecard: snapshot.scorecard,
     threatIntel: { checked: snapshot.threatIntelChecked === true, findings: threatFindings, matchCount: threatFindings.length, countsBySeverity },
     endpoint: { present: snapshot.endpoint !== undefined, listedOnCircle: snapshot.endpoint?.listedOnCircle, supportsGateway: snapshot.endpoint?.supportsGateway, supportsVanilla: snapshot.endpoint?.supportsVanilla, responseStatus: snapshot.endpoint?.responseStatus },
