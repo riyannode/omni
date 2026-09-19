@@ -3,20 +3,8 @@ info:
   title: OMNI Pre-Execution Trust & Risk API
   version: 0.2.0
   description: >
-    Machine-consumable pre-execution risk evidence for software supply chain and
-    x402 services, paid per request with Circle Gateway nanopayments.
-    Production facilitator selection is controlled at runtime by CIRCLE_FACILITATOR_URL.
-    The Arc mainnet target is https://gateway-api.circle.com.
-    Arc Mainnet paid lifecycle: verified on September 17, 2026 on the tested
-    `GET /v1/package/risk` route with a real 5000-atomic / 0.005 USDC x402
-    payment on Arc Mainnet (`eip155:5042`), using Circle Agent Wallet + Circle
-    Gateway (`https://gateway-api.circle.com`), HTTP 200, durable persistence,
-    reconciliation, and replay without duplicate settlement.
-    Historical Arc Testnet paid lifecycle was verified earlier on the tested
-    path; it is not evidence of mainnet paid acceptance or exhaustive
-    route/multi-chain coverage.
-    The live PAYMENT-REQUIRED challenge defines the offered payment options;
-    no fixed network or buyer wallet is required by this API contract.
+    Machine-consumable pre-execution risk evidence for software supply chain and x402 services.
+    Paid per request through Circle Gateway nanopayments, including Arc Mainnet.
   contact:
     email: askomni.xyz@gmail.com
   x-guidance: >
