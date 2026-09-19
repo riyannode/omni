@@ -625,15 +625,16 @@ describe("ERC-8004 reputation scan", () => {
       if (method === "eth_blockNumber") return "0x2710";
       const filter = params[0] as { topics: string[]; fromBlock: string };
       const from = BigInt(filter.fromBlock);
-      if (filter.topics[0] === NEW_FEEDBACK_TOPIC) return from === 0n ? [feedbackLog(1n, -1n, 0), feedbackLog(2n, -50n, 1)] : [];
+      if (filter.topics[0] === NEW_FEEDBACK_TOPIC) return from === 0n ? [feedbackLog(1n, -1n, 0), feedbackLog(2n, -50n, 1), feedbackLog(9007199254740992n, 0n, 0)] : [];
       return from === 5001n ? [revokedLog(1n)] : [];
     } } as never;
     const scan = await scanAgentReputation(providerConfig, 42n, new Set(), 3, network);
     expect(scan.historyCoverage).toBe("complete");
-    expect(scan.feedback).toHaveLength(2);
+    expect(scan.feedback).toHaveLength(3);
     expect(scan.feedback.find(item => item.feedbackIndex === 1n)?.revoked).toBe(true);
     expect(scan.feedback.find(item => item.feedbackIndex === 2n)?.revoked).toBe(false);
     expect(scan.feedback.find(item => item.feedbackIndex === 2n)?.value).toBe(-50n);
+    expect(scan.feedback.find(item => item.feedbackIndex === 9007199254740992n)?.feedbackIndex).toBe(9007199254740992n);
   });
 
   test("event cap surfaces truncation and partial coverage", async () => {
@@ -754,5 +755,13 @@ describe("OmniIntelligence agent service path", () => {
     const lowerFeedback = [{ ...feedback[0]!, value: 9n }];
     const lower = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, lowerFeedback), lowerPolicy).agentRisk("42", "eip155:1");
     expect(lower.riskScore).toBe(70);
+
+    const higherSafe = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, value: 9n }]), policy).agentRisk("42", "eip155:1");
+    expect(higherSafe.riskScore).toBe(0);
+    const lowerSafe = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [feedback[0]!]), lowerPolicy).agentRisk("42", "eip155:1");
+    expect(lowerSafe.riskScore).toBe(0);
+    const negativePolicy = { trustedReviewers: new Set([trusted]), recognizedTags: [{ tag: "quality", direction: "higher_is_better", threshold: "0", expectedDecimals: 0, riskWeight: 70 }] };
+    const negative = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, value: -1n, valueDecimals: 0 }]), negativePolicy).agentRisk("42", "eip155:1");
+    expect(negative.riskScore).toBe(70);
   });
 });
