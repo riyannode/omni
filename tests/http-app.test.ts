@@ -531,7 +531,6 @@ describe("x402 discovery manifest", () => {
       server.once("listening", resolve);
       server.once("error", reject);
     });
-
     const address = server.address() as AddressInfo;
     const origin = `http://127.0.0.1:${address.port}`;
 
@@ -546,5 +545,91 @@ describe("x402 discovery manifest", () => {
     expect(ready.status).toBe(503);
     expect(yamlRes.status).toBe(200);
     expect(jsonRes.status).toBe(200);
+  });
+
+  test("GET /v1/agent/risk rejects unsupported chain with HTTP 400 before payment", async () => {
+    let gatewayInvoked = false;
+    let agentRiskInvoked = false;
+    const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };
+    const omniMock: OmniIntelligence = {
+      async agentRisk() { agentRiskInvoked = true; throw new Error("should not be called"); },
+    } as unknown as OmniIntelligence;
+    const app = createApp({
+      omni: omniMock,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:99999&agentId=1`);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe("unsupported_chain");
+    expect(gatewayInvoked).toBe(false);
+    expect(agentRiskInvoked).toBe(false);
+  });
+
+  test("GET /v1/agent/risk rejects invalid uint256 with HTTP 400 before payment", async () => {
+    let gatewayInvoked = false;
+    const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    // UINT256_MAX + 1
+    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=115792089237316195423570985008687907853269984665640564039457584007913129639936`);
+    expect(res.status).toBe(400);
+    expect(gatewayInvoked).toBe(false);
+  });
+
+  test("GET /v1/agent/risk rejects non-HTTPS targetUrl with HTTP 400 before payment", async () => {
+    let gatewayInvoked = false;
+    const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=1&targetUrl=http://example.com/api`);
+    expect(res.status).toBe(400);
+    expect(gatewayInvoked).toBe(false);
   });
 });

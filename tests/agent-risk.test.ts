@@ -243,7 +243,8 @@ describe("RiskEngine agent subjects", () => {
       evidence: [{ source: "ERC-8004 IdentityRegistry", kind: "agent_identity", observedAt: new Date().toISOString(), detail: { registered: true } }],
     });
     const assessment = engine.assess(snapshot);
-    expect(assessment.policyVersion).toBe(DEFAULT_RISK_POLICY.version);
+    // Agent assessments use the agent-specific policy version
+    expect(assessment.policyVersion).toBe("omni-agent-risk-v1");
   });
 });
 

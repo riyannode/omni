@@ -1,4 +1,5 @@
-import type { Recommendation, RepositoryDependencyVulnerabilityFinding, RepositoryThreatIntelFinding, RepositoryRiskSummary, RiskAssessment, RiskLevel, RiskDimensionLevel, RiskSignal, RiskSnapshot, ScoreStatus, AGENT_POLICY_VERSION } from "./risk.ts";
+import type { Recommendation, RepositoryDependencyVulnerabilityFinding, RepositoryThreatIntelFinding, RepositoryRiskSummary, RiskAssessment, RiskLevel, RiskDimensionLevel, RiskSignal, RiskSnapshot, ScoreStatus } from "./risk.ts";
+import { AGENT_POLICY_VERSION } from "./risk.ts";
 import { extractRiskFeatures, type RiskFeatures } from "./risk-features.ts";
 import { DEFAULT_RISK_POLICY, type ReadonlyRiskPolicy } from "./risk-policy.ts";
 
@@ -238,7 +239,7 @@ function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, pol
 
   return {
     subject: snapshot.subject,
-    policyVersion: policy.version,
+    policyVersion: AGENT_POLICY_VERSION,
     scoreStatus: status,
     recommendation: finalRecommendation,
     riskScore: score,
