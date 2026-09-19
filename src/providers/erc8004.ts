@@ -66,6 +66,13 @@ export type Erc8004Network = {
   rpcPost?: (rpcUrl: string, method: string, params: unknown[], timeoutMs: number) => Promise<unknown>;
 };
 
+export class Erc8004ExecutionRevertedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "Erc8004ExecutionRevertedError";
+  }
+}
+
 const DEFAULT_NETWORK: Erc8004Network = {
   resolve4: hostname => dns.resolve4(hostname),
   resolve6: hostname => dns.resolve6(hostname),
@@ -155,8 +162,10 @@ const PRIVATE_RANGES: Array<{ start: bigint; end: bigint }> = (function () {
     return { start, end };
   }
   return [
-    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-    "127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "100.64.0.0/10",
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+    "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+    "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+    "224.0.0.0/4", "240.0.0.0/4",
   ].map(range);
 })();
 
@@ -271,6 +280,7 @@ async function hardenedFetch(url: string, timeoutMs = 5000, network: Erc8004Netw
         "User-Agent": "OMNI-agent-risk/1 (+https://api.askomni.xyz)",
         "Accept": "application/json",
       },
+      servername: hostname,
       timeout: timeoutMs,
     };
     const req = network.request(options, (res) => {
@@ -332,6 +342,7 @@ async function rpcPost(rpcUrl: string, method: string, params: unknown[], timeou
         "Content-Length": Buffer.byteLength(bodyStr),
         "User-Agent": "OMNI-agent-risk/1 (+https://api.askomni.xyz)",
       },
+      servername: hostname,
       timeout: timeoutMs,
     };
     const req = network.request(options, (res) => {
@@ -340,8 +351,10 @@ async function rpcPost(rpcUrl: string, method: string, params: unknown[], timeou
       res.on("end", () => {
         try {
           const json = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonRpcResponse;
-          if (json.error) reject(new Error(`RPC error ${json.error.code}: ${json.error.message}`));
-          else resolve(json.result);
+          if (json.error) {
+            if (json.error.code === -32000 && /^execution reverted\b/i.test(json.error.message)) reject(new Erc8004ExecutionRevertedError(json.error.message));
+            else reject(new Error(`RPC error ${json.error.code}: ${json.error.message}`));
+          } else resolve(json.result);
         } catch (e) {
           reject(new Error(`rpcPost: invalid JSON response: ${e instanceof Error ? e.message : String(e)}`));
         }
@@ -485,12 +498,11 @@ export async function readAgentIdentity(
   try {
     const callData = "0x" + SEL.ownerOf + encodeUint256(agentId);
     const result = await rpcPost(rpcUrl, "eth_call", [{ to: identityRegistry, data: callData }, "latest"], 8000, network) as string;
-    if (typeof result === "string" && result.length >= 42) {
-      ownerAddress = decodeAddress(result.replace(/^0x/i, ""));
-    }
+    if (typeof result !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(result)) throw new Error("malformed ownerOf response");
+    ownerAddress = decodeAddress(result.slice(2));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("revert") || msg.includes("execution reverted")) {
+    if (e instanceof Erc8004ExecutionRevertedError) {
       return { chainId, registered: false, status: "NOT_REGISTERED" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: undefined };
     }
     return { chainId, registered: false, status: "UNAVAILABLE" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: msg };

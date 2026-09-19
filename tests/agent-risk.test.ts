@@ -21,7 +21,7 @@ import { RISK_SNAPSHOT_SCHEMA_VERSION, AGENT_POLICY_VERSION } from "../src/domai
 import { RISK_FEATURE_SCHEMA_VERSION, extractRiskFeatures } from "../src/domain/risk-features.ts";
 import { partitionCompatibleRows } from "../src/domain/risk-evaluation.ts";
 import type { ReplayableRow } from "../src/domain/risk-evaluation.ts";
-import { extractServices, getChainConfig, getChainRpcUrl, NEW_FEEDBACK_TOPIC, FEEDBACK_REVOKED_TOPIC, readAgentIdentity, scanAgentReputation, parseAgentCard, fetchAgentCard, isPrivateIp, hostnameResolvesToPrivate, MAX_FEEDBACK_EVENTS } from "../src/providers/erc8004.ts";
+import { extractServices, getChainConfig, getChainRpcUrl, NEW_FEEDBACK_TOPIC, FEEDBACK_REVOKED_TOPIC, Erc8004ExecutionRevertedError, readAgentIdentity, scanAgentReputation, parseAgentCard, fetchAgentCard, isPrivateIp, hostnameResolvesToPrivate, MAX_FEEDBACK_EVENTS } from "../src/providers/erc8004.ts";
 import { encodeAbiParameters, keccak256, stringToHex } from "viem";
 import { OmniIntelligence } from "../src/services.ts";
 import { CachedLoader } from "../src/data/cache.ts";
@@ -554,7 +554,7 @@ describe("ERC-8004 identity status", () => {
   });
 
   test("confirmed nonexistent/revert is NOT_REGISTERED", async () => {
-    const result = await readAgentIdentity(providerConfig, 42n, rpcFixture(new Error("execution reverted: nonexistent token")));
+    const result = await readAgentIdentity(providerConfig, 42n, rpcFixture(new Erc8004ExecutionRevertedError("execution reverted: nonexistent token")));
     expect(result).toMatchObject({ status: "NOT_REGISTERED", registered: false, error: undefined });
   });
 
@@ -565,6 +565,12 @@ describe("ERC-8004 identity status", () => {
       expect(result.registered).toBe(false);
       expect(result.error).toContain(error.message);
     }
+  });
+
+  test("malformed ownerOf data is UNAVAILABLE", async () => {
+    const result = await readAgentIdentity(providerConfig, 42n, rpcFixture("0x1234"));
+    expect(result.status).toBe("UNAVAILABLE");
+    expect(result.registered).toBe(false);
   });
 });
 

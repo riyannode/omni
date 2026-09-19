@@ -1021,6 +1021,7 @@ export class OmniIntelligence {
     let agentValidation: AgentRisk["dimensions"]["agentValidation"] = "unknown";
     let cardUnavailable = false;
     let registrationMismatch = false;
+    let cardVerified = false;
 
     if (isRegistered && primaryRegistrationUri) {
       try {
@@ -1044,8 +1045,9 @@ export class OmniIntelligence {
             observedAt,
             detail: { registrationUri: primaryRegistrationUri, error: cardResult.error },
           });
-        } else if (cardResult.card) {
+        } else if (cardResult.card && cardResult.status === "SELF_REFERENCE_MATCH") {
           const card = cardResult.card;
+          cardVerified = true;
           if (typeof card.name === "string") agentName = card.name.slice(0, 256);
           if (typeof card.description === "string") agentDescription = card.description.slice(0, 1024);
           services = extractServices(card);
@@ -1214,7 +1216,7 @@ export class OmniIntelligence {
     let targetUrlRedirectsToPrivate: boolean | undefined;
     let targetUrlStatus: AgentRisk["targetUrlStatus"];
 
-    if (targetUrl && isRegistered && services && services.length > 0) {
+    if (targetUrl && isRegistered && cardVerified && services && services.length > 0) {
       const advertisedEndpoints = services.map(s => s.endpoint).filter((e): e is string => typeof e === "string");
       // Canonical URL matching — exact match only
       const isAdvertised = advertisedEndpoints.some(ep => {
@@ -1260,7 +1262,7 @@ export class OmniIntelligence {
           detail: { targetUrl },
         });
       }
-    } else if (targetUrl && isRegistered && (!services || services.length === 0)) {
+    } else if (targetUrl && isRegistered && cardVerified && (!services || services.length === 0)) {
       // No services advertised — target URL cannot match
       targetUrlVerified = false;
       targetUrlStatus = "NOT_ADVERTISED";
@@ -1270,6 +1272,9 @@ export class OmniIntelligence {
         observedAt,
         detail: { targetUrl, reason: "no_services_advertised" },
       });
+    } else if (targetUrl && isRegistered) {
+      targetUrlStatus = "PROBE_UNAVAILABLE";
+      evidence.push({ source: "OMNI active probe", kind: "agent_target_probe_unavailable", observedAt, detail: { targetUrl, reason: "verified_agent_card_unavailable" } });
     } else if (targetUrl && !isRegistered) {
       targetUrlVerified = false;
       targetUrlStatus = identityProbeStatus === "UNAVAILABLE" ? "PROBE_UNAVAILABLE" : "NOT_ADVERTISED";
