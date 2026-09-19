@@ -95,12 +95,15 @@ describe("HTTP machine-readable documents", () => {
     expect(apiResponse.headers.get("content-type")).toContain("application/yaml");
     const llms = await llmsResponse.text();
     const yaml = await apiResponse.text();
-    for (const document of [llms, yaml]) {
+    for (const document of [llms]) {
       expect(document).toContain("https://gateway-api.circle.com");
-      expect(document).toContain("Arc Mainnet paid lifecycle: verified on September 17, 2026 on the tested");
-      expect(document).toContain("Historical Arc Testnet paid lifecycle was verified earlier on the tested");
       expect(document).not.toMatch(/ARC-TESTNET|eip155:5042002|gateway-api-testnet|Arc Mainnet paid lifecycle verified/);
     }
+    expect(yaml).not.toMatch(/ARC-TESTNET|eip155:5042002|gateway-api-testnet|Arc Mainnet paid lifecycle verified/);
+    expect(llms).toContain("Arc Mainnet paid lifecycle: verified on September 17, 2026 on the tested");
+    expect(llms).toContain("Historical Arc Testnet paid lifecycle was verified earlier on the tested");
+    expect(yaml).toContain("Machine-consumable pre-execution risk evidence for software supply chain and x402 services.");
+    expect(yaml).toContain("Paid per request through Circle Gateway nanopayments, including Arc Mainnet.");
     const generic = llms.split("## Mainnet payment guidance")[1]!.split("## TRY WITH YOUR AGENT")[0]!;
     expect(generic).toContain("any acceptable Circle-supported MAINNET option actually offered by PAYMENT-REQUIRED");
     expect(generic).toContain("No testnet use or fallback");
