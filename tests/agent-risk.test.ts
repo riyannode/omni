@@ -631,16 +631,18 @@ describe("ERC-8004 reputation scan", () => {
       if (method === "eth_blockNumber") return "0x2710";
       const filter = params[0] as { topics: string[]; fromBlock: string };
       const from = BigInt(filter.fromBlock);
-      if (filter.topics[0] === NEW_FEEDBACK_TOPIC) return from === 0n ? [feedbackLog(1n, -1n, 0), feedbackLog(2n, -50n, 1), feedbackLog(9007199254740992n, 0n, 0)] : [];
-      return from === 5001n ? [revokedLog(1n)] : [];
+      if (filter.topics[0] === NEW_FEEDBACK_TOPIC) return from === 0n ? [feedbackLog(1n, -1n, 0), feedbackLog(2n, -50n, 1), feedbackLog(9007199254740992n, 0n, 0)] : [feedbackLog(3n, 50n, 0)];
+      return from === 5001n ? [revokedLog(1n), revokedLog(3n)] : [];
     } } as never;
     const scan = await scanAgentReputation(providerConfig, 42n, new Set(), 3, network);
     expect(scan.historyCoverage).toBe("complete");
-    expect(scan.feedback).toHaveLength(3);
+    expect(scan.feedback).toHaveLength(4);
     expect(scan.feedback.find(item => item.feedbackIndex === 1n)?.revoked).toBe(true);
     expect(scan.feedback.find(item => item.feedbackIndex === 2n)?.revoked).toBe(false);
     expect(scan.feedback.find(item => item.feedbackIndex === 2n)?.value).toBe(-50n);
     expect(scan.feedback.find(item => item.feedbackIndex === 9007199254740992n)?.feedbackIndex).toBe(9007199254740992n);
+    expect(scan.feedback.find(item => item.feedbackIndex === 3n)?.value).toBe(50n);
+    expect(scan.feedback.find(item => item.feedbackIndex === 3n)?.revoked).toBe(true);
   });
 
   test("event cap surfaces truncation and partial coverage", async () => {
