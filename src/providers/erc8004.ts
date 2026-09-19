@@ -2,40 +2,59 @@
  * ERC-8004 on-chain reader.
  *
  * Reads identity and reputation data from the ERC-8004 IdentityRegistry and
- * ReputationRegistry contracts. Production chains: Ethereum Mainnet (1) and
- * Base Mainnet (8453). Testnets available for development.
+ * ReputationRegistry contracts.
  *
  * Spec: https://eips.ethereum.org/EIPS/eip-8004 (Jan 2026)
+ * Official contracts: https://github.com/erc-8004/erc-8004-contracts
  *
  * Design constraints:
  * - Read-only. No on-chain writes under any circumstances.
- * - No getClients() / unbounded array calls.
  * - Reputation scan uses bounded backward eth_getLogs chunks (NewFeedback /
- *   FeedbackRevoked events). ABI decoding via viem.
- * - getAgentWallet(agentId) — not getMetadata("agentWallet") — for wallet.
+ *   FeedbackRevoked events). ABI decoding via viem decodeEventLog.
  * - DNS-pinned hardened fetch via node:https + node:dns/promises (no undici).
- * - Redirect-to-private attribution follows the caller-supplied targetUrl rules.
  */
 
 import * as https from "node:https";
 import * as dns from "node:dns/promises";
-import {
-  decodeEventLog,
-  parseAbiItem,
-  hexToBytes,
-  bytesToBigInt,
-  bytesToString,
-  toHex,
-} from "viem";
-import type { AgentChainIdentityResult, AgentReputationSummary, AgentServiceObservation } from "../domain/risk.ts";
+import { decodeEventLog, type AbiEvent } from "viem";
+import type { AgentChainIdentityResult, AgentIdentityStatus, AgentReputationSummary, AgentServiceObservation } from "../domain/risk.ts";
 
 // ---------------------------------------------------------------------------
-// Official ERC-8004 event topics (Jan 2026 spec)
+// Official ERC-8004 event definitions (from github.com/erc-8004/erc-8004-contracts)
 // ---------------------------------------------------------------------------
 
-// NewFeedback(uint256,address,uint64,int128,uint8,string,string,string,string,string,bytes32)
+const NEW_FEEDBACK_EVENT = {
+  type: "event",
+  name: "NewFeedback",
+  inputs: [
+    { name: "agentId", type: "uint256", indexed: true },
+    { name: "clientAddress", type: "address", indexed: true },
+    { name: "feedbackIndex", type: "uint64", indexed: false },
+    { name: "value", type: "int128", indexed: false },
+    { name: "valueDecimals", type: "uint8", indexed: false },
+    { name: "indexedTag1", type: "string", indexed: true },
+    { name: "tag1", type: "string", indexed: false },
+    { name: "tag2", type: "string", indexed: false },
+    { name: "endpoint", type: "string", indexed: false },
+    { name: "feedbackURI", type: "string", indexed: false },
+    { name: "feedbackHash", type: "bytes32", indexed: false },
+  ],
+  anonymous: false,
+} as const satisfies AbiEvent;
+
+const FEEDBACK_REVOKED_EVENT = {
+  type: "event",
+  name: "FeedbackRevoked",
+  inputs: [
+    { name: "agentId", type: "uint256", indexed: true },
+    { name: "clientAddress", type: "address", indexed: true },
+    { name: "feedbackIndex", type: "uint64", indexed: true },
+  ],
+  anonymous: false,
+} as const satisfies AbiEvent;
+
+// Computed topic hashes (verified against official ABI)
 export const NEW_FEEDBACK_TOPIC = "0x6a4a61743519c9d648a14e6493f47dbe3ff1aa29e7785c96c8326a205e58febc";
-// FeedbackRevoked(uint256,address,uint64)
 export const FEEDBACK_REVOKED_TOPIC = "0x25156fd3288212246d8b008d5921fde376c71ed14ac2e072a506eb06fde6d09d";
 
 // ---------------------------------------------------------------------------
@@ -43,10 +62,8 @@ export const FEEDBACK_REVOKED_TOPIC = "0x25156fd3288212246d8b008d5921fde376c71ed
 // ---------------------------------------------------------------------------
 
 export type Erc8004ChainConfig = {
-  /** CAIP-2 chain reference, e.g. "eip155:1" */
   readonly chainRef: string;
   readonly chainId: number;
-  readonly rpcUrl: string;
   readonly identityRegistry: `0x${string}`;
   readonly reputationRegistry: `0x${string}`;
   readonly validationRegistry?: `0x${string}`;
@@ -57,33 +74,29 @@ export type Erc8004ChainConfig = {
 
 /**
  * Official ERC-8004 deployments verified from:
+ * - https://github.com/erc-8004/erc-8004-contracts
  * - https://eips.ethereum.org/EIPS/eip-8004
- * - https://github.com/questflowai/erc-8004-contracts
- * - https://github.com/ChaosChain/trustless-agents-erc-ri
  *
- * Production chains use canonical CREATE2 vanity addresses (same on all chains).
- * Testnets use separate vanity addresses.
+ * RPC URLs are operator-configurable via env: ERC8004_RPC_OVERRIDE_<chainId>
  */
 export const ERC8004_CHAINS: Readonly<Record<string, Erc8004ChainConfig>> = {
   "eip155:1": {
     chainRef: "eip155:1",
     chainId: 1,
-    rpcUrl: "https://eth.llamarpc.com",
     identityRegistry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
     reputationRegistry: "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63",
     enabled: true,
     deployment: "official",
-    source: "https://eips.ethereum.org/EIPS/eip-8004",
+    source: "https://github.com/erc-8004/erc-8004-contracts",
   },
   "eip155:8453": {
     chainRef: "eip155:8453",
     chainId: 8453,
-    rpcUrl: "https://mainnet.base.org",
     identityRegistry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
     reputationRegistry: "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63",
     enabled: true,
     deployment: "official",
-    source: "https://eips.ethereum.org/EIPS/eip-8004",
+    source: "https://github.com/erc-8004/erc-8004-contracts",
   },
 } as const;
 
@@ -91,25 +104,31 @@ export const ERC8004_TESTNET_CHAINS: Readonly<Record<string, Erc8004ChainConfig>
   "eip155:11155111": {
     chainRef: "eip155:11155111",
     chainId: 11155111,
-    rpcUrl: "https://rpc.sepolia.org",
     identityRegistry: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
     reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
     enabled: true,
     deployment: "testnet",
-    source: "https://github.com/ChaosChain/trustless-agents-erc-ri",
+    source: "https://github.com/erc-8004/erc-8004-contracts",
   },
 } as const;
 
-/** Resolve a CAIP-2 chain reference to its config. Returns undefined if unsupported. */
 export function getChainConfig(chainRef: string): Erc8004ChainConfig | undefined {
   return ERC8004_CHAINS[chainRef] ?? ERC8004_TESTNET_CHAINS[chainRef];
 }
 
-/** All production chain configs (enabled only). */
+export function getChainRpcUrl(config: Erc8004ChainConfig): string {
+  const override = process.env[`ERC8004_RPC_OVERRIDE_${config.chainId}`];
+  if (override) return override;
+  if (config.chainId === 1) return "https://eth.llamarpc.com";
+  if (config.chainId === 8453) return "https://mainnet.base.org";
+  if (config.chainId === 11155111) return "https://rpc.sepolia.org";
+  throw new Error(`No RPC configured for chain ${config.chainId}`);
+}
+
 export const ERC8004_PRODUCTION_CHAINS: readonly Erc8004ChainConfig[] = Object.values(ERC8004_CHAINS).filter(c => c.enabled);
 
 // ---------------------------------------------------------------------------
-// Private-IP CIDR guards (for redirect-to-private detection)
+// Private-IP CIDR guards
 // ---------------------------------------------------------------------------
 
 const PRIVATE_RANGES: Array<{ start: bigint; end: bigint }> = (function () {
@@ -148,46 +167,50 @@ function isPrivateIpv6(ip: string): boolean {
   );
 }
 
-/** Check if an IPv4-mapped IPv6 address (::ffff:x.x.x.x) is private. */
 function isPrivateIpv4MappedIpv6(ip: string): boolean {
   if (!ip.toLowerCase().startsWith("::ffff:")) return false;
   const ipv4Part = ip.slice(7);
   return isPrivateIpv4(ipv4Part);
 }
 
-async function hostnameResolvesToPrivate(hostname: string): Promise<boolean> {
+export function isPrivateIp(ip: string): boolean {
+  return isPrivateIpv4(ip) || isPrivateIpv6(ip) || isPrivateIpv4MappedIpv6(ip);
+}
+
+/**
+ * SAFE POLICY: reject if ANY resolved address is private.
+ */
+export async function hostnameResolvesToPrivate(hostname: string): Promise<boolean> {
   try {
     const [ipv4Results, ipv6Results] = await Promise.all([
       dns.resolve4(hostname).catch(() => [] as string[]),
       dns.resolve6(hostname).catch(() => [] as string[]),
     ]);
     const allIps = [...ipv4Results, ...ipv6Results];
-    if (allIps.length === 0) return false;
-    return allIps.every(ip => isPrivateIpv4(ip) || isPrivateIpv6(ip) || isPrivateIpv4MappedIpv6(ip));
+    if (allIps.length === 0) return true;
+    return allIps.some(ip => isPrivateIp(ip));
   } catch {
-    return false;
+    return true;
   }
 }
 
 // ---------------------------------------------------------------------------
-// DNS-pinned hardened HTTPS GET (no undici, no new dependencies)
+// DNS-pinned hardened HTTPS GET
 // ---------------------------------------------------------------------------
 
-const MAX_REGISTRATION_BODY_BYTES = 256 * 1024; // 256 KiB cap
+const MAX_REGISTRATION_BODY_BYTES = 256 * 1024;
 
-/** Fetches a URL via node:https with DNS pre-resolution to block SSRF. */
 async function hardenedFetch(url: string, timeoutMs = 5000): Promise<{ status: number; body: string; finalUrl: string }> {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:") {
     throw new Error(`hardenedFetch: only https:// is supported (got ${parsed.protocol})`);
   }
   const hostname = parsed.hostname;
-  // Resolve DNS before connecting; reject if all IPs are private.
   const addrs4 = await dns.resolve4(hostname).catch(() => [] as string[]);
   const addrs6 = await dns.resolve6(hostname).catch(() => [] as string[]);
   const allIps = [...addrs4, ...addrs6];
   if (allIps.length === 0) throw new Error(`hardenedFetch: DNS resolution failed for ${hostname}`);
-  if (allIps.every(ip => isPrivateIpv4(ip) || isPrivateIpv6(ip) || isPrivateIpv4MappedIpv6(ip))) {
+  if (allIps.some(ip => isPrivateIp(ip))) {
     throw new Error(`hardenedFetch: ${hostname} resolves to a private address (SSRF rejected)`);
   }
   const pinnedIp = addrs4[0] ?? addrs6[0]!;
@@ -206,11 +229,9 @@ async function hardenedFetch(url: string, timeoutMs = 5000): Promise<{ status: n
       timeout: timeoutMs,
     };
     const req = https.request(options, (res) => {
-      // Follow at most one redirect; re-check DNS on redirect target.
       const location = res.headers.location;
       if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) && location) {
         res.resume();
-        // Return status 0 as sentinel for redirect; caller handles it.
         resolve({ status: 0, body: location, finalUrl: location });
         return;
       }
@@ -246,7 +267,7 @@ async function rpcPost(rpcUrl: string, method: string, params: unknown[], timeou
   const addrs6 = await dns.resolve6(hostname).catch(() => [] as string[]);
   const allIps = [...addrs4, ...addrs6];
   if (allIps.length === 0) throw new Error(`rpcPost: DNS resolution failed for ${hostname}`);
-  if (allIps.every(ip => isPrivateIpv4(ip) || isPrivateIpv6(ip) || isPrivateIpv4MappedIpv6(ip))) {
+  if (allIps.some(ip => isPrivateIp(ip))) {
     throw new Error(`rpcPost: RPC host ${hostname} resolves to private address`);
   }
   const pinnedIp = addrs4[0] ?? addrs6[0]!;
@@ -289,27 +310,18 @@ async function rpcPost(rpcUrl: string, method: string, params: unknown[], timeou
 }
 
 // ---------------------------------------------------------------------------
-// ABI encoding helpers (minimal, viem used for decoding)
+// ABI encoding helpers
 // ---------------------------------------------------------------------------
 
 function encodeUint256(n: bigint | number): string {
   return BigInt(n).toString(16).padStart(64, "0");
 }
 
-function encodeAddress(addr: string): string {
-  return addr.replace(/^0x/i, "").padStart(64, "0");
-}
-
 function decodeAddress(hex: string): string {
   return "0x" + hex.slice(-40);
 }
 
-function decodeUint256(hex: string): bigint {
-  return BigInt("0x" + hex.padStart(64, "0").slice(0, 64));
-}
-
 function decodeString(data: string): string {
-  // ABI-encoded string: offset (32 bytes) + length (32 bytes) + UTF-8 data
   const hex = data.replace(/^0x/i, "");
   if (hex.length < 128) return "";
   const length = parseInt(hex.slice(64, 128), 16);
@@ -318,45 +330,64 @@ function decodeString(data: string): string {
   return bytes.toString("utf8");
 }
 
-// Function selectors (keccak256 first 4 bytes, pre-computed)
 const SEL = {
-  // keccak256("ownerOf(uint256)") = 0x6352211e...
   ownerOf: "6352211e",
-  // keccak256("getAgentWallet(uint256)") = 0x00339509...
   getAgentWallet: "00339509",
-  // keccak256("tokenURI(uint256)") = 0xc87b56dd...
   tokenURI: "c87b56dd",
 };
 
 // ---------------------------------------------------------------------------
-// Agent card JSON schema (minimal)
+// Agent card JSON schema
 // ---------------------------------------------------------------------------
 
-type AgentCardService = {
+export type AgentCardService = {
   type?: unknown;
+  name?: unknown;
   endpoint?: unknown;
   schema?: unknown;
 };
 
-type AgentCard = {
+export type AgentCard = {
+  type?: unknown;
   name?: unknown;
   description?: unknown;
   services?: AgentCardService[];
-  x402?: unknown;
+  x402Support?: unknown;
   active?: unknown;
   registrations?: unknown;
   supportedTrust?: unknown;
 };
 
-function parseAgentCard(uri: string, json: unknown): { card: AgentCard; parseError?: string } {
-  if (typeof json !== "object" || json === null || Array.isArray(json)) {
-    return { card: {}, parseError: "agent card is not an object" };
+export type AgentCardValidationResult = {
+  card?: AgentCard;
+  parseError?: string;
+  structuralError?: string;
+  selfReferenceMatch?: boolean;
+};
+
+function validateAgentCardStructure(card: AgentCard): string | undefined {
+  if (card.services !== undefined) {
+    if (!Array.isArray(card.services)) return "services must be an array";
+    for (const svc of card.services) {
+      if (typeof svc !== "object" || svc === null) return "service must be an object";
+      const s = svc as Record<string, unknown>;
+      if (s.endpoint !== undefined && typeof s.endpoint !== "string") return "service endpoint must be a string";
+      if (s.name !== undefined && typeof s.name !== "string") return "service name must be a string";
+    }
   }
-  void uri; // available for future provenance checking
-  return { card: json as AgentCard };
+  return undefined;
 }
 
-function extractServices(card: AgentCard): AgentServiceObservation[] {
+export function parseAgentCard(uri: string, json: unknown): AgentCardValidationResult {
+  if (typeof json !== "object" || json === null || Array.isArray(json)) {
+    return { parseError: "agent card is not an object" };
+  }
+  const card = json as AgentCard;
+  const structuralError = validateAgentCardStructure(card);
+  return structuralError ? { parseError: structuralError, structuralError } : { card };
+}
+
+export function extractServices(card: AgentCard): AgentServiceObservation[] {
   if (!Array.isArray(card.services)) return [];
   return card.services.flatMap(service => {
     if (typeof service !== "object" || service === null) return [];
@@ -375,9 +406,9 @@ export async function readAgentIdentity(
   config: Erc8004ChainConfig,
   agentId: bigint
 ): Promise<AgentChainIdentityResult> {
-  const { chainId, rpcUrl, identityRegistry } = config;
+  const { chainId, identityRegistry } = config;
+  const rpcUrl = getChainRpcUrl(config);
 
-  // ownerOf(agentId) — if the token does not exist the call reverts
   let ownerAddress: string | undefined;
   try {
     const callData = "0x" + SEL.ownerOf + encodeUint256(agentId);
@@ -386,20 +417,17 @@ export async function readAgentIdentity(
       ownerAddress = decodeAddress(result.replace(/^0x/i, ""));
     }
   } catch (e) {
-    // Check if this is a revert (token doesn't exist) vs RPC failure
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes("revert") || msg.includes("execution reverted")) {
-      return { chainId, registered: false };
+      return { chainId, registered: false, status: "NOT_REGISTERED" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: undefined };
     }
-    // RPC/transport error — propagate as error
-    return { chainId, registered: false, error: msg };
+    return { chainId, registered: false, status: "UNAVAILABLE" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: msg };
   }
 
   if (!ownerAddress || ownerAddress === "0x0000000000000000000000000000000000000000") {
-    return { chainId, registered: false };
+    return { chainId, registered: false, status: "NOT_REGISTERED" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: undefined };
   }
 
-  // getAgentWallet(agentId) — ERC-8004 specific
   let agentWallet: string | undefined;
   try {
     const callData = "0x" + SEL.getAgentWallet + encodeUint256(agentId);
@@ -409,10 +437,9 @@ export async function readAgentIdentity(
       if (agentWallet === "0x0000000000000000000000000000000000000000") agentWallet = undefined;
     }
   } catch {
-    // Not critical; continue without wallet
+    // Not critical
   }
 
-  // tokenURI(agentId) → registrationUri
   let registrationUri: string | undefined;
   try {
     const callData = "0x" + SEL.tokenURI + encodeUint256(agentId);
@@ -427,27 +454,25 @@ export async function readAgentIdentity(
   return {
     chainId,
     registered: true,
+    status: "REGISTERED" as const,
     ownerAddress,
-    ...(agentWallet ? { agentWallet } : {}),
-    ...(registrationUri ? { registrationUri } : {}),
+    agentWallet: agentWallet ?? undefined,
+    registrationUri: registrationUri ?? undefined,
+    error: undefined,
   };
 }
 
 // ---------------------------------------------------------------------------
-// ERC-8004 reputation reader (bounded eth_getLogs)
+// ERC-8004 reputation reader
 // ---------------------------------------------------------------------------
 
 export const REPUTATION_CHUNK_SIZE = 5000n;
 export const REPUTATION_DEFAULT_MAX_CHUNKS = 20;
+export const MAX_FEEDBACK_EVENTS = 1000;
 
-/**
- * Decoded feedback entry. No universal positive/neutral/negative interpretation.
- * value + valueDecimals form a signed fixed-point number.
- * Policy determines direction/threshold per trusted reviewer + recognized tag.
- */
 export type FeedbackEntry = {
   clientAddress: string;
-  feedbackIndex: number;
+  feedbackIndex: bigint;
   value: bigint;
   valueDecimals: number;
   tag1: string;
@@ -462,6 +487,8 @@ export type ReputationScanResult = {
   feedback: FeedbackEntry[];
   blocksScanned: bigint;
   historyCoverage: "complete" | "partial";
+  truncated: boolean;
+  totalEventsObserved: number;
   errors: string[];
 };
 
@@ -474,82 +501,55 @@ function padTopic(value: bigint): string {
   return "0x" + value.toString(16).padStart(64, "0");
 }
 
-// Decode NewFeedback event log using viem:
-// topics[0] = event signature
-// topics[1] = agentId (indexed uint256)
-// topics[2] = clientAddress (indexed address)
-// topics[3] = indexedTag1 (indexed string)
-// data = ABI-encoded (uint64 feedbackIndex, int128 value, uint8 valueDecimals, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 feedbackHash)
 function decodeNewFeedback(log: { topics: string[]; data: string }): Omit<FeedbackEntry, "revoked"> | undefined {
   try {
-    const clientAddress = "0x" + (log.topics[2] ?? "").slice(-40);
-    const hex = (log.data ?? "").replace(/^0x/i, "");
-    if (hex.length < 64) return undefined;
-
-    // First 32 bytes: feedbackIndex (uint64, but padded to 32 bytes)
-    const feedbackIndex = parseInt(hex.slice(0, 64), 16);
-    // Next 32 bytes: value (int128)
-    const valueHex = hex.slice(64, 128);
-    const value = BigInt("0x" + valueHex);
-    // Next 32 bytes: valueDecimals (uint8)
-    const valueDecimals = parseInt(hex.slice(128, 192), 16);
-
-    // Remaining data: offset to tag1 string, then tag1, tag2, endpoint, feedbackURI, feedbackHash
-    // For simplicity, decode strings manually from the remaining data
-    let offset = 192;
-    const tag1Offset = parseInt(hex.slice(offset, offset + 64), 16) * 2;
-    offset += 64;
-    const tag2Offset = parseInt(hex.slice(offset, offset + 64), 16) * 2;
-    offset += 64;
-    const endpointOffset = parseInt(hex.slice(offset, offset + 64), 16) * 2;
-    offset += 64;
-    const feedbackURIOffset = parseInt(hex.slice(offset, offset + 64), 16) * 2;
-    offset += 64;
-    const feedbackHash = "0x" + hex.slice(offset, offset + 64);
-
-    const tag1 = decodeAbiString(hex, tag1Offset);
-    const tag2 = decodeAbiString(hex, tag2Offset);
-    const endpoint = decodeAbiString(hex, endpointOffset);
-    const feedbackURI = decodeAbiString(hex, feedbackURIOffset);
-
+    const decoded = decodeEventLog({
+      abi: [NEW_FEEDBACK_EVENT],
+      data: log.data as `0x${string}`,
+      topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
+    });
+    const args = decoded.args as {
+      agentId: bigint;
+      clientAddress: string;
+      feedbackIndex: bigint;
+      value: bigint;
+      valueDecimals: number;
+      indexedTag1: string;
+      tag1: string;
+      tag2: string;
+      endpoint: string;
+      feedbackURI: string;
+      feedbackHash: string;
+    };
     return {
-      clientAddress,
-      feedbackIndex,
-      value,
-      valueDecimals,
-      tag1,
-      tag2,
-      endpoint,
-      feedbackURI,
-      feedbackHash,
+      clientAddress: args.clientAddress,
+      feedbackIndex: args.feedbackIndex,
+      value: args.value,
+      valueDecimals: args.valueDecimals,
+      tag1: args.tag1,
+      tag2: args.tag2,
+      endpoint: args.endpoint,
+      feedbackURI: args.feedbackURI,
+      feedbackHash: args.feedbackHash,
     };
   } catch {
     return undefined;
   }
 }
 
-function decodeAbiString(hex: string, offset: number): string {
+function decodeRevokedKey(log: { topics: string[] }): { clientAddress: string; feedbackIndex: bigint } | undefined {
   try {
-    if (offset + 64 > hex.length) return "";
-    const length = parseInt(hex.slice(offset, offset + 64), 16);
-    if (length === 0) return "";
-    const bytes = Buffer.from(hex.slice(offset + 64, offset + 64 + length * 2), "hex");
-    return bytes.toString("utf8");
-  } catch {
-    return "";
-  }
-}
-
-// Decode FeedbackRevoked event log:
-// topics[0] = event signature
-// topics[1] = agentId (indexed uint256)
-// topics[2] = clientAddress (indexed address)
-// topics[3] = feedbackIndex (indexed uint64)
-function decodeRevokedKey(log: { topics: string[] }): { clientAddress: string; feedbackIndex: number } | undefined {
-  try {
-    const clientAddress = "0x" + (log.topics[2] ?? "").slice(-40);
-    const feedbackIndex = parseInt((log.topics[3] ?? "").replace(/^0x/i, "") || "0", 16);
-    return { clientAddress, feedbackIndex };
+    const decoded = decodeEventLog({
+      abi: [FEEDBACK_REVOKED_EVENT],
+      data: "0x" as `0x${string}`,
+      topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
+    });
+    const args = decoded.args as {
+      agentId: bigint;
+      clientAddress: string;
+      feedbackIndex: bigint;
+    };
+    return { clientAddress: args.clientAddress, feedbackIndex: args.feedbackIndex };
   } catch {
     return undefined;
   }
@@ -563,7 +563,8 @@ export async function scanAgentReputation(
   trustedReviewers: Set<string> | null,
   maxChunks = REPUTATION_DEFAULT_MAX_CHUNKS
 ): Promise<ReputationScanResult> {
-  const { rpcUrl, reputationRegistry } = config;
+  const { reputationRegistry } = config;
+  const rpcUrl = getChainRpcUrl(config);
   const errors: string[] = [];
 
   let latestBlock: bigint;
@@ -574,6 +575,8 @@ export async function scanAgentReputation(
       feedback: [],
       blocksScanned: 0n,
       historyCoverage: "partial",
+      truncated: false,
+      totalEventsObserved: 0,
       errors: [`eth_blockNumber failed: ${e instanceof Error ? e.message : String(e)}`],
     };
   }
@@ -582,10 +585,12 @@ export async function scanAgentReputation(
   const newFeedbackTopic = NEW_FEEDBACK_TOPIC;
   const feedbackRevokedTopic = FEEDBACK_REVOKED_TOPIC;
 
-  // Key: (clientAddress, feedbackIndex) — stable per reviewer per feedback
   const feedbackMap = new Map<string, FeedbackEntry>();
+  const revokedKeys = new Set<string>();
   let currentBlock = latestBlock;
   let chunksScanned = 0;
+  let totalEventsObserved = 0;
+  let truncated = false;
 
   while (chunksScanned < maxChunks && currentBlock > 0n) {
     const fromBlock = currentBlock > REPUTATION_CHUNK_SIZE ? currentBlock - REPUTATION_CHUNK_SIZE + 1n : 0n;
@@ -617,28 +622,39 @@ export async function scanAgentReputation(
       errors.push(`eth_getLogs(FeedbackRevoked) ${chunkLabel}: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Apply NewFeedback entries (newer wins on key=(clientAddress, feedbackIndex))
+    totalEventsObserved += newLogs.length + revokedLogs.length;
+
+    if (totalEventsObserved > MAX_FEEDBACK_EVENTS) {
+      truncated = true;
+      errors.push(`feedback event limit reached: ${totalEventsObserved} > ${MAX_FEEDBACK_EVENTS}`);
+      break;
+    }
+
+    for (const log of revokedLogs) {
+      const revoked = decodeRevokedKey(log);
+      if (!revoked) continue;
+      const clientAddress = revoked.clientAddress.toLowerCase();
+      const key = `${clientAddress}:${revoked.feedbackIndex.toString()}`;
+      revokedKeys.add(key);
+    }
+
     for (const log of newLogs) {
       const decoded = decodeNewFeedback(log);
       if (!decoded) continue;
       const clientAddress = decoded.clientAddress.toLowerCase();
       if (trustedReviewers !== null && !trustedReviewers.has(clientAddress)) continue;
-      const key = `${clientAddress}:${decoded.feedbackIndex}`;
+      const key = `${clientAddress}:${decoded.feedbackIndex.toString()}`;
       feedbackMap.set(key, {
         ...decoded,
         clientAddress,
-        revoked: false,
+        revoked: revokedKeys.has(key),
       });
     }
 
-    // Apply revocations by exact (clientAddress, feedbackIndex)
-    for (const log of revokedLogs) {
-      const revoked = decodeRevokedKey(log);
-      if (!revoked) continue;
-      const clientAddress = revoked.clientAddress.toLowerCase();
-      const key = `${clientAddress}:${revoked.feedbackIndex}`;
-      const entry = feedbackMap.get(key);
-      if (entry) feedbackMap.set(key, { ...entry, revoked: true });
+    for (const [key, entry] of feedbackMap) {
+      if (revokedKeys.has(key) && !entry.revoked) {
+        feedbackMap.set(key, { ...entry, revoked: true });
+      }
     }
 
     if (fromBlock === 0n) break;
@@ -646,43 +662,51 @@ export async function scanAgentReputation(
   }
 
   const blocksScanned = latestBlock - currentBlock;
-  const historyCoverage: "complete" | "partial" = currentBlock === 0n ? "complete" : "partial";
+  const historyCoverage: "complete" | "partial" = currentBlock === 0n && !truncated ? "complete" : "partial";
 
   return {
     feedback: [...feedbackMap.values()],
     blocksScanned,
     historyCoverage,
+    truncated,
+    totalEventsObserved,
     errors,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Agent card fetcher (via registrationUri)
+// Agent card fetcher
 // ---------------------------------------------------------------------------
 
 export type AgentCardResult = {
   card?: AgentCard;
   rawUri?: string;
   error?: string;
+  selfReferenceMatch?: boolean;
 };
 
 export async function fetchAgentCard(registrationUri: string): Promise<AgentCardResult> {
   if (!registrationUri) return { error: "no registration URI" };
 
   try {
-    // data:application/json;base64 URI
     if (registrationUri.startsWith("data:application/json;base64,")) {
       const b64 = registrationUri.slice("data:application/json;base64,".length);
-      const json = JSON.parse(Buffer.from(b64, "base64").toString("utf8")) as unknown;
-      const { card, parseError } = parseAgentCard(registrationUri, json);
-      return parseError ? { rawUri: registrationUri, error: parseError } : { card, rawUri: registrationUri };
+      if (b64.length > MAX_REGISTRATION_BODY_BYTES) {
+        return { rawUri: registrationUri, error: `data URI payload exceeds ${MAX_REGISTRATION_BODY_BYTES} bytes` };
+      }
+      const decoded = Buffer.from(b64, "base64");
+      if (decoded.length > MAX_REGISTRATION_BODY_BYTES) {
+        return { rawUri: registrationUri, error: `decoded data URI exceeds ${MAX_REGISTRATION_BODY_BYTES} bytes` };
+      }
+      const json = JSON.parse(decoded.toString("utf8")) as unknown;
+      const parsed = parseAgentCard(registrationUri, json);
+      if (parsed.parseError) return { rawUri: registrationUri, error: parsed.parseError };
+      return { card: parsed.card, rawUri: registrationUri };
     }
 
     const parsed = new URL(registrationUri);
 
-    // IPFS URIs: convert to https gateway fetch
     if (parsed.protocol === "ipfs:") {
-      // URL parsing places CID in hostname for ipfs://<CID>/...
       const cid = parsed.hostname || parsed.pathname.replace(/^\//, "");
       if (!cid) return { rawUri: registrationUri, error: "IPFS URI has no CID" };
       const gatewayUrl = `https://ipfs.io/ipfs/${cid}${parsed.pathname !== "/" ? parsed.pathname : ""}${parsed.search}`;
@@ -702,10 +726,8 @@ export async function fetchAgentCard(registrationUri: string): Promise<AgentCard
 async function fetchAgentCardFromHttps(url: string, rawUri: string): Promise<AgentCardResult> {
   try {
     const result = await hardenedFetch(url, 6000);
-    // Handle one redirect
     if (result.status === 0 && result.body) {
       const redirectUrl = result.body;
-      // Re-check redirect target for SSRF
       const redirectParsed = new URL(redirectUrl);
       if (redirectParsed.protocol !== "https:") {
         return { rawUri, error: `redirect to non-HTTPS protocol rejected: ${redirectParsed.protocol}` };
@@ -715,13 +737,15 @@ async function fetchAgentCardFromHttps(url: string, rawUri: string): Promise<Age
         return { rawUri, error: `agent card HTTP ${redirected.status} after redirect` };
       }
       const json = JSON.parse(redirected.body) as unknown;
-      const { card, parseError } = parseAgentCard(rawUri, json);
-      return parseError ? { rawUri, error: parseError } : { card, rawUri };
+      const parsed = parseAgentCard(rawUri, json);
+      if (parsed.parseError) return { rawUri, error: parsed.parseError };
+      return { card: parsed.card, rawUri };
     }
     if (result.status !== 200) return { rawUri, error: `agent card HTTP ${result.status}` };
     const json = JSON.parse(result.body) as unknown;
-    const { card, parseError } = parseAgentCard(rawUri, json);
-    return parseError ? { rawUri, error: parseError } : { card, rawUri };
+    const parsed = parseAgentCard(rawUri, json);
+    if (parsed.parseError) return { rawUri, error: parsed.parseError };
+    return { card: parsed.card, rawUri };
   } catch (e) {
     return { rawUri, error: e instanceof Error ? e.message : String(e) };
   }
@@ -731,18 +755,12 @@ async function fetchAgentCardFromHttps(url: string, rawUri: string): Promise<Age
 // Redirect-to-private probe
 // ---------------------------------------------------------------------------
 
-/**
- * Probes a target URL to detect redirect to a private IP.
- * Returns true only if the final redirect destination resolves to a private address.
- * Used only when targetUrl was caller-supplied AND matches an advertised service endpoint.
- */
 export async function probeTargetUrlRedirectsToPrivate(targetUrl: string): Promise<{ redirectsToPrivate: boolean; error?: string }> {
   try {
     const parsed = new URL(targetUrl);
     if (parsed.protocol !== "https:") return { redirectsToPrivate: false };
 
     const result = await hardenedFetch(targetUrl, 5000).catch(e => {
-      // hardenedFetch itself rejects on private IP; that IS the signal
       if (e instanceof Error && e.message.includes("SSRF rejected")) {
         return { status: 0, body: "", finalUrl: targetUrl, ssrfRejected: true } as { status: number; body: string; finalUrl: string; ssrfRejected?: boolean };
       }
@@ -751,7 +769,6 @@ export async function probeTargetUrlRedirectsToPrivate(targetUrl: string): Promi
 
     if ((result as { ssrfRejected?: boolean }).ssrfRejected) return { redirectsToPrivate: true };
 
-    // status 0 means redirect; check redirect target
     if (result.status === 0 && result.body) {
       const redirectHostname = new URL(result.body).hostname;
       const isPrivate = await hostnameResolvesToPrivate(redirectHostname);
@@ -763,7 +780,3 @@ export async function probeTargetUrlRedirectsToPrivate(targetUrl: string): Promi
     return { redirectsToPrivate: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
-
-// Re-export types needed by services.ts
-export type { AgentCard, AgentCardService };
-export { extractServices };

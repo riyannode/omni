@@ -11,6 +11,7 @@ import { loadPaidResources } from "../payments/circle.ts";
 import { concurrencyGate } from "./concurrency-gate.ts";
 import { PaidRouteIntegration, type GatewayWithHooks } from "./paid-route.ts";
 import { agentQuery, dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./validation.ts";
+import { getChainConfig } from "../providers/erc8004.ts";
 
 function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => void fn(req, res).catch(next);
@@ -50,7 +51,13 @@ const validateEndpoint: RequestHandler = (req, res, next) => {
 };
 
 const validateAgent: RequestHandler = (req, res, next) => {
-  if (!agentQuery.safeParse(req.query).success) return void res.status(400).json({ error: "invalid_request" });
+  const parseResult = agentQuery.safeParse(req.query);
+  if (!parseResult.success) return void res.status(400).json({ error: "invalid_request" });
+  const { chain } = parseResult.data;
+  const chainConfig = getChainConfig(chain);
+  if (!chainConfig || !chainConfig.enabled) {
+    return void res.status(400).json({ error: "unsupported_chain" });
+  }
   next();
 };
 

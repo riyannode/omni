@@ -15,7 +15,7 @@ export type ReplayableRow = VersionedSchemaRow & { subjectType: SubjectKind };
 // NOTE: "agent" is intentionally excluded — agent rows carry ERC-8004
 // on-chain evidence whose semantics are subject to change; they are never
 // replayed from historical snapshots until explicitly added here.
-const SAFE_REPLAY_SUBJECT_KINDS: readonly SubjectKind[] = ["package", "x402_endpoint", "dependency_set"];
+const SAFE_REPLAY_SUBJECT_KINDS: readonly SubjectKind[] = ["package", "repository", "x402_endpoint", "dependency_set"];
 
 function isSafeReplay(row: ReplayableRow, snapshotSchemaVersion: number, featureSchemaVersion: number): boolean {
   if (row.snapshotSchemaVersion === snapshotSchemaVersion && row.featureSchemaVersion === featureSchemaVersion) return true;

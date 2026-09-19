@@ -170,9 +170,51 @@ export type RiskAssessment = {
 
 export const AGENT_COVERAGE_MODEL_VERSION = "agent-coverage-v1" as const;
 export const AGENT_POLICY_VERSION = "omni-agent-risk-v1" as const;
+export const UINT256_MAX = 115792089237316195423570985008687907853269984665640564039457584007913129639935n;
 
+/** Explicit identity status for unambiguous classification. */
+export type AgentIdentityStatus = "REGISTERED" | "NOT_REGISTERED" | "UNAVAILABLE";
 export type AgentIdentityRisk = "registered" | "unregistered" | "unknown";
 export type AgentReputationRisk = "positive" | "neutral" | "negative" | "insufficient" | "unknown";
+
+/**
+ * Operator-configured recognized tag policy.
+ * Each recognized tag defines how feedback values are interpreted.
+ */
+export type RecognizedTagPolicy = {
+  /** Tag value from ERC-8004 tag1 */
+  tag: string;
+  /** Direction: higher value = better, or lower value = better */
+  direction: "higher_is_better" | "lower_is_better";
+  /** Threshold for determining if feedback indicates risk */
+  threshold: number;
+  /** Expected decimal places for valid feedback */
+  expectedDecimals?: number;
+  /** Allowed decimal places (if undefined, any 0-18 accepted) */
+  allowedDecimals?: number[];
+  /** Risk weight if threshold breached (0-100) */
+  riskWeight: number;
+};
+
+/**
+ * Agent reputation policy configuration.
+ * Defines which reviewers are trusted and which tags are recognized.
+ */
+export type AgentReputationPolicy = {
+  /** Trusted reviewer client addresses (lowercase) */
+  trustedReviewers: Set<string>;
+  /** Recognized tag policies */
+  recognizedTags: RecognizedTagPolicy[];
+};
+
+/**
+ * Target URL probe status for feature extraction.
+ */
+export type TargetUrlProbeStatus =
+  | "NOT_APPLICABLE" // No targetUrl provided
+  | "ADVERTISED_VERIFIED" // targetUrl matches advertised endpoint, no issues
+  | "ADVERTISED_REDIRECT_TO_PRIVATE" // targetUrl advertised but redirects to private
+  | "NOT_ADVERTISED"; // targetUrl provided but not advertised
 
 /** Agent-specific risk dimensions, surfaced as a nested optional extension on RiskAssessment. */
 export type AgentRiskDimensions = {
@@ -188,10 +230,11 @@ export type AgentRiskDimensions = {
 export type AgentChainIdentityResult = {
   chainId: number;
   registered: boolean;
-  ownerAddress?: string;
-  agentWallet?: string;
-  registrationUri?: string;
-  error?: string;
+  status: AgentIdentityStatus;
+  ownerAddress: string | undefined;
+  agentWallet: string | undefined;
+  registrationUri: string | undefined;
+  error: string | undefined;
 };
 
 /** Aggregated reputation summary derived from on-chain feedback. */

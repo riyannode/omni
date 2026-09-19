@@ -927,12 +927,10 @@ export class OmniIntelligence {
           return await readAgentIdentity(c, agentIdBigInt);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          // Only a confirmed revert means "nonexistent token"
           if (msg.includes("revert") || msg.includes("execution reverted")) {
-            return { chainId: c.chainId, registered: false };
+            return { chainId: c.chainId, registered: false, status: "NOT_REGISTERED" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: undefined };
           }
-          // RPC/transport errors: do NOT classify as not_registered
-          return { chainId: c.chainId, registered: false, error: msg };
+          return { chainId: c.chainId, registered: false, status: "UNAVAILABLE" as const, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error: msg };
         }
       })
     );

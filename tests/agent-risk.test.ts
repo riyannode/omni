@@ -382,15 +382,15 @@ describe("partitionCompatibleRows agent exclusion", () => {
     expect(compatible).toHaveLength(1);
   });
 
-  test("v4 repository rows are NOT compatible (not in SAFE_REPLAY_SUBJECT_KINDS)", () => {
+  test("v4 repository rows are compatible (repository is in SAFE_REPLAY_SUBJECT_KINDS)", () => {
     const oldRepoRow: ReplayableRow = { subjectType: "repository", snapshotSchemaVersion: 4, featureSchemaVersion: 4 };
     const { compatible, incompatible } = partitionCompatibleRows(
       [oldRepoRow],
       RISK_SNAPSHOT_SCHEMA_VERSION,
       RISK_FEATURE_SCHEMA_VERSION
     );
-    expect(compatible).toHaveLength(0);
-    expect(incompatible).toHaveLength(1);
+    expect(compatible).toHaveLength(1);
+    expect(incompatible).toHaveLength(0);
   });
 
   test("v4 x402_endpoint rows are compatible (safe replay)", () => {
@@ -422,8 +422,8 @@ describe("partitionCompatibleRows agent exclusion", () => {
       { subjectType: "repository", snapshotSchemaVersion: 4, featureSchemaVersion: 4 },
     ];
     const { compatible, incompatible } = partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION);
-    expect(compatible).toHaveLength(3); // package + x402_endpoint + dependency_set
-    expect(incompatible).toHaveLength(2); // agent + repository
+    expect(compatible).toHaveLength(4); // package + x402_endpoint + dependency_set + repository
+    expect(incompatible).toHaveLength(1); // agent only
   });
 });
 
