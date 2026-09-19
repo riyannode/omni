@@ -18,3 +18,30 @@ export const dependenciesBody = z.object({
 export const endpointQuery = z.object({
   url: z.string().url().max(2048)
 });
+
+// UINT256_MAX as string for comparison
+const UINT256_MAX_STR = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
+/**
+ * Agent risk query parameters.
+ *
+ * chain: CAIP-2 chain reference (e.g. "eip155:1"). REQUIRED.
+ * agentId: decimal uint256 string only (NO hex). REQUIRED.
+ * targetUrl: optional HTTPS URL (caller-supplied, opt-in).
+ */
+export const agentQuery = z.object({
+  chain: z.string().regex(/^eip155:[0-9]+$/, "chain must be a CAIP-2 chain reference (e.g. eip155:1)"),
+  agentId: z.string().regex(/^[0-9]+$/, "agentId must be a non-negative decimal integer")
+    .refine((val) => {
+      // Reject empty, leading zeros (except "0"), and values > UINT256_MAX
+      if (val.length === 0) return false;
+      if (val.length > 1 && val.startsWith("0")) return false;
+      if (val.length > 78) return false;
+      if (val.length < 78) return true;
+      // Same length as max, compare lexicographically
+      return val <= UINT256_MAX_STR;
+    }, `agentId must be a valid uint256 (0 to ${UINT256_MAX_STR})`),
+  targetUrl: z.string().url().max(2048)
+    .refine((url) => url.startsWith("https://"), "targetUrl must be HTTPS in v1")
+    .optional(),
+});

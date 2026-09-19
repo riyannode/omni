@@ -132,7 +132,8 @@ describe("HTTP machine-readable documents", () => {
       ["/v1/package/risk", "get", "0.005000", "$0.005"],
       ["/v1/repo/risk", "get", "0.010000", "$0.01"],
       ["/v1/dependencies/risk", "post", "0.050000", "$0.05"],
-      ["/v1/x402/endpoint/preflight", "get", "0.010000", "$0.01"]
+      ["/v1/x402/endpoint/preflight", "get", "0.010000", "$0.01"],
+      ["/v1/agent/risk", "get", "0.050000", "$0.05"]
     ] as const;
     expect(Object.keys(api.paths).sort()).toEqual(["/.well-known/x402", "/health", "/ready", ...routes.map(([path]) => path)].sort());
     for (const [path, method, amount, price] of routes) {
@@ -323,7 +324,7 @@ describe("x402 discovery manifest", () => {
     expect(body.openapi).toBe("https://api.askomni.xyz/openapi.json");
     expect(body.paymentTerms).toBe("live_402_authoritative");
     expect(body.networks).toEqual(["eip155:1", "eip155:5042", "eip155:8453"]);
-    expect(body.resources).toHaveLength(4);
+    expect(body.resources).toHaveLength(5);
     expect(body.resources[0]).toEqual({
       method: "GET",
       resource: "https://api.askomni.xyz/v1/package/risk",
@@ -360,7 +361,8 @@ describe("x402 discovery manifest", () => {
       { method: "GET", resource: "https://api.askomni.xyz/v1/package/risk", price: { currency: "USDC", amount: "0.005000" } },
       { method: "GET", resource: "https://api.askomni.xyz/v1/repo/risk", price: { currency: "USDC", amount: "0.010000" } },
       { method: "POST", resource: "https://api.askomni.xyz/v1/dependencies/risk", price: { currency: "USDC", amount: "0.050000" } },
-      { method: "GET", resource: "https://api.askomni.xyz/v1/x402/endpoint/preflight", price: { currency: "USDC", amount: "0.010000" } }
+      { method: "GET", resource: "https://api.askomni.xyz/v1/x402/endpoint/preflight", price: { currency: "USDC", amount: "0.010000" } },
+      { method: "GET", resource: "https://api.askomni.xyz/v1/agent/risk", price: { currency: "USDC", amount: "0.050000" } }
     ];
     expect(body.resources).toEqual(expected);
   });
@@ -529,7 +531,6 @@ describe("x402 discovery manifest", () => {
       server.once("listening", resolve);
       server.once("error", reject);
     });
-
     const address = server.address() as AddressInfo;
     const origin = `http://127.0.0.1:${address.port}`;
 
@@ -544,5 +545,91 @@ describe("x402 discovery manifest", () => {
     expect(ready.status).toBe(503);
     expect(yamlRes.status).toBe(200);
     expect(jsonRes.status).toBe(200);
+  });
+
+  test("GET /v1/agent/risk rejects unsupported chain with HTTP 400 before payment", async () => {
+    let gatewayInvoked = false;
+    let agentRiskInvoked = false;
+    const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };
+    const omniMock: OmniIntelligence = {
+      async agentRisk() { agentRiskInvoked = true; throw new Error("should not be called"); },
+    } as unknown as OmniIntelligence;
+    const app = createApp({
+      omni: omniMock,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:99999&agentId=1`);
+    expect(res.status).toBe(400);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe("unsupported_chain");
+    expect(gatewayInvoked).toBe(false);
+    expect(agentRiskInvoked).toBe(false);
+  });
+
+  test("GET /v1/agent/risk rejects invalid uint256 with HTTP 400 before payment", async () => {
+    let gatewayInvoked = false;
+    const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    // UINT256_MAX + 1
+    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=115792089237316195423570985008687907853269984665640564039457584007913129639936`);
+    expect(res.status).toBe(400);
+    expect(gatewayInvoked).toBe(false);
+  });
+
+  test("GET /v1/agent/risk rejects non-HTTPS targetUrl with HTTP 400 before payment", async () => {
+    let gatewayInvoked = false;
+    const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };
+    const app = createApp({
+      omni: {} as OmniIntelligence,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => passThrough },
+      paidRequests: createPaidRequestStore(),
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("listening", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address() as AddressInfo;
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=1&targetUrl=http://example.com/api`);
+    expect(res.status).toBe(400);
+    expect(gatewayInvoked).toBe(false);
   });
 });

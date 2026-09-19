@@ -10,7 +10,8 @@ import type { CircleDiscovery, X402Manifest } from "../payments/circle.ts";
 import { loadPaidResources } from "../payments/circle.ts";
 import { concurrencyGate } from "./concurrency-gate.ts";
 import { PaidRouteIntegration, type GatewayWithHooks } from "./paid-route.ts";
-import { dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./validation.ts";
+import { agentQuery, dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./validation.ts";
+import { getChainConfig } from "../providers/erc8004.ts";
 
 function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => void fn(req, res).catch(next);
@@ -46,6 +47,17 @@ const validateDependencies: RequestHandler = (req, res, next) => {
 
 const validateEndpoint: RequestHandler = (req, res, next) => {
   if (!endpointQuery.safeParse(req.query).success) return void res.status(400).json({ error: "invalid_request" });
+  next();
+};
+
+const validateAgent: RequestHandler = (req, res, next) => {
+  const parseResult = agentQuery.safeParse(req.query);
+  if (!parseResult.success) return void res.status(400).json({ error: "invalid_request" });
+  const { chain } = parseResult.data;
+  const chainConfig = getChainConfig(chain);
+  if (!chainConfig || !chainConfig.enabled) {
+    return void res.status(400).json({ error: "unsupported_chain" });
+  }
   next();
 };
 
@@ -169,6 +181,13 @@ export function createApp(options: {
     price: "$0.01",
     parse: req => endpointQuery.parse(req.query),
     execute: input => options.omni.endpointPreflight(input.url)
+  }));
+
+  app.get("/v1/agent/risk", validateAgent, gate, paid.route({
+    route: "agent",
+    price: "$0.05",
+    parse: req => agentQuery.parse(req.query),
+    execute: input => options.omni.agentRisk(input.agentId, input.chain, input.targetUrl)
   }));
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

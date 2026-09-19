@@ -1,4 +1,4 @@
-export const RISK_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+export const RISK_SNAPSHOT_SCHEMA_VERSION = 5 as const;
 export const MALICIOUS_PACKAGE_OBSERVATION_SCHEMA_VERSION = 1 as const;
 export const PACKAGE_COVERAGE_MODEL_VERSION = "package-coverage-v2" as const;
 export const REPOSITORY_COVERAGE_MODEL_VERSION = "repository-coverage-v1" as const;
@@ -136,7 +136,7 @@ export type RepositoryEvidence = {
 };
 
 export type RiskSnapshot = {
-  subject: { type: "package" | "repository" | "dependency_set" | "x402_endpoint"; id: string };
+  subject: { type: "package" | "repository" | "dependency_set" | "x402_endpoint" | "agent"; id: string };
   vulnerabilities?: VulnerabilityFinding[];
   scorecard?: number;
   exploitationChecked?: boolean;
@@ -162,4 +162,140 @@ export type RiskAssessment = {
   repositorySummary?: RepositoryRiskSummary;
   maliciousPackageObservations?: MaliciousPackageObservation[];
   freshness: { oldestEvidenceAt: string | null; newestEvidenceAt: string | null; expiresAt?: string };
+};
+
+// ---------------------------------------------------------------------------
+// Agent-specific types (ERC-8004 subject extension, v5 schema)
+// ---------------------------------------------------------------------------
+
+export const AGENT_COVERAGE_MODEL_VERSION = "agent-coverage-v1" as const;
+export const AGENT_POLICY_VERSION = "omni-agent-risk-v1" as const;
+export const UINT256_MAX = 115792089237316195423570985008687907853269984665640564039457584007913129639935n;
+
+/** Explicit identity status for unambiguous classification. */
+export type AgentIdentityStatus = "REGISTERED" | "NOT_REGISTERED" | "UNAVAILABLE";
+export type AgentIdentityRisk = "registered" | "unregistered" | "unknown";
+export type AgentReputationRisk = "positive" | "neutral" | "negative" | "insufficient" | "unknown";
+
+/**
+ * Operator-configured recognized tag policy.
+ * Each recognized tag defines how feedback values are interpreted.
+ */
+export type RecognizedTagPolicy = {
+  /** Tag value from ERC-8004 tag1 */
+  tag: string;
+  /** Direction: higher value = better, or lower value = better */
+  direction: "higher_is_better" | "lower_is_better";
+  /** Threshold for determining if feedback indicates risk */
+  threshold: string | number;
+  /** Expected decimal places for valid feedback */
+  expectedDecimals?: number;
+  /** Allowed decimal places (if undefined, any 0-18 accepted) */
+  allowedDecimals?: number[];
+  /** Risk weight if threshold breached (0-100) */
+  riskWeight: number;
+};
+
+/**
+ * Agent reputation policy configuration.
+ * Defines which reviewers are trusted and which tags are recognized.
+ */
+export type AgentReputationPolicy = {
+  /** Trusted reviewer client addresses (lowercase) */
+  trustedReviewers: Set<string>;
+  /** Recognized tag policies */
+  recognizedTags: RecognizedTagPolicy[];
+};
+
+export const DEFAULT_AGENT_REPUTATION_POLICY: AgentReputationPolicy = {
+  trustedReviewers: new Set<string>(),
+  recognizedTags: [],
+};
+
+/**
+ * Target URL probe status for feature extraction.
+ */
+export type TargetUrlProbeStatus =
+  | "NOT_APPLICABLE" // No targetUrl provided
+  | "ADVERTISED_VERIFIED" // targetUrl matches advertised endpoint, no issues
+  | "ADVERTISED_REDIRECT_TO_PRIVATE" // targetUrl advertised but redirects to private
+  | "NOT_ADVERTISED" // targetUrl provided but not advertised
+  | "PROBE_UNAVAILABLE"; // target was advertised but the active probe failed
+
+/** Agent-specific risk dimensions, surfaced as a nested optional extension on RiskAssessment. */
+export type AgentRiskDimensions = {
+  /** Whether the agent is verifiably registered in the ERC-8004 IdentityRegistry on a production chain. */
+  agentIdentity: "registered_verified" | "not_registered" | "unknown";
+  /** Aggregated reputation signal derived from on-chain feedback, filtered to trusted reviewers when configured. */
+  agentReputation: AgentReputationRisk;
+  /** Service / x402 endpoint validity evidence from the agent card. */
+  agentValidation: "services_observed" | "no_services" | "card_unavailable" | "unknown";
+};
+
+/** Per-chain identity probe result surfaced inside agentRisk.chainEvidence. */
+export type AgentChainIdentityResult = {
+  chainId: number;
+  registered: boolean;
+  status: AgentIdentityStatus;
+  ownerAddress: string | undefined;
+  agentWallet: string | undefined;
+  registrationUri: string | undefined;
+  error: string | undefined;
+};
+
+/** Aggregated reputation summary derived from on-chain feedback. */
+export type AgentReputationSummary = {
+  chainId: number;
+  totalFeedback: number;
+  activeFeedback: number;
+  revokedFeedback: number;
+  /** Number of unique reviewers observed. */
+  uniqueReviewers: number;
+  /** Number of recognized tags (operator policy). */
+  recognizedTags: number;
+  /** Number of unrecognized tags. */
+  unrecognizedTags: number;
+  /** Number of feedback entries with valid expected decimals. */
+  validDecimalsFeedback: number;
+  /** Number of active feedback entries eligible for operator scoring. */
+  scoreEligibleFeedback: number;
+  /** Whether the scan covered the full block history (complete) or was bounded. */
+  historyCoverage: "complete" | "partial";
+  blocksScanned: string; // bigint serialized as decimal string
+  errors: string[];
+};
+
+/** Service entry from the agent card, used for payload evidence. */
+export type AgentServiceObservation = {
+  type: string;
+  endpoint?: string;
+  schema?: string;
+};
+
+/** Optional agentRisk extension on RiskAssessment. Present only when subject.type === "agent". */
+export type AgentRisk = {
+  agentId: string;
+  primaryChainId: number;
+  agentWallet?: string;
+  registrationUri?: string;
+  agentName?: string;
+  agentDescription?: string;
+  dimensions: AgentRiskDimensions;
+  chainEvidence: AgentChainIdentityResult[];
+  reputationSummary?: AgentReputationSummary;
+  services?: AgentServiceObservation[];
+  /** True when the caller-supplied targetUrl matches a service endpoint advertised in the verified agent card. */
+  targetUrlVerified?: boolean;
+  /** Explicit target attribution state used by the risk engine. */
+  targetUrlStatus?: TargetUrlProbeStatus;
+  /** True when OMNI observed the targetUrl redirect to a private/internal address. Only set when targetUrl was caller-supplied AND advertised in the agent's verified card. */
+  targetUrlRedirectsToPrivate?: boolean;
+  /** ERC-8004 specific policy version for agent scoring. */
+  policyVersion: string;
+  /** Coverage model version for agent assessment. */
+  coverageVersion: string;
+};
+
+export type AgentRiskAssessment = RiskAssessment & {
+  agentRisk: AgentRisk;
 };

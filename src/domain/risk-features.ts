@@ -1,10 +1,26 @@
-import type { EvidenceCoverageSource, ProvenanceState, RepositoryDependencyVulnerabilityFinding, RepositoryDependencyVulnerabilityStatus, RepositoryDependencyVulnerabilitySummary, RepositoryMaliciousPackageObservation, RepositorySummaryStatus, RepositoryThreatIntelFinding, RepositoryThreatIntelStatus, RepositoryThreatIntelSummary, RiskLevel, RiskSnapshot, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
+import type { AgentIdentityStatus, EvidenceCoverageSource, ProvenanceState, RepositoryDependencyVulnerabilityFinding, RepositoryDependencyVulnerabilityStatus, RepositoryDependencyVulnerabilitySummary, RepositoryMaliciousPackageObservation, RepositorySummaryStatus, RepositoryThreatIntelFinding, RepositoryThreatIntelStatus, RepositoryThreatIntelSummary, RiskLevel, RiskSnapshot, TargetUrlProbeStatus, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
 
-export const RISK_FEATURE_SCHEMA_VERSION = 4 as const;
+export const RISK_FEATURE_SCHEMA_VERSION = 5 as const;
 
 type KnownSeverity = Exclude<RiskLevel, "unknown">;
 type SeverityCounts = Record<KnownSeverity, number>;
 type VulnerabilitySeverityCounts = Record<RiskLevel, number>;
+
+export type AgentFeatures = {
+  identityStatus: AgentIdentityStatus | undefined;
+  registered: boolean;
+  registrationChecked: boolean;
+  servicesObserved: boolean;
+  cardUnavailable: boolean;
+  registrationMismatch: boolean;
+  trustedFeedbackExists: boolean;
+  strongestTrustedRisk: number | undefined;
+  targetUrlAdvertised: boolean;
+  targetUrlVerified: boolean;
+  targetUrlRedirectsToPrivate: boolean;
+  targetUrlStatus: TargetUrlProbeStatus;
+  identityRpcError: boolean;
+};
 
 export type RiskFeatures = {
   schemaVersion: typeof RISK_FEATURE_SCHEMA_VERSION;
@@ -43,6 +59,7 @@ export type RiskFeatures = {
     dependencyThreatIntelCountsBySeverity: SeverityCounts;
     retainedDependencyThreatIntelFindings: RepositoryThreatIntelFinding[];
   };
+  agent: AgentFeatures;
   scorecard: number | undefined;
   threatIntel: { checked: boolean; findings: ThreatFinding[]; matchCount: number; countsBySeverity: SeverityCounts };
   endpoint: { present: boolean; listedOnCircle: boolean | undefined; supportsGateway: boolean | undefined; supportsVanilla: boolean | undefined; responseStatus: number | undefined };
@@ -102,6 +119,76 @@ function threatCounts(summary: RepositoryThreatIntelSummary | undefined): Severi
   return result;
 }
 
+function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
+  // Default: no agent evidence
+  const features: AgentFeatures = {
+    identityStatus: undefined,
+    registered: false,
+    registrationChecked: false,
+    servicesObserved: false,
+    cardUnavailable: false,
+    registrationMismatch: false,
+    trustedFeedbackExists: false,
+    strongestTrustedRisk: undefined,
+    targetUrlAdvertised: false,
+    targetUrlVerified: false,
+    targetUrlRedirectsToPrivate: false,
+    targetUrlStatus: "NOT_APPLICABLE",
+    identityRpcError: false,
+  };
+
+  if (snapshot.subject.type !== "agent") return features;
+
+  // Extract from evidence
+  for (const ev of snapshot.evidence) {
+    if (ev.kind === "agent_identity") {
+      const detail = ev.detail as { status?: AgentIdentityStatus };
+      if (detail.status === "REGISTERED" || detail.status === "NOT_REGISTERED" || detail.status === "UNAVAILABLE") {
+        features.identityStatus = detail.status;
+        features.registered = detail.status === "REGISTERED";
+        features.registrationChecked = detail.status !== "UNAVAILABLE";
+        features.identityRpcError = detail.status === "UNAVAILABLE";
+      }
+    }
+    if (ev.kind === "agent_card") {
+      const detail = ev.detail as { serviceCount?: number };
+      features.servicesObserved = (detail.serviceCount ?? 0) > 0;
+    }
+    if (ev.kind === "agent_card_unavailable") {
+      features.cardUnavailable = true;
+    }
+    if (ev.kind === "agent_registration_mismatch") {
+      features.registrationMismatch = true;
+    }
+    if (ev.kind === "agent_trusted_feedback") {
+      features.trustedFeedbackExists = true;
+      const detail = ev.detail as { strongestRisk?: number };
+      if (detail.strongestRisk !== undefined) features.strongestTrustedRisk = detail.strongestRisk;
+    }
+    if (ev.kind === "agent_target_redirect_to_private") {
+      features.targetUrlRedirectsToPrivate = true;
+      features.targetUrlStatus = "ADVERTISED_REDIRECT_TO_PRIVATE";
+    }
+    if (ev.kind === "agent_target_verified") {
+      features.targetUrlVerified = true;
+      features.targetUrlAdvertised = true;
+      features.targetUrlStatus = "ADVERTISED_VERIFIED";
+    }
+    if (ev.kind === "agent_target_not_advertised") {
+      features.targetUrlAdvertised = false;
+      features.targetUrlVerified = false;
+      features.targetUrlStatus = "NOT_ADVERTISED";
+    }
+    if (ev.kind === "agent_target_probe_unavailable") {
+      features.targetUrlAdvertised = true;
+      features.targetUrlVerified = true;
+      features.targetUrlStatus = "PROBE_UNAVAILABLE";
+    }
+  }
+
+  return features;
+}
+
 export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
   const vulnerabilities = snapshot.vulnerabilities;
   const threatFindings = snapshot.threatFindings ?? [];
@@ -126,6 +213,7 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
       case "repository": expected = 1; completed = snapshot.scorecard === undefined ? 0 : 1; break;
       case "x402_endpoint": { const checks = [snapshot.endpoint?.listedOnCircle !== undefined, snapshot.activeProbeChecked === true, snapshot.historyChecked === true, snapshot.threatIntelChecked === true]; expected = checks.length; completed = checks.filter(Boolean).length; break; }
       case "dependency_set": expected = 1; completed = snapshot.evidence.length === 0 ? 0 : 1; break;
+      case "agent": expected = 1; completed = snapshot.evidence.length > 0 ? 1 : 0; break;
     }
   }
 
@@ -176,6 +264,7 @@ export function extractRiskFeatures(snapshot: RiskSnapshot): RiskFeatures {
       dependencyThreatIntelCountsBySeverity: threatCounts(threatObservation?.summary),
       retainedDependencyThreatIntelFindings: threatObservation?.findings ?? []
     },
+    agent: extractAgentFeatures(snapshot),
     scorecard: snapshot.scorecard,
     threatIntel: { checked: snapshot.threatIntelChecked === true, findings: threatFindings, matchCount: threatFindings.length, countsBySeverity },
     endpoint: { present: snapshot.endpoint !== undefined, listedOnCircle: snapshot.endpoint?.listedOnCircle, supportsGateway: snapshot.endpoint?.supportsGateway, supportsVanilla: snapshot.endpoint?.supportsVanilla, responseStatus: snapshot.endpoint?.responseStatus },
