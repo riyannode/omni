@@ -1,7 +1,13 @@
--- Migration 003: add 'agent' to subject_type CHECK constraint in assessment_records.
+-- Migration 003 by reserved sequencing: add 'agent' to the assessment_records
+-- subject_type CHECK constraint. It is intentionally numbered 003 to remain
+-- compatible with the pending PR #23 sequence, which is expected to own 001 and
+-- 002. Current main may not contain those migrations or PR #23's migration runner.
 --
--- This migration is ADDITIVE: it widens the allowed values for the subject_type
--- column to include 'agent'. Existing rows are unaffected.
+-- This migration is ADDITIVE: it widens the allowed values for subject_type to
+-- include 'agent'. Existing rows are unaffected. Apply it explicitly to each
+-- existing database before relying on agent journal persistence. It is not
+-- automatically applied by the current db/init.ts, which directly applies only
+-- db/schema.sql.
 --
 -- Safety: This migration is idempotent when run against Postgres 12+.
 -- It uses ALTER TABLE ... DROP CONSTRAINT / ADD CONSTRAINT which acquires
