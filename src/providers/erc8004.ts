@@ -158,7 +158,7 @@ export function getChainRpcUrl(config: Erc8004ChainConfig): string {
 export const ERC8004_PRODUCTION_CHAINS: readonly Erc8004ChainConfig[] = Object.values(ERC8004_CHAINS).filter(c => c.enabled);
 
 // ---------------------------------------------------------------------------
-// Private-IP CIDR guards
+// Public-destination classification
 // ---------------------------------------------------------------------------
 
 const PRIVATE_RANGES: Array<{ start: bigint; end: bigint }> = (function () {
@@ -231,13 +231,53 @@ function ipv6Range(cidr: string): { start: bigint; end: bigint } {
   return { start, end: start | (((1n << 128n) - 1n) ^ mask) };
 }
 
-// IPv6 destinations are allowed only outside special-use, documentation, and
-// other non-global ranges. This keeps the SSRF policy fail-closed as new
-// special-purpose allocations appear unless explicitly reviewed here.
-const NON_PUBLIC_IPV6_RANGES = [
-  "::/128", "::1/128", "2001:0::/32", "2001:2::/48", "2001:10::/28",
-  "2001:20::/28", "2001:db8::/32", "3fff::/20", "fc00::/7", "fe80::/10", "ff00::/8",
+const IPV6_GLOBAL_UNICAST_RANGE = ipv6Range("2000::/3");
+const IPV6_MAPPED_RANGE = ipv6Range("::ffff:0:0/96");
+const IPV6_NAT64_RFC6052_RANGE = ipv6Range("64:ff9b::/96");
+const IPV6_NAT64_RFC8215_RANGE = ipv6Range("64:ff9b:1::/48");
+
+// Allow-public policy based on the current IANA IPv6 Address Space and
+// IPv6 Special-Purpose Address registries. Ordinary destinations must be in
+// 2000::/3; everything outside that allocation is rejected by default.
+//
+// The entries below are the IANA special-purpose ranges whose current
+// registry semantics are not ordinary public destinations. The explicit
+// globally-reachable exceptions are allowed intentionally before this deny
+// list (for example, current IANA anycast/protocol allocations).
+const IPV6_GLOBALLY_REACHABLE_SPECIAL_RANGES = [
+  "2001:1::1/128", "2001:1::2/128", "2001:1::3/128", "2001:3::/32",
+  "2001:4:112::/48", "2001:20::/28", "2001:30::/28", "2620:4f:8000::/48",
 ].map(ipv6Range);
+
+const IPV6_NON_GLOBAL_SPECIAL_RANGES = [
+  "2001::/23", "2001:2::/48", "2001:10::/28", "2001:db8::/32", "2002::/16",
+  "3fff::/20", "5f00::/16", "fc00::/7", "fe80::/10",
+].map(ipv6Range);
+
+function ipv6ValueInRange(value: bigint, range: { start: bigint; end: bigint }): boolean {
+  return value >= range.start && value <= range.end;
+}
+
+function ipv4FromUint32(value: bigint): string {
+  return [24n, 16n, 8n, 0n].map(shift => Number((value >> shift) & 0xffn)).join(".");
+}
+
+function mappedIpv4(units: number[]): string {
+  return ipv4FromUint32((BigInt(units[6]!) << 16n) | BigInt(units[7]!));
+}
+
+function nat64EmbeddedIpv4(units: number[]): string | undefined {
+  const value = ipv6ToBigInt(units);
+  if (ipv6ValueInRange(value, IPV6_NAT64_RFC6052_RANGE)) return ipv4FromUint32(value & 0xffffffffn);
+  if (!ipv6ValueInRange(value, IPV6_NAT64_RFC8215_RANGE)) return undefined;
+
+  // RFC 6052's /48 format has an eight-bit zero "u" field between the two
+  // 16-bit halves of the embedded IPv4 address.
+  if ((units[4]! >> 8) !== 0) return undefined;
+  const first = BigInt(units[3]!);
+  const second = BigInt(((units[4]! & 0xff) << 8) | (units[5]! >> 8));
+  return ipv4FromUint32((first << 16n) | second);
+}
 
 function isPrivateIpv4(ip: string): boolean {
   const octets = parseIpv4(ip);
@@ -246,16 +286,24 @@ function isPrivateIpv4(ip: string): boolean {
   return PRIVATE_RANGES.some(r => n >= r.start && n <= r.end);
 }
 
-function isPrivateIpv6(ip: string): boolean {
+function isPublicIpv6(ip: string): boolean {
   const units = parseIpv6(ip);
   if (!units) return false;
-  const isMapped = units.slice(0, 5).every(unit => unit === 0) && units[5] === 0xffff;
-  if (isMapped) {
-    const mapped = `${units[6]! >> 8}.${units[6]! & 0xff}.${units[7]! >> 8}.${units[7]! & 0xff}`;
-    return isPrivateIpv4(mapped);
-  }
+
   const value = ipv6ToBigInt(units);
-  return NON_PUBLIC_IPV6_RANGES.some(range => value >= range.start && value <= range.end);
+  if (ipv6ValueInRange(value, IPV6_MAPPED_RANGE)) return !isPrivateIpv4(mappedIpv4(units));
+
+  const translatedIpv4 = nat64EmbeddedIpv4(units);
+  if (translatedIpv4 !== undefined) return !isPrivateIpv4(translatedIpv4);
+
+  if (!ipv6ValueInRange(value, IPV6_GLOBAL_UNICAST_RANGE)) return false;
+  if (IPV6_GLOBALLY_REACHABLE_SPECIAL_RANGES.some(range => ipv6ValueInRange(value, range))) return true;
+  if (IPV6_NON_GLOBAL_SPECIAL_RANGES.some(range => ipv6ValueInRange(value, range))) return false;
+  return true;
+}
+
+function isPrivateIpv6(ip: string): boolean {
+  return parseIpv6(ip) !== undefined && !isPublicIpv6(ip);
 }
 
 export function isPrivateIp(ip: string): boolean {
@@ -263,7 +311,9 @@ export function isPrivateIp(ip: string): boolean {
 }
 
 /**
- * SAFE POLICY: reject if ANY resolved address is private.
+ * SAFE POLICY: reject if ANY resolved address is not an eligible public
+ * Internet destination. The function name is retained for the existing
+ * provider interface, but the IPv6 policy is broader than private CIDRs.
  */
 export async function hostnameResolvesToPrivate(hostname: string, network: Erc8004Network = DEFAULT_NETWORK): Promise<boolean> {
   try {

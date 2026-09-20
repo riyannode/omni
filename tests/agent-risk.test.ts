@@ -668,14 +668,28 @@ describe("ERC-8004 reputation scan", () => {
 
 describe("ERC-8004 SSRF classification and registration fetch caps", () => {
   test("rejects non-public IPv6 and mapped private addresses", () => {
-    for (const ip of ["::1", "fc00::", "fd12::", "fe80::", "fe90::", "fea0::", "febf::", "ff02::1", "2001:db8::1", "::ffff:127.0.0.1", "0:0:0:0:0:ffff:192.168.1.1"]) expect(isPrivateIp(ip)).toBe(true);
+    for (const ip of ["::1", "::", "fc00::", "fd12::", "fe80::", "fe90::", "fea0::", "febf::", "ff02::1", "2001:db8::1", "3fff::1", "4000::1", "100::1", "100:0:0:1::1", "::ffff:127.0.0.1", "0:0:0:0:0:ffff:192.168.1.1", "64:ff9b::7f00:1", "64:ff9b::c0a8:101", "64:ff9b:1:7f00:0:100::"]) expect(isPrivateIp(ip)).toBe(true);
     expect(isPrivateIp("2001:4860:4860::8888")).toBe(false);
+    expect(isPrivateIp("2606:4700:4700::1111")).toBe(false);
+    expect(isPrivateIp("2001:1::1")).toBe(false);
     expect(isPrivateIp("::ffff:8.8.8.8")).toBe(false);
+    expect(isPrivateIp("64:ff9b::808:808")).toBe(false);
+    expect(isPrivateIp("64:ff9b:1:808:8:800::")).toBe(false);
   });
 
   test("mixed DNS rejects if any result is private", async () => {
     const network = { resolve4: async () => ["93.184.216.34", "10.0.0.1"], resolve6: async () => [] } as never;
     await expect(hostnameResolvesToPrivate("mixed.example", network)).resolves.toBe(true);
+  });
+
+  test("mixed DNS rejects ordinary public IPv6 plus a disallowed IPv6 result", async () => {
+    const network = { resolve4: async () => [], resolve6: async () => ["2001:4860:4860::8888", "4000::1"] } as never;
+    await expect(hostnameResolvesToPrivate("mixed-v6.example", network)).resolves.toBe(true);
+  });
+
+  test("DNS with only public IPv6 is allowed", async () => {
+    const network = { resolve4: async () => [], resolve6: async () => ["2001:4860:4860::8888", "2606:4700:4700::1111"] } as never;
+    await expect(hostnameResolvesToPrivate("public-v6.example", network)).resolves.toBe(false);
   });
 
   test("data URI cap rejects decoded payloads over 256 KiB", async () => {
