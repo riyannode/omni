@@ -31,7 +31,7 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 
 ## Paid endpoints
 
-The current API exposes five paid endpoints.
+The current source and API contract define five paid endpoints.
 
 | Endpoint | Price | Purpose |
 |---|---:|---|
