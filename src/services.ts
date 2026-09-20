@@ -21,7 +21,6 @@ import {
   readAgentIdentity,
   scanAgentReputation,
   fetchAgentCard,
-  probeTargetUrlRedirectsToPrivate,
   extractServices,
   getChainConfig,
   type Erc8004ChainConfig,
@@ -34,14 +33,12 @@ type AgentRiskProvider = {
   readAgentIdentity: typeof readAgentIdentity;
   scanAgentReputation: typeof scanAgentReputation;
   fetchAgentCard: typeof fetchAgentCard;
-  probeTargetUrlRedirectsToPrivate: typeof probeTargetUrlRedirectsToPrivate;
 };
 
 const DEFAULT_AGENT_RISK_PROVIDER: AgentRiskProvider = {
   readAgentIdentity,
   scanAgentReputation,
   fetchAgentCard,
-  probeTargetUrlRedirectsToPrivate,
 };
 
 const REPOSITORY_DEPENDENCY_ENRICHMENT_LIMIT = 24;
@@ -888,8 +885,6 @@ export class OmniIntelligence {
    * Assesses an ERC-8004 registered agent by agentId.
    * @param agentId - The ERC-721 token id (decimal string) in the IdentityRegistry.
    * @param chainRef - CAIP-2 chain reference (e.g. "eip155:1"). REQUIRED.
-   * @param targetUrl - Optional caller-supplied target URL. If advertised in the
-   *                    agent's verified card, a redirect-to-private probe is run.
    * @param trustedReviewers - Operator-configured allowlist for on-chain feedback
    *                           (lowercase addresses). Default null = public feedback
    *                           treated as evidence-only (not trust score input).
@@ -898,7 +893,6 @@ export class OmniIntelligence {
   async agentRisk(
     agentId: string,
     chainRef: string = "eip155:1",
-    targetUrl?: string,
     trustedReviewers: Set<string> | null = null,
     reputationMaxChunkAttempts = REPUTATION_DEFAULT_MAX_CHUNKS,
   ): Promise<AgentRiskAssessment> {
@@ -1021,8 +1015,6 @@ export class OmniIntelligence {
     let agentValidation: AgentRisk["dimensions"]["agentValidation"] = "unknown";
     let cardUnavailable = false;
     let registrationMismatch = false;
-    let cardVerified = false;
-
     if (isRegistered && primaryRegistrationUri) {
       try {
         const cardResult = await this.agentProvider.fetchAgentCard(primaryRegistrationUri, {
@@ -1047,7 +1039,6 @@ export class OmniIntelligence {
           });
         } else if (cardResult.card && (cardResult.status === "SELF_REFERENCE_MATCH" || cardResult.status === "INACTIVE")) {
           const card = cardResult.card;
-          cardVerified = true;
           if (typeof card.name === "string") agentName = card.name.slice(0, 256);
           if (typeof card.description === "string") agentDescription = card.description.slice(0, 1024);
           services = extractServices(card);
@@ -1216,84 +1207,13 @@ export class OmniIntelligence {
       coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "NOT_QUERIED", "NOT_APPLICABLE"));
     }
 
-    // --- Phase 4: targetUrl probe with canonical URL matching ---
-    let targetUrlVerified: boolean | undefined;
-    let targetUrlRedirectsToPrivate: boolean | undefined;
-    let targetUrlStatus: AgentRisk["targetUrlStatus"];
-
-    if (targetUrl && isRegistered && cardVerified && services && services.length > 0) {
-      const advertisedEndpoints = services.map(s => s.endpoint).filter((e): e is string => typeof e === "string");
-      // Canonical URL matching — exact match only
-      const isAdvertised = advertisedEndpoints.some(ep => {
-        try {
-          const epUrl = new URL(ep);
-          const targetUrlObj = new URL(targetUrl);
-          return epUrl.origin === targetUrlObj.origin && epUrl.pathname === targetUrlObj.pathname;
-        } catch {
-          return ep === targetUrl;
-        }
-      });
-      targetUrlVerified = isAdvertised;
-
-      if (isAdvertised) {
-        try {
-          const probe = await this.agentProvider.probeTargetUrlRedirectsToPrivate(targetUrl);
-          targetUrlRedirectsToPrivate = probe.redirectsToPrivate;
-          if (probe.error) errors.push(`targetUrl probe: ${probe.error}`);
-          if (probe.redirectsToPrivate) {
-            targetUrlStatus = "ADVERTISED_REDIRECT_TO_PRIVATE";
-            evidence.push({
-              source: "OMNI active probe",
-              kind: "agent_target_redirect_to_private",
-              observedAt,
-              detail: { targetUrl, redirectsToPrivate: true },
-            });
-          } else if (probe.error) {
-            targetUrlStatus = "PROBE_UNAVAILABLE";
-            evidence.push({ source: "OMNI active probe", kind: "agent_target_probe_unavailable", observedAt, detail: { targetUrl, error: probe.error } });
-          } else {
-            targetUrlStatus = "ADVERTISED_VERIFIED";
-            evidence.push({ source: "OMNI active probe", kind: "agent_target_verified", observedAt, detail: { targetUrl } });
-          }
-        } catch (e) {
-          errors.push(`targetUrl probe: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      } else {
-        targetUrlStatus = "NOT_ADVERTISED";
-        evidence.push({
-          source: "OMNI active probe",
-          kind: "agent_target_not_advertised",
-          observedAt,
-          detail: { targetUrl },
-        });
-      }
-    } else if (targetUrl && isRegistered && cardVerified && (!services || services.length === 0)) {
-      // No services advertised — target URL cannot match
-      targetUrlVerified = false;
-      targetUrlStatus = "NOT_ADVERTISED";
-      evidence.push({
-        source: "OMNI active probe",
-        kind: "agent_target_not_advertised",
-        observedAt,
-        detail: { targetUrl, reason: "no_services_advertised" },
-      });
-    } else if (targetUrl && isRegistered) {
-      targetUrlStatus = "PROBE_UNAVAILABLE";
-      evidence.push({ source: "OMNI active probe", kind: "agent_target_probe_unavailable", observedAt, detail: { targetUrl, reason: "verified_agent_card_unavailable" } });
-    } else if (targetUrl && !isRegistered) {
-      targetUrlVerified = false;
-      targetUrlStatus = identityProbeStatus === "UNAVAILABLE" ? "PROBE_UNAVAILABLE" : "NOT_APPLICABLE";
-    } else {
-      targetUrlStatus = "NOT_APPLICABLE";
-    }
-
-    // --- Phase 5: assemble agentIdentity dimension ---
+    // --- Phase 4: assemble agentIdentity dimension ---
     const agentIdentity: AgentRisk["dimensions"]["agentIdentity"] =
       identityProbeStatus === "REGISTERED" ? "registered_verified"
       : identityProbeStatus === "NOT_REGISTERED" ? "not_registered"
       : "unknown";
 
-    // --- Phase 6: assemble AgentRisk extension ---
+    // --- Phase 5: assemble AgentRisk extension ---
     const agentRisk: AgentRisk = {
       agentId,
       primaryChainId,
@@ -1309,14 +1229,11 @@ export class OmniIntelligence {
       chainEvidence: chainResults,
       ...(reputationSummary ? { reputationSummary } : {}),
       ...(services && services.length > 0 ? { services } : {}),
-      ...(targetUrlVerified !== undefined ? { targetUrlVerified } : {}),
-      ...(targetUrlStatus ? { targetUrlStatus } : {}),
-      ...(targetUrlRedirectsToPrivate !== undefined ? { targetUrlRedirectsToPrivate } : {}),
       policyVersion: "omni-agent-risk-v1",
       coverageVersion: AGENT_COVERAGE_MODEL_VERSION,
     };
 
-    // --- Phase 7: RiskAssessment base ---
+    // --- Phase 6: RiskAssessment base ---
     const baseAssessment = await this.assessAndJournal({
       subject: { type: "agent", id: canonicalId },
       coverage: { modelVersion: AGENT_COVERAGE_MODEL_VERSION, sources: coverageSources },

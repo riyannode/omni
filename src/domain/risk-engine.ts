@@ -148,11 +148,10 @@ function highestObservedVulnerabilitySeverity(features: RiskFeatures, policy: Re
  * - agentIdentity: registration status
  * - agentReputation: trusted-reviewer feedback (if policy exists)
  * - agentValidation: service/card evidence
- * - targetUrlRedirectsToPrivate: critical contradiction
  *
  * Registered=false => riskScore 0 + insufficient_evidence + manual_review.
  * RPC outage => sourceErrors + UNKNOWN coverage (not registered=false).
- * Real contradictions (e.g., target redirecting to private) must not end at riskScore 0.
+ * Registration/card contradictions are scored as observed validation evidence.
  */
 function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, policy: ReadonlyRiskPolicy): RiskAssessment {
   const signals: RiskSignal[] = [];
@@ -203,23 +202,11 @@ function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, pol
     validationRiskScore = 0;
   }
 
-  // --- targetUrlRedirectsToPrivate dimension ---
-  let targetUrlRiskScore = 0;
-  if (agent.targetUrlRedirectsToPrivate) {
-    targetUrlRiskScore = policy.score.maximum; // Critical contradiction
-    push(signals, "AGENT_TARGET_REDIRECT_TO_PRIVATE", "critical", "OMNI active probe", { targetUrl: snapshot.evidence.find(e => e.kind === "agent_target_redirect_to_private")?.detail ?? {} });
-  } else if (agent.targetUrlStatus === "NOT_ADVERTISED") {
-    // Supplied URL was not advertised — deterministic contradiction.
-    targetUrlRiskScore = policy.endpoint.unlisted;
-    push(signals, "AGENT_TARGET_NOT_ADVERTISED", "medium", "OMNI active probe", {});
-  }
-
   // --- MAX aggregation across independent dimensions ---
   const observedRisk = Math.max(
     identityRiskScore,
     reputationRiskScore,
     validationRiskScore,
-    targetUrlRiskScore,
   );
 
   const coverage = features.coverage.expected === 0 ? 0 : features.coverage.completed / features.coverage.expected;

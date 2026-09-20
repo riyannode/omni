@@ -39,7 +39,7 @@ The current source and API contract define five paid endpoints.
 | `GET /v1/repo/risk` | `$0.01` | Repository security-practice evidence |
 | `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
 | `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
-| `GET /v1/agent/risk` | `$0.05` | ERC-8004 agent identity, reputation, registration, and service risk |
+| `GET /v1/agent/risk` | `$0.05` | ERC-8004 agent identity, reputation, and registration integrity |
 
 OMNI's paid API can be purchased over any compatible mainnet option currently offered by the live Circle Gateway x402 challenge. For `/v1/agent/risk`, `chain` selects the ERC-8004 identity/reputation chain; it does not select the Circle payment network. Payment selection still comes from the live `PAYMENT-REQUIRED` challenge. Production identity chains currently include Ethereum Mainnet and Base Mainnet; no Arc Mainnet ERC-8004 deployment or support is claimed. Arc Mainnet is the pinned network only for the Try with your agent demo flow.
 

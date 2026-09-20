@@ -60,10 +60,9 @@ OMNI history tracks `payTo`, network and price changes. Licensed wallet IOCs can
 
 - chain-specific ERC-8004 identity from the IdentityRegistry;
 - reputation evidence from the ReputationRegistry when feedback satisfies the configured trusted-reviewer/tag policy;
-- registration URI and verified agent-card/service evidence;
-- advertised service endpoints, with an optional HTTPS `targetUrl` check that is actively probed only when the URL matches an advertised endpoint.
+- registration URI and verified agent-card/service metadata evidence; advertised service endpoints are observed passively and are not actively probed by this endpoint.
 
-The endpoint requires a CAIP-2 `chain` identity-chain input and a canonical decimal uint256 `agentId`; the ERC-8004 identity/reputation chain is separate from the Circle/x402 payment chain used to purchase the OMNI request. An unadvertised `targetUrl` is not probed, becomes `NOT_ADVERTISED`, and contributes deterministic risk. `NOT_REGISTERED` is not automatically malicious: confirmed non-registration produces insufficient-evidence/manual-review behavior, while RPC failures remain unknown/unavailable. `active: false` is observed as an inactive registration and contributes deterministic validation risk. A redirect-to-private result for an advertised target can produce critical contradiction risk.
+The endpoint requires only a CAIP-2 `chain` identity-chain input and a canonical decimal uint256 `agentId`; the ERC-8004 identity/reputation chain is separate from the Circle/x402 payment chain used to purchase the OMNI request. `NOT_REGISTERED` is not automatically malicious: confirmed non-registration produces insufficient-evidence/manual-review behavior, while RPC failures remain unknown/unavailable. `active: false` is observed as an inactive registration and contributes deterministic validation risk.
 
 OMNI remains advisory: the caller or runtime policy decides whether to proceed, the wallet/runtime enforces that decision, and Circle settles payment. Registry data and agent-card metadata are evidence, not absolute truth or authorization. This current implementation does not claim live-paid production acceptance, production migration completion, or production persistence verification for the agent route. No Arc Mainnet ERC-8004 deployment or support is claimed.
 

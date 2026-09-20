@@ -192,7 +192,7 @@ export function createApp(options: {
     route: "agent",
     price: "$0.05",
     parse: req => agentQuery.parse(req.query),
-    execute: input => options.omni.agentRisk(input.agentId, input.chain, input.targetUrl)
+    execute: input => options.omni.agentRisk(input.agentId, input.chain)
   }));
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

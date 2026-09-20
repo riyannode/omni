@@ -287,16 +287,16 @@ paths:
   /v1/agent/risk:
     get:
       operationId: getAgentRisk
-      summary: Assess an ERC-8004 agent's identity, reputation, and service evidence before invoking or paying it.
+      summary: Assess an ERC-8004 agent's identity, reputation, and registration integrity.
       description: >
         Price: $0.05 USDC per request.
         Fetches identity from ERC-8004 IdentityRegistry (Ethereum Mainnet + Base Mainnet),
         scans ReputationRegistry for bounded on-chain feedback (NewFeedback / FeedbackRevoked events),
-        and fetches the agent card from the registration URI for service evidence.
+        and fetches registration metadata or the agent card from the on-chain registration URI.
         A missing or unregistered agent is not itself a malicious signal: it returns
         scoreStatus=insufficient_evidence and recommendation=manual_review.
-        The optional targetUrl parameter is an opt-in caller-supplied URL check for redirect-to-private
-        detection; it is only probed if it matches a service endpoint advertised in the verified agent card.
+        Advertised services are observed as passive registration metadata; OMNI does not
+        actively probe arbitrary service URLs for this endpoint.
       x-payment-info:
         price:
           mode: fixed
@@ -343,21 +343,10 @@ paths:
             pattern: '^(0|[1-9][0-9]{0,77})$'
             maxLength: 78
           example: "42"
-        - in: query
-          name: targetUrl
-          required: false
-          description: >
-            Optional HTTPS URL. It is actively probed only when it matches a service endpoint
-            advertised in the verified agent card. A supplied URL that is not advertised is not
-            probed and is recorded as NOT_ADVERTISED, which contributes deterministic risk.
-            HTTP (non-HTTPS) URLs are rejected during input validation before payment.
-          schema:
-            type: string
-            format: uri
-            maxLength: 2048
+
       responses:
         '200':
-          description: Agent risk assessment with ERC-8004 identity, reputation, and service evidence.
+          description: Agent risk assessment with ERC-8004 identity, reputation, registration, and passive service metadata evidence.
           headers:
             PAYMENT-RESPONSE:
               $ref: '#/components/headers/PaymentResponse'
@@ -994,7 +983,7 @@ components:
           description: Aggregated reputation signal derived from on-chain feedback.
         agentValidation:
           type: string
-          enum: [services_observed, no_services, card_unavailable, unknown]
+          enum: [services_observed, no_services, inactive_registration, card_unavailable, unknown]
           description: Service / x402 endpoint evidence from the agent card.
     AgentRisk:
       type: object
@@ -1019,12 +1008,7 @@ components:
         services:
           type: array
           items: { $ref: '#/components/schemas/AgentServiceObservation' }
-        targetUrlVerified:
-          type: boolean
-          description: True when the caller-supplied targetUrl matches a service endpoint in the verified agent card.
-        targetUrlRedirectsToPrivate:
-          type: boolean
-          description: True when OMNI probed targetUrl and observed a redirect to a private IP. Only set when targetUrl was advertised in the verified agent card.
+
     AgentRiskResponse:
       type: object
       allOf:
@@ -1037,7 +1021,8 @@ components:
       description: >
         Compact machine-readable JSON response for an ERC-8004 agent risk assessment.
         The standard CompactRiskAssessmentFields carry the base risk score and coverage;
-        the agentRisk extension carries agent-specific identity, reputation, and service evidence.
+        the agentRisk extension carries agent-specific identity, reputation, registration,
+        and passive service metadata evidence.
     Error:
       type: object
       required: [error]

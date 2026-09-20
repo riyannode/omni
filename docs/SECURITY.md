@@ -10,13 +10,12 @@
 
 ## ERC-8004 agent-risk trust boundary
 
-- The ERC-8004 registration URI, agent-card fields, advertised service metadata, and caller-supplied `targetUrl` are untrusted external evidence.
-- Registration and target HTTPS fetches use the ERC-8004 SSRF protections: private, internal, loopback, link-local, and other special-use destinations are rejected; DNS is revalidated during redirect handling; the validated IP is pinned while the original hostname remains in `Host`/SNI; redirects are bounded and HTTPS-only; HTTP downgrade is rejected; and response bodies are bounded.
-- An advertised endpoint may be actively probed only when a supplied `targetUrl` matches it. An unadvertised URL is not probed, is recorded as `NOT_ADVERTISED`, and contributes deterministic risk.
+- The ERC-8004 registration URI, agent-card fields, and advertised service metadata are untrusted external evidence linked from the on-chain IdentityRegistry. A caller supplies only the ERC-8004 chain and agent ID; this route has no arbitrary caller URL input.
+- Registration HTTPS fetches use the ERC-8004 SSRF protections: private, internal, loopback, link-local, and other special-use destinations are rejected; DNS is revalidated during redirect handling; the validated IP is pinned while the original hostname remains in `Host`/SNI; redirects are bounded and HTTPS-only; HTTP downgrade is rejected; and response bodies are bounded. Advertised service URLs remain passive registration metadata and are not actively probed by agent risk.
 - `feedbackURI` is evidence metadata and is not fetched.
 - ERC-8004 IdentityRegistry and ReputationRegistry operations are read-only. OMNI performs no ERC-8004 contract writes.
 
-The x402 preflight probe above has separate transport behavior from ERC-8004 registration/target probing; its redirect and host policy must not be assumed to be identical.
+The x402 preflight probe above has separate transport behavior from ERC-8004 registration fetching; its redirect and host policy must not be assumed to be identical.
 
 ## Trust-boundary implications
 

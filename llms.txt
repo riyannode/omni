@@ -23,7 +23,7 @@ Repository JSON includes bounded `repositorySummary` sections for dependency res
 - [GET /v1/repo/risk](https://omni.example.com/v1/repo/risk): repository risk assessment ($0.01 USDC). Query: `owner`, `repo`.
 - [POST /v1/dependencies/risk](https://omni.example.com/v1/dependencies/risk): per-package assessment for up to 100 packages plus an aggregate summary ($0.05 USDC). Body: `packages[]`.
 - [GET /v1/x402/endpoint/preflight](https://omni.example.com/v1/x402/endpoint/preflight): x402 endpoint preflight assessment ($0.01 USDC). Query: `url`.
-- [GET /v1/agent/risk](https://omni.example.com/v1/agent/risk): ERC-8004 agent risk assessment — identity, reputation, and service evidence ($0.05 USDC). Query: `chain` (required CAIP-2 reference, `eip155:<chainId>`), `agentId` (required decimal uint256 string; hex not accepted), optional `targetUrl` (HTTPS).
+- [GET /v1/agent/risk](https://omni.example.com/v1/agent/risk): ERC-8004 agent identity, reputation, and registration evidence ($0.05 USDC). Query: `chain` (required CAIP-2 reference, `eip155:<chainId>`), `agentId` (required canonical decimal uint256 string; hex not accepted). The chain selects the ERC-8004 identity/reputation chain, not the Circle/x402 payment network.
 
 ## Mainnet payment guidance
 

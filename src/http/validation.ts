@@ -27,7 +27,6 @@ const UINT256_MAX_STR = "1157920892373161954235709850086879078532699846656405640
  *
  * chain: CAIP-2 chain reference (e.g. "eip155:1"). REQUIRED.
  * agentId: decimal uint256 string only (NO hex). REQUIRED.
- * targetUrl: optional HTTPS URL (caller-supplied, opt-in).
  */
 export const agentQuery = z.object({
   chain: z.string().regex(/^eip155:[0-9]+$/, "chain must be a CAIP-2 chain reference (e.g. eip155:1)"),
@@ -41,7 +40,4 @@ export const agentQuery = z.object({
       // Same length as max, compare lexicographically
       return val <= UINT256_MAX_STR;
     }, `agentId must be a valid uint256 (0 to ${UINT256_MAX_STR})`),
-  targetUrl: z.string().url().max(2048)
-    .refine((url) => url.startsWith("https://"), "targetUrl must be HTTPS in v1")
-    .optional(),
-});
+}).strict();

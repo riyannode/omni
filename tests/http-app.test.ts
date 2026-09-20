@@ -655,7 +655,7 @@ describe("x402 discovery manifest", () => {
     expect(gatewayInvoked).toBe(false);
   });
 
-  test("GET /v1/agent/risk rejects non-HTTPS targetUrl with HTTP 400 before payment", async () => {
+  test("GET /v1/agent/risk rejects obsolete targetUrl input with HTTP 400 before payment", async () => {
     let gatewayInvoked = false;
     const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };
     const app = createApp({
@@ -676,7 +676,7 @@ describe("x402 discovery manifest", () => {
     const address = server.address() as AddressInfo;
     const origin = `http://127.0.0.1:${address.port}`;
 
-    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=1&targetUrl=http://example.com/api`);
+    const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=1&targetUrl=https://example.com/api`);
     expect(res.status).toBe(400);
     expect(gatewayInvoked).toBe(false);
   });

@@ -1,4 +1,4 @@
-import type { AgentIdentityStatus, EvidenceCoverageSource, ProvenanceState, RepositoryDependencyVulnerabilityFinding, RepositoryDependencyVulnerabilityStatus, RepositoryDependencyVulnerabilitySummary, RepositoryMaliciousPackageObservation, RepositorySummaryStatus, RepositoryThreatIntelFinding, RepositoryThreatIntelStatus, RepositoryThreatIntelSummary, RiskLevel, RiskSnapshot, TargetUrlProbeStatus, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
+import type { AgentIdentityStatus, EvidenceCoverageSource, ProvenanceState, RepositoryDependencyVulnerabilityFinding, RepositoryDependencyVulnerabilityStatus, RepositoryDependencyVulnerabilitySummary, RepositoryMaliciousPackageObservation, RepositorySummaryStatus, RepositoryThreatIntelFinding, RepositoryThreatIntelStatus, RepositoryThreatIntelSummary, RiskLevel, RiskSnapshot, ThreatFinding, VulnerabilityFinding } from "./risk.ts";
 
 export const RISK_FEATURE_SCHEMA_VERSION = 5 as const;
 
@@ -15,10 +15,6 @@ export type AgentFeatures = {
   registrationMismatch: boolean;
   trustedFeedbackExists: boolean;
   strongestTrustedRisk: number | undefined;
-  targetUrlAdvertised: boolean;
-  targetUrlVerified: boolean;
-  targetUrlRedirectsToPrivate: boolean;
-  targetUrlStatus: TargetUrlProbeStatus;
   identityRpcError: boolean;
 };
 
@@ -130,10 +126,6 @@ function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
     registrationMismatch: false,
     trustedFeedbackExists: false,
     strongestTrustedRisk: undefined,
-    targetUrlAdvertised: false,
-    targetUrlVerified: false,
-    targetUrlRedirectsToPrivate: false,
-    targetUrlStatus: "NOT_APPLICABLE",
     identityRpcError: false,
   };
 
@@ -165,25 +157,7 @@ function extractAgentFeatures(snapshot: RiskSnapshot): AgentFeatures {
       const detail = ev.detail as { strongestRisk?: number };
       if (detail.strongestRisk !== undefined) features.strongestTrustedRisk = detail.strongestRisk;
     }
-    if (ev.kind === "agent_target_redirect_to_private") {
-      features.targetUrlRedirectsToPrivate = true;
-      features.targetUrlStatus = "ADVERTISED_REDIRECT_TO_PRIVATE";
-    }
-    if (ev.kind === "agent_target_verified") {
-      features.targetUrlVerified = true;
-      features.targetUrlAdvertised = true;
-      features.targetUrlStatus = "ADVERTISED_VERIFIED";
-    }
-    if (ev.kind === "agent_target_not_advertised") {
-      features.targetUrlAdvertised = false;
-      features.targetUrlVerified = false;
-      features.targetUrlStatus = "NOT_ADVERTISED";
-    }
-    if (ev.kind === "agent_target_probe_unavailable") {
-      features.targetUrlAdvertised = true;
-      features.targetUrlVerified = true;
-      features.targetUrlStatus = "PROBE_UNAVAILABLE";
-    }
+
   }
 
   return features;

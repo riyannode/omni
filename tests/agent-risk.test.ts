@@ -2,12 +2,11 @@
  * Unit tests for ERC-8004 agent risk assessment.
  *
  * These tests exercise:
- *  - agentQuery zod schema validation (chain required, decimal agentId, HTTPS targetUrl)
+ *  - agentQuery zod schema validation (chain required, canonical decimal agentId)
  *  - RiskEngine behaviour for agent subjects (dimensions, score floor, MAX aggregation)
  *  - risk-evaluation.ts replay guard (agent rows excluded from safe-replay list)
  *  - erc8004.ts helpers: decodeString, extractServices, chain config resolution
  *  - scoreStatus and recommendation for registered / unregistered agents
- *  - targetUrl attribution rules (canonical matching)
  *  - real omni-agent-risk-v1 scoring
  *  - canonical cross-chain subject ID
  */
@@ -21,7 +20,7 @@ import { RISK_SNAPSHOT_SCHEMA_VERSION, AGENT_POLICY_VERSION } from "../src/domai
 import { RISK_FEATURE_SCHEMA_VERSION, extractRiskFeatures } from "../src/domain/risk-features.ts";
 import { partitionCompatibleRows } from "../src/domain/risk-evaluation.ts";
 import type { ReplayableRow } from "../src/domain/risk-evaluation.ts";
-import { extractServices, getChainConfig, getChainRpcUrl, NEW_FEEDBACK_TOPIC, FEEDBACK_REVOKED_TOPIC, Erc8004ExecutionRevertedError, readAgentIdentity, scanAgentReputation, parseAgentCard, fetchAgentCard, probeTargetUrlRedirectsToPrivate, isPrivateIp, hostnameResolvesToPrivate, MAX_FEEDBACK_EVENTS } from "../src/providers/erc8004.ts";
+import { extractServices, getChainConfig, getChainRpcUrl, NEW_FEEDBACK_TOPIC, FEEDBACK_REVOKED_TOPIC, Erc8004ExecutionRevertedError, readAgentIdentity, scanAgentReputation, parseAgentCard, fetchAgentCard, isPrivateIp, hostnameResolvesToPrivate, MAX_FEEDBACK_EVENTS } from "../src/providers/erc8004.ts";
 import { encodeAbiParameters, keccak256, stringToHex } from "viem";
 import { OmniIntelligence } from "../src/services.ts";
 import { CachedLoader } from "../src/data/cache.ts";
@@ -44,11 +43,6 @@ describe("agentQuery validation", () => {
     expect(result.success).toBe(true);
   });
 
-  test("accepts agentId with valid targetUrl", () => {
-    const result = agentQuery.safeParse({ chain: "eip155:1", agentId: "1", targetUrl: "https://example.com/api" });
-    expect(result.success).toBe(true);
-    if (result.success) expect(result.data.targetUrl).toBe("https://example.com/api");
-  });
 
   test("rejects hex agentId (hex not accepted)", () => {
     expect(agentQuery.safeParse({ chain: "eip155:1", agentId: "0x2a" }).success).toBe(false);
@@ -72,18 +66,8 @@ describe("agentQuery validation", () => {
     expect(agentQuery.safeParse({ chain: "", agentId: "42" }).success).toBe(false);
   });
 
-  test("rejects non-https targetUrl", () => {
-    expect(agentQuery.safeParse({ chain: "eip155:1", agentId: "1", targetUrl: "http://example.com/api" }).success).toBe(false);
-  });
-
-  test("rejects malformed targetUrl", () => {
-    expect(agentQuery.safeParse({ chain: "eip155:1", agentId: "1", targetUrl: "not-a-url" }).success).toBe(false);
-  });
-
-  test("targetUrl is optional", () => {
-    const result = agentQuery.safeParse({ chain: "eip155:1", agentId: "1" });
-    expect(result.success).toBe(true);
-    if (result.success) expect(result.data.targetUrl).toBeUndefined();
+  test("rejects obsolete targetUrl query input", () => {
+    expect(agentQuery.safeParse({ chain: "eip155:1", agentId: "1", targetUrl: "https://example.com/api" }).success).toBe(false);
   });
 });
 
@@ -213,32 +197,6 @@ describe("RiskEngine agent subjects", () => {
     expect(recommendation).not.toBe("do_not_proceed");
   });
 
-  test("agent risk signals actually alter riskScore (MAX aggregation)", () => {
-    const snapshot = minimalAgentSnapshot({
-      evidence: [
-        { source: "ERC-8004 IdentityRegistry", kind: "agent_identity", observedAt: new Date().toISOString(), detail: { status: "REGISTERED", registered: true } },
-        { source: "OMNI active probe", kind: "agent_target_redirect_to_private", observedAt: new Date().toISOString(), detail: { targetUrl: "https://api.example.com", redirectsToPrivate: true } },
-      ],
-    });
-    const assessment = engine.assess(snapshot);
-    // targetUrlRedirectsToPrivate should drive score to maximum
-    expect(assessment.riskScore).toBeGreaterThan(50);
-    expect(assessment.recommendation).toBe("do_not_proceed");
-  });
-
-  test("target URL redirect to private overrides low reputation score (MAX wins)", () => {
-    const snapshot = minimalAgentSnapshot({
-      evidence: [
-        { source: "ERC-8004 IdentityRegistry", kind: "agent_identity", observedAt: new Date().toISOString(), detail: { status: "REGISTERED", registered: true } },
-        { source: "ERC-8004 ReputationRegistry", kind: "agent_trusted_feedback", observedAt: new Date().toISOString(), detail: { strongestRisk: 10 } },
-        { source: "OMNI active probe", kind: "agent_target_redirect_to_private", observedAt: new Date().toISOString(), detail: { targetUrl: "https://api.example.com", redirectsToPrivate: true } },
-      ],
-    });
-    const assessment = engine.assess(snapshot);
-    // MAX(0, 10, 0, 100) = 100
-    expect(assessment.riskScore).toBe(100);
-    expect(assessment.recommendation).toBe("do_not_proceed");
-  });
 
   test("agent zero-coverage floor is not applied", () => {
     const snapshot = minimalAgentSnapshot({ evidence: [] });
@@ -329,14 +287,6 @@ describe("extractRiskFeatures for agent", () => {
     expect(features.agent.identityRpcError).toBe(true);
   });
 
-  test("detects targetUrlRedirectsToPrivate", () => {
-    const features = extractRiskFeatures(minimalAgentSnapshot({
-      evidence: [
-        { source: "OMNI active probe", kind: "agent_target_redirect_to_private", observedAt: new Date().toISOString(), detail: { targetUrl: "https://api.example.com", redirectsToPrivate: true } },
-      ],
-    }));
-    expect(features.agent.targetUrlRedirectsToPrivate).toBe(true);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -491,47 +441,6 @@ describe("canonical subject ID", () => {
     const id1 = canonicalSubjectId("eip155:1", "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432", "42");
     const id2 = canonicalSubjectId("eip155:1", "0x8004A818BFB912233c491871b3d84c89A494BD9e", "42");
     expect(id1).not.toBe(id2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Target URL canonical matching
-// ---------------------------------------------------------------------------
-
-describe("target URL canonical matching", () => {
-  test("exact match works", () => {
-    const ep = "https://api.example.com/v1";
-    const target = "https://api.example.com/v1";
-    const epUrl = new URL(ep);
-    const targetUrl = new URL(target);
-    expect(epUrl.origin).toBe(targetUrl.origin);
-    expect(epUrl.pathname).toBe(targetUrl.pathname);
-  });
-
-  test("prefix bypass is rejected (trusted.example.com.evil.com)", () => {
-    const ep = "https://trusted.example.com/api";
-    const target = "https://trusted.example.com.evil.com/api";
-    const epUrl = new URL(ep);
-    const targetUrl = new URL(target);
-    // Origins differ
-    expect(epUrl.origin).not.toBe(targetUrl.origin);
-  });
-
-  test("subdomain bypass is rejected", () => {
-    const ep = "https://api.example.com/v1";
-    const target = "https://evil.com/api.example.com/v1";
-    const epUrl = new URL(ep);
-    const targetUrl = new URL(target);
-    expect(epUrl.origin).not.toBe(targetUrl.origin);
-  });
-
-  test("path mismatch is rejected", () => {
-    const ep = "https://api.example.com/v1";
-    const target = "https://api.example.com/v2";
-    const epUrl = new URL(ep);
-    const targetUrl = new URL(target);
-    expect(epUrl.origin).toBe(targetUrl.origin);
-    expect(epUrl.pathname).not.toBe(targetUrl.pathname);
   });
 });
 
@@ -763,58 +672,6 @@ describe("ERC-8004 SSRF classification and registration fetch caps", () => {
     expect(resolved).toEqual(["public-a.example", "public-b.example", "public-c.example"]);
   });
 
-  test("target probe detects private destinations after multiple public redirects", async () => {
-    const responses = [
-      { statusCode: 302, location: "https://public-b.example/card", body: Buffer.alloc(0) },
-      { statusCode: 302, location: "https://private.example/card", body: Buffer.alloc(0) },
-    ];
-    const network = {
-      resolve4: async (host: string) => host === "private.example" ? ["10.0.0.1"] : ["93.184.216.34"],
-      resolve6: async () => [],
-      request: ((_: unknown, callback: (response: unknown) => void) => {
-        const response = responses.shift()!;
-        const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
-        req.end = () => process.nextTick(() => {
-          const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string>; resume: () => void };
-          res.statusCode = response.statusCode;
-          res.headers = { location: response.location! };
-          res.resume = () => undefined;
-          callback(res as never);
-          res.emit("end");
-        });
-        req.destroy = () => undefined;
-        return req as never;
-      }) as never,
-    };
-    await expect(probeTargetUrlRedirectsToPrivate("https://public-a.example/card", network as never)).resolves.toMatchObject({ redirectsToPrivate: true });
-  });
-
-  test("target probe follows a safe public redirect to final 200", async () => {
-    const responses = [
-      { statusCode: 302, location: "https://public-b.example/card", body: Buffer.alloc(0) },
-      { statusCode: 200, body: Buffer.from("ok") },
-    ];
-    const network = {
-      resolve4: async () => ["93.184.216.34"],
-      resolve6: async () => [],
-      request: ((_: unknown, callback: (response: unknown) => void) => {
-        const response = responses.shift()!;
-        const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
-        req.end = () => process.nextTick(() => {
-          const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string>; resume: () => void };
-          res.statusCode = response.statusCode;
-          res.headers = response.location ? { location: response.location } : {};
-          res.resume = () => undefined;
-          callback(res as never);
-          if (response.body.length > 0) res.emit("data", response.body);
-          res.emit("end");
-        });
-        req.destroy = () => undefined;
-        return req as never;
-      }) as never,
-    };
-    await expect(probeTargetUrlRedirectsToPrivate("https://public-a.example/card", network as never)).resolves.toEqual({ redirectsToPrivate: false });
-  });
 
   test("redirect loops are bounded", async () => {
     const network = {
@@ -845,12 +702,11 @@ function serviceForAgent(provider: unknown, policy: unknown = { trustedReviewers
   return new OmniIntelligence(new RiskEngine(), cache, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, new NoopAssessmentJournal(), {} as never, {} as never, policy as never, provider as never);
 }
 
-function agentProvider(identity: Record<string, unknown>, feedback: unknown[] = [], card?: unknown, probe = { redirectsToPrivate: false }) {
+function agentProvider(identity: Record<string, unknown>, feedback: unknown[] = [], card?: unknown) {
   return {
     readAgentIdentity: async () => identity,
     scanAgentReputation: async () => ({ feedback, blocksScanned: 100n, historyCoverage: "complete", truncated: false, totalEventsObserved: feedback.length, errors: [] }),
     fetchAgentCard: async () => card ?? { status: "UNAVAILABLE", error: "not used" },
-    probeTargetUrlRedirectsToPrivate: async () => probe,
   };
 }
 
@@ -870,16 +726,6 @@ describe("OmniIntelligence agent service path", () => {
     expect(assessment.scoreStatus).toBe("measured");
   });
 
-  test("actual extracted target states score unadvertised and private redirects", async () => {
-    const card = { status: "SELF_REFERENCE_MATCH", card: validCard(), selfReferenceMatch: true };
-    const notAdvertised = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], card)).agentRisk("42", "eip155:1", "https://other.example/api");
-    expect(notAdvertised.agentRisk.targetUrlStatus).toBe("NOT_ADVERTISED");
-    expect(notAdvertised.riskScore).toBeGreaterThan(0);
-
-    const redirected = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], card, { redirectsToPrivate: true })).agentRisk("42", "eip155:1", "https://agent.example/api");
-    expect(redirected.agentRisk.targetUrlStatus).toBe("ADVERTISED_REDIRECT_TO_PRIVATE");
-    expect(redirected.riskScore).toBe(100);
-  });
 
   test("inactive self-referencing card is observed, not unavailable, and changes risk", async () => {
     const inactiveCard = { status: "INACTIVE", card: validCard({ active: false }), selfReferenceMatch: true };

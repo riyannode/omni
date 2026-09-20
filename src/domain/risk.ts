@@ -212,16 +212,6 @@ export const DEFAULT_AGENT_REPUTATION_POLICY: AgentReputationPolicy = {
   recognizedTags: [],
 };
 
-/**
- * Target URL probe status for feature extraction.
- */
-export type TargetUrlProbeStatus =
-  | "NOT_APPLICABLE" // No targetUrl provided
-  | "ADVERTISED_VERIFIED" // targetUrl matches advertised endpoint, no issues
-  | "ADVERTISED_REDIRECT_TO_PRIVATE" // targetUrl advertised but redirects to private
-  | "NOT_ADVERTISED" // targetUrl provided but not advertised
-  | "PROBE_UNAVAILABLE"; // target was advertised but the active probe failed
-
 /** Agent-specific risk dimensions, surfaced as a nested optional extension on RiskAssessment. */
 export type AgentRiskDimensions = {
   /** Whether the agent is verifiably registered in the ERC-8004 IdentityRegistry on a production chain. */
@@ -284,12 +274,6 @@ export type AgentRisk = {
   chainEvidence: AgentChainIdentityResult[];
   reputationSummary?: AgentReputationSummary;
   services?: AgentServiceObservation[];
-  /** True when the caller-supplied targetUrl matches a service endpoint advertised in the verified agent card. */
-  targetUrlVerified?: boolean;
-  /** Explicit target attribution state used by the risk engine. */
-  targetUrlStatus?: TargetUrlProbeStatus;
-  /** True when OMNI observed the targetUrl redirect to a private/internal address. Only set when targetUrl was caller-supplied AND advertised in the agent's verified card. */
-  targetUrlRedirectsToPrivate?: boolean;
   /** ERC-8004 specific policy version for agent scoring. */
   policyVersion: string;
   /** Coverage model version for agent assessment. */

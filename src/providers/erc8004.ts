@@ -936,27 +936,3 @@ async function fetchAgentCardFromHttps(url: string, rawUri: string, expected?: A
     return { status: "UNAVAILABLE", rawUri, error: e instanceof Error ? e.message : String(e) };
   }
 }
-
-// ---------------------------------------------------------------------------
-// Redirect-to-private probe
-// ---------------------------------------------------------------------------
-
-export async function probeTargetUrlRedirectsToPrivate(targetUrl: string, network: Erc8004Network = DEFAULT_NETWORK): Promise<{ redirectsToPrivate: boolean; error?: string }> {
-  try {
-    const parsed = new URL(targetUrl);
-    if (parsed.protocol !== "https:") return { redirectsToPrivate: false };
-
-    const result = await hardenedFetchWithRedirects(targetUrl, 5000, network).catch(e => {
-      if (e instanceof Error && e.message.includes("SSRF rejected")) {
-        return { status: 0, body: "", finalUrl: targetUrl, ssrfRejected: true } as HardenedFetchResult & { ssrfRejected?: boolean };
-      }
-      throw e;
-    });
-
-    if ((result as { ssrfRejected?: boolean }).ssrfRejected) return { redirectsToPrivate: true };
-
-    return { redirectsToPrivate: false };
-  } catch (e) {
-    return { redirectsToPrivate: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
