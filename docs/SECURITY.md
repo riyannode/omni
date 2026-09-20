@@ -8,6 +8,16 @@
 - Threat feeds must be commercially licensed for the intended use. Store source/reference provenance and honor expiry/retention terms.
 - A shared payout wallet, changed schema, new maintainer, install script, or marketplace absence is a **risk signal**, not standalone proof of malicious intent.
 
+## ERC-8004 agent-risk trust boundary
+
+- The ERC-8004 registration URI, agent-card fields, advertised service metadata, and caller-supplied `targetUrl` are untrusted external evidence.
+- Registration and target HTTPS fetches use the ERC-8004 SSRF protections: private, internal, loopback, link-local, and other special-use destinations are rejected; DNS is revalidated during redirect handling; the validated IP is pinned while the original hostname remains in `Host`/SNI; redirects are bounded and HTTPS-only; HTTP downgrade is rejected; and response bodies are bounded.
+- An advertised endpoint may be actively probed only when a supplied `targetUrl` matches it. An unadvertised URL is not probed, is recorded as `NOT_ADVERTISED`, and contributes deterministic risk.
+- `feedbackURI` is evidence metadata and is not fetched.
+- ERC-8004 IdentityRegistry and ReputationRegistry operations are read-only. OMNI performs no ERC-8004 contract writes.
+
+The x402 preflight probe above has separate transport behavior from ERC-8004 registration/target probing; its redirect and host policy must not be assumed to be identical.
+
 ## Trust-boundary implications
 
 - Agent-provided intent is untrusted input.

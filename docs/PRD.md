@@ -38,6 +38,7 @@ OMNI does not authorize or execute a payment. Its assessment and recommendation 
 ## Users
 
 - autonomous coding/tool agents before package installation
+- autonomous agents deciding whether to invoke or trust another ERC-8004 agent
 - procurement/research agents before a paid API call
 - x402 buyers before authorizing an Agent Wallet payment
 - CI and agent platforms that need a deterministic policy input
@@ -48,10 +49,23 @@ OMNI does not authorize or execute a payment. Its assessment and recommendation 
 OSV + CISA KEV + npm registry metadata + OpenSSF Scorecard + optional licensed package IOC feeds.
 
 ### Service identity
-Circle Discovery + constrained unpaid x402 probe + OMNI historical provider/schema observations + optional licensed URL/hostname IOC feeds.
+Circle Discovery + constrained unpaid x402 probe + OMNI historical provider/schema observations + optional licensed URL/hostname IOC feeds. ERC-8004 agent identity and reputation are read-only evidence from the IdentityRegistry and ReputationRegistry; registration URI, agent-card, and advertised-service observations are external evidence, not authorization.
 
 ### Payment configuration
 OMNI history tracks `payTo`, network and price changes. Licensed wallet IOCs can produce direct high-severity signals. A wallet relationship is evidence, not proof that two providers share an operator.
+
+## ERC-8004 agent risk — current capability
+
+`GET /v1/agent/risk` is an implemented current capability for autonomous agents deciding whether to invoke or trust another ERC-8004 agent. It evaluates:
+
+- chain-specific ERC-8004 identity from the IdentityRegistry;
+- reputation evidence from the ReputationRegistry when feedback satisfies the configured trusted-reviewer/tag policy;
+- registration URI and verified agent-card/service evidence;
+- advertised service endpoints, with an optional HTTPS `targetUrl` check that is actively probed only when the URL matches an advertised endpoint.
+
+The endpoint requires a CAIP-2 `chain` identity-chain input and a canonical decimal uint256 `agentId`; the ERC-8004 identity/reputation chain is separate from the Circle/x402 payment chain used to purchase the OMNI request. An unadvertised `targetUrl` is not probed, becomes `NOT_ADVERTISED`, and contributes deterministic risk. `NOT_REGISTERED` is not automatically malicious: confirmed non-registration produces insufficient-evidence/manual-review behavior, while RPC failures remain unknown/unavailable. `active: false` is observed as an inactive registration and contributes deterministic validation risk. A redirect-to-private result for an advertised target can produce critical contradiction risk.
+
+OMNI remains advisory: the caller or runtime policy decides whether to proceed, the wallet/runtime enforces that decision, and Circle settles payment. Registry data and agent-card metadata are evidence, not absolute truth or authorization. This current implementation does not claim live-paid production acceptance, production migration completion, or production persistence verification for the agent route. No Arc Mainnet ERC-8004 deployment or support is claimed.
 
 ## x402 endpoint accountability
 

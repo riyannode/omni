@@ -36,7 +36,9 @@ The `generic-mainnet` profile is MAINNET-only, not Arc-only:
 4. Resolve the challenge resource against the original OMNI URL. Require the same HTTPS origin, path, and query names/values with no missing/extra keys (order and equivalent percent-encoding are okay). Otherwise STOP before payment.
 5. Use one fresh UUID v4 `Idempotency-Key` per logical request. Authorize at most one payment; an allowed retry reuses the same request and key. Uncertain validation, funds, or payment state requires STOP. Never expose authentication, wallet, signing, or payment secrets.
 
-Prices remain: package `5000` atomic units / `0.005000` USDC; repository and x402 preflight `10000` / `0.010000`; dependency set `50000` / `0.050000`.
+Prices remain: package `5000` atomic units / `0.005000` USDC; repository and x402 preflight `10000` / `0.010000`; dependency set `50000` / `0.050000`; agent risk `50000` / `0.050000`.
+
+For `/v1/agent/risk`, the `chain` query parameter selects the ERC-8004 identity/reputation chain. It does not select the Circle payment network used to purchase the OMNI request. Payment network selection remains based on the live `PAYMENT-REQUIRED` challenge. The existing Arc Mainnet acceptance above applies to `GET /v1/package/risk` only; no live-paid acceptance is claimed for the agent route. No Arc Mainnet ERC-8004 deployment or support is claimed.
 
 For x402 preflight, OMNI is the service being paid and the inspected URL is input only. Never pay the inspected target as part of the OMNI request.
 
