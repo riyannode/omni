@@ -229,7 +229,7 @@ export type AgentRiskDimensions = {
   /** Aggregated reputation signal derived from on-chain feedback, filtered to trusted reviewers when configured. */
   agentReputation: AgentReputationRisk;
   /** Service / x402 endpoint validity evidence from the agent card. */
-  agentValidation: "services_observed" | "no_services" | "card_unavailable" | "unknown";
+  agentValidation: "services_observed" | "no_services" | "inactive_registration" | "card_unavailable" | "unknown";
 };
 
 /** Per-chain identity probe result surfaced inside agentRisk.chainEvidence. */

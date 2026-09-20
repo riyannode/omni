@@ -1,4 +1,4 @@
--- Migration 001: add 'agent' to subject_type CHECK constraint in assessment_records.
+-- Migration 003: add 'agent' to subject_type CHECK constraint in assessment_records.
 --
 -- This migration is ADDITIVE: it widens the allowed values for the subject_type
 -- column to include 'agent'. Existing rows are unaffected.

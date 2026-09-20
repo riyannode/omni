@@ -1045,25 +1045,27 @@ export class OmniIntelligence {
             observedAt,
             detail: { registrationUri: primaryRegistrationUri, error: cardResult.error },
           });
-        } else if (cardResult.card && cardResult.status === "SELF_REFERENCE_MATCH") {
+        } else if (cardResult.card && (cardResult.status === "SELF_REFERENCE_MATCH" || cardResult.status === "INACTIVE")) {
           const card = cardResult.card;
           cardVerified = true;
           if (typeof card.name === "string") agentName = card.name.slice(0, 256);
           if (typeof card.description === "string") agentDescription = card.description.slice(0, 1024);
           services = extractServices(card);
-          agentValidation = services.length > 0 ? "services_observed" : "no_services";
+          agentValidation = cardResult.status === "INACTIVE" ? "inactive_registration" : services.length > 0 ? "services_observed" : "no_services";
           coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", services.length > 0 ? "OBSERVED" : "ABSENT"));
-          evidence.push({
-            source: "ERC-8004 Agent Card",
-            kind: "agent_card",
-            observedAt,
-            detail: {
-              registrationUri: primaryRegistrationUri,
-              name: agentName ?? null,
-              serviceCount: services.length,
-              active: card.active,
-            },
-          });
+          evidence.push(cardResult.status === "INACTIVE"
+            ? {
+                source: "ERC-8004 Agent Card",
+                kind: "agent_card_inactive",
+                observedAt,
+                detail: { registrationUri: primaryRegistrationUri, name: agentName ?? null, serviceCount: services.length, active: false },
+              }
+            : {
+                source: "ERC-8004 Agent Card",
+                kind: "agent_card",
+                observedAt,
+                detail: { registrationUri: primaryRegistrationUri, name: agentName ?? null, serviceCount: services.length, active: card.active },
+              });
           // Check registration match
 
         } else {

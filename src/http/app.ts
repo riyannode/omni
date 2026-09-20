@@ -11,7 +11,7 @@ import { loadPaidResources } from "../payments/circle.ts";
 import { concurrencyGate } from "./concurrency-gate.ts";
 import { PaidRouteIntegration, type GatewayWithHooks } from "./paid-route.ts";
 import { agentQuery, dependenciesBody, endpointQuery, packageQuery, repoQuery } from "./validation.ts";
-import { getChainConfig } from "../providers/erc8004.ts";
+import { getChainConfig, getChainRpcUrl } from "../providers/erc8004.ts";
 
 function asyncRoute(fn: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => void fn(req, res).catch(next);
@@ -57,6 +57,11 @@ const validateAgent: RequestHandler = (req, res, next) => {
   const chainConfig = getChainConfig(chain);
   if (!chainConfig || !chainConfig.enabled) {
     return void res.status(400).json({ error: "unsupported_chain" });
+  }
+  try {
+    getChainRpcUrl(chainConfig);
+  } catch {
+    return void res.status(503).json({ error: "erc8004_rpc_unavailable", retryable: true });
   }
   next();
 };

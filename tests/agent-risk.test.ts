@@ -21,7 +21,7 @@ import { RISK_SNAPSHOT_SCHEMA_VERSION, AGENT_POLICY_VERSION } from "../src/domai
 import { RISK_FEATURE_SCHEMA_VERSION, extractRiskFeatures } from "../src/domain/risk-features.ts";
 import { partitionCompatibleRows } from "../src/domain/risk-evaluation.ts";
 import type { ReplayableRow } from "../src/domain/risk-evaluation.ts";
-import { extractServices, getChainConfig, getChainRpcUrl, NEW_FEEDBACK_TOPIC, FEEDBACK_REVOKED_TOPIC, Erc8004ExecutionRevertedError, readAgentIdentity, scanAgentReputation, parseAgentCard, fetchAgentCard, isPrivateIp, hostnameResolvesToPrivate, MAX_FEEDBACK_EVENTS } from "../src/providers/erc8004.ts";
+import { extractServices, getChainConfig, getChainRpcUrl, NEW_FEEDBACK_TOPIC, FEEDBACK_REVOKED_TOPIC, Erc8004ExecutionRevertedError, readAgentIdentity, scanAgentReputation, parseAgentCard, fetchAgentCard, probeTargetUrlRedirectsToPrivate, isPrivateIp, hostnameResolvesToPrivate, MAX_FEEDBACK_EVENTS } from "../src/providers/erc8004.ts";
 import { encodeAbiParameters, keccak256, stringToHex } from "viem";
 import { OmniIntelligence } from "../src/services.ts";
 import { CachedLoader } from "../src/data/cache.ts";
@@ -117,6 +117,16 @@ describe("chain config resolution", () => {
   test("returns undefined for invalid format", () => {
     expect(getChainConfig("ethereum")).toBeUndefined();
     expect(getChainConfig("")).toBeUndefined();
+  });
+
+  test("Sepolia is hidden unless testnets are explicitly enabled", () => {
+    const previous = process.env.OMNI_ERC8004_ENABLE_TESTNETS;
+    delete process.env.OMNI_ERC8004_ENABLE_TESTNETS;
+    expect(getChainConfig("eip155:11155111")).toBeUndefined();
+    process.env.OMNI_ERC8004_ENABLE_TESTNETS = "true";
+    expect(getChainConfig("eip155:11155111")?.deployment).toBe("testnet");
+    if (previous === undefined) delete process.env.OMNI_ERC8004_ENABLE_TESTNETS;
+    else process.env.OMNI_ERC8004_ENABLE_TESTNETS = previous;
   });
 });
 
@@ -592,7 +602,7 @@ describe("ERC-8004 registration validation", () => {
     expect(parsed.status).toBe("SELF_REFERENCE_MATCH");
   });
 
-  test("wrong chain, registry, agentId, no match, and inactive cards are rejected", () => {
+  test("wrong chain, registry, agentId, and no match are rejected while inactive is observed", () => {
     for (const registration of [
       { agentRegistry: `eip155:8453:${providerConfig.identityRegistry}`, agentId: 42 },
       { agentRegistry: "eip155:1:0x0000000000000000000000000000000000000001", agentId: 42 },
@@ -601,7 +611,8 @@ describe("ERC-8004 registration validation", () => {
       const parsed = parseAgentCard("data:", validCard({ registrations: [registration] }), { agentRegistry: `eip155:1:${providerConfig.identityRegistry}`, agentId: 42n });
       expect(parsed.status).toBe("SELF_REFERENCE_MISMATCH");
     }
-    expect(parseAgentCard("data:", validCard({ active: false })).status).toBe("INVALID");
+    expect(parseAgentCard("data:", validCard({ active: false }), { agentRegistry: `eip155:1:${providerConfig.identityRegistry}`, agentId: 42n })).toMatchObject({ status: "INACTIVE", selfReferenceMatch: true });
+    expect(parseAgentCard("data:", validCard({ active: "false" })).status).toBe("INVALID");
     expect(parseAgentCard("data:", validCard({ registrations: [{ agentRegistry: "bad", agentId: 42 }] })).status).toBe("INVALID");
   });
 
@@ -656,8 +667,8 @@ describe("ERC-8004 reputation scan", () => {
 });
 
 describe("ERC-8004 SSRF classification and registration fetch caps", () => {
-  test("rejects IPv6 loopback, ULA, all fe80::/10, and mapped private addresses", () => {
-    for (const ip of ["::1", "fc00::", "fd12::", "fe80::", "fe90::", "fea0::", "febf::", "::ffff:127.0.0.1", "0:0:0:0:0:ffff:192.168.1.1"]) expect(isPrivateIp(ip)).toBe(true);
+  test("rejects non-public IPv6 and mapped private addresses", () => {
+    for (const ip of ["::1", "fc00::", "fd12::", "fe80::", "fe90::", "fea0::", "febf::", "ff02::1", "2001:db8::1", "::ffff:127.0.0.1", "0:0:0:0:0:ffff:192.168.1.1"]) expect(isPrivateIp(ip)).toBe(true);
     expect(isPrivateIp("2001:4860:4860::8888")).toBe(false);
     expect(isPrivateIp("::ffff:8.8.8.8")).toBe(false);
   });
@@ -670,6 +681,8 @@ describe("ERC-8004 SSRF classification and registration fetch caps", () => {
   test("data URI cap rejects decoded payloads over 256 KiB", async () => {
     const small = Buffer.from(JSON.stringify(validCard())).toString("base64");
     await expect(fetchAgentCard(`data:application/json;base64,${small}`, { agentRegistry: `eip155:1:${providerConfig.identityRegistry}`, agentId: 42n })).resolves.toMatchObject({ status: "SELF_REFERENCE_MATCH" });
+    const boundary = Buffer.from(JSON.stringify(validCard()).padEnd(256 * 1024, " ")).toString("base64");
+    await expect(fetchAgentCard(`data:application/json;base64,${boundary}`, { agentRegistry: `eip155:1:${providerConfig.identityRegistry}`, agentId: 42n })).resolves.toMatchObject({ status: "SELF_REFERENCE_MATCH" });
     const oversizedData = Buffer.from("x".repeat(256 * 1024 + 1)).toString("base64");
     await expect(fetchAgentCard(`data:application/json;base64,${oversizedData}`)).resolves.toMatchObject({ status: "UNAVAILABLE" });
   });
@@ -703,6 +716,113 @@ describe("ERC-8004 SSRF classification and registration fetch caps", () => {
     await expect(fetchAgentCard("https://public.example/card", undefined, privateRedirect as never)).resolves.toMatchObject({ status: "UNAVAILABLE" });
     const downgrade = makeNetwork([{ statusCode: 302, location: "http://public.example/card", body: Buffer.alloc(0) }]);
     await expect(fetchAgentCard("https://public.example/card", undefined, downgrade as never)).resolves.toMatchObject({ status: "UNAVAILABLE" });
+  });
+
+  test("registration follows public redirect chains with per-hop DNS validation", async () => {
+    const resolved: string[] = [];
+    const responses = [
+      { statusCode: 302, location: "https://public-b.example/card", body: Buffer.alloc(0) },
+      { statusCode: 302, location: "https://public-c.example/card", body: Buffer.alloc(0) },
+      { statusCode: 200, body: Buffer.from(JSON.stringify(validCard())) },
+    ];
+    const network = {
+      resolve4: async (host: string) => { resolved.push(host); return ["93.184.216.34"]; },
+      resolve6: async () => [],
+      request: ((options: { hostname?: string }, callback: (response: unknown) => void) => {
+        const response = responses.shift()!;
+        const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
+        req.end = () => process.nextTick(() => {
+          const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string>; resume: () => void };
+          res.statusCode = response.statusCode;
+          res.headers = response.location ? { location: response.location } : {};
+          res.resume = () => undefined;
+          callback(res as never);
+          if (response.body.length > 0) res.emit("data", response.body);
+          res.emit("end");
+        });
+        req.destroy = () => undefined;
+        void options;
+        return req as never;
+      }) as never,
+    };
+    await expect(fetchAgentCard("https://public-a.example/card", { agentRegistry: `eip155:1:${providerConfig.identityRegistry}`, agentId: 42n }, network as never)).resolves.toMatchObject({ status: "SELF_REFERENCE_MATCH" });
+    expect(resolved).toEqual(["public-a.example", "public-b.example", "public-c.example"]);
+  });
+
+  test("target probe detects private destinations after multiple public redirects", async () => {
+    const responses = [
+      { statusCode: 302, location: "https://public-b.example/card", body: Buffer.alloc(0) },
+      { statusCode: 302, location: "https://private.example/card", body: Buffer.alloc(0) },
+    ];
+    const network = {
+      resolve4: async (host: string) => host === "private.example" ? ["10.0.0.1"] : ["93.184.216.34"],
+      resolve6: async () => [],
+      request: ((_: unknown, callback: (response: unknown) => void) => {
+        const response = responses.shift()!;
+        const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
+        req.end = () => process.nextTick(() => {
+          const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string>; resume: () => void };
+          res.statusCode = response.statusCode;
+          res.headers = { location: response.location! };
+          res.resume = () => undefined;
+          callback(res as never);
+          res.emit("end");
+        });
+        req.destroy = () => undefined;
+        return req as never;
+      }) as never,
+    };
+    await expect(probeTargetUrlRedirectsToPrivate("https://public-a.example/card", network as never)).resolves.toMatchObject({ redirectsToPrivate: true });
+  });
+
+  test("target probe follows a safe public redirect to final 200", async () => {
+    const responses = [
+      { statusCode: 302, location: "https://public-b.example/card", body: Buffer.alloc(0) },
+      { statusCode: 200, body: Buffer.from("ok") },
+    ];
+    const network = {
+      resolve4: async () => ["93.184.216.34"],
+      resolve6: async () => [],
+      request: ((_: unknown, callback: (response: unknown) => void) => {
+        const response = responses.shift()!;
+        const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
+        req.end = () => process.nextTick(() => {
+          const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string>; resume: () => void };
+          res.statusCode = response.statusCode;
+          res.headers = response.location ? { location: response.location } : {};
+          res.resume = () => undefined;
+          callback(res as never);
+          if (response.body.length > 0) res.emit("data", response.body);
+          res.emit("end");
+        });
+        req.destroy = () => undefined;
+        return req as never;
+      }) as never,
+    };
+    await expect(probeTargetUrlRedirectsToPrivate("https://public-a.example/card", network as never)).resolves.toEqual({ redirectsToPrivate: false });
+  });
+
+  test("redirect loops are bounded", async () => {
+    const network = {
+      resolve4: async () => ["93.184.216.34"],
+      resolve6: async () => [],
+      request: ((_: unknown, callback: (response: unknown) => void) => {
+        const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
+        req.end = () => process.nextTick(() => {
+          const res = new EventEmitter() as EventEmitter & { statusCode: number; headers: Record<string, string>; resume: () => void };
+          res.statusCode = 302;
+          res.headers = { location: "https://public.example/card" };
+          res.resume = () => undefined;
+          callback(res as never);
+          res.emit("end");
+        });
+        req.destroy = () => undefined;
+        return req as never;
+      }) as never,
+    };
+    const result = await fetchAgentCard("https://public.example/card", undefined, network as never);
+    expect(result.status).toBe("UNAVAILABLE");
+    expect(result.error).toContain("redirect limit");
   });
 });
 
@@ -745,6 +865,15 @@ describe("OmniIntelligence agent service path", () => {
     const redirected = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], card, { redirectsToPrivate: true })).agentRisk("42", "eip155:1", "https://agent.example/api");
     expect(redirected.agentRisk.targetUrlStatus).toBe("ADVERTISED_REDIRECT_TO_PRIVATE");
     expect(redirected.riskScore).toBe(100);
+  });
+
+  test("inactive self-referencing card is observed, not unavailable, and changes risk", async () => {
+    const inactiveCard = { status: "INACTIVE", card: validCard({ active: false }), selfReferenceMatch: true };
+    const assessment = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], inactiveCard)).agentRisk("42", "eip155:1");
+    expect(assessment.agentRisk.dimensions.agentValidation).toBe("inactive_registration");
+    expect(assessment.evidence.some(item => item.kind === "agent_card_inactive")).toBe(true);
+    expect(assessment.evidence.some(item => item.kind === "agent_card_unavailable")).toBe(false);
+    expect(assessment.riskScore).toBeGreaterThan(0);
   });
 
   test("operator reputation direction, decimals, and trusted reviewer filtering are enforced", async () => {

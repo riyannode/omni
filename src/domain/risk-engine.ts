@@ -195,6 +195,10 @@ function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, pol
     // Mismatch between advertised and actual
     validationRiskScore = policy.endpoint.unlisted;
     push(signals, "AGENT_CARD_MISMATCH", "medium", "ERC-8004 Agent Card", {});
+  } else if (snapshot.evidence.some(evidence => evidence.kind === "agent_card_inactive")) {
+    // Structurally valid and self-referencing, but the registration is observed inactive.
+    validationRiskScore = policy.endpoint.unlisted;
+    push(signals, "AGENT_CARD_INACTIVE", "medium", "ERC-8004 Agent Card", { active: false });
   } else if (agent.servicesObserved) {
     validationRiskScore = 0;
   }

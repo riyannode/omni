@@ -580,6 +580,54 @@ describe("x402 discovery manifest", () => {
     expect(agentRiskInvoked).toBe(false);
   });
 
+  test("GET /v1/agent/risk rejects missing RPC configuration before gateway or reservation", async () => {
+    const originalRpc = process.env.ERC8004_RPC_OVERRIDE_1;
+    delete process.env.ERC8004_RPC_OVERRIDE_1;
+    let gatewayInvoked = false;
+    let agentRiskInvoked = false;
+    let reserveInvoked = false;
+    const paidRequests = {
+      reserve: async () => { reserveInvoked = true; throw new Error("reserve should not be called"); },
+      isAvailable: async () => true,
+    } as unknown as PaidRequestStore;
+    const omniMock: OmniIntelligence = {
+      async agentRisk() { agentRiskInvoked = true; throw new Error("should not be called"); },
+    } as unknown as OmniIntelligence;
+    const app = createApp({
+      omni: omniMock,
+      history: testHistory(),
+      threatIntel: testThreatIntel(),
+      gateway: { require: () => { gatewayInvoked = true; throw new Error("gateway should not be called"); } },
+      paidRequests,
+      circleTransfers: new CircleTransferLookup("http://127.0.0.1:1"),
+      maxInFlight: 32,
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const address = server.address() as AddressInfo;
+      const origin = `http://127.0.0.1:${address.port}`;
+      const res = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=1`, { headers: { Accept: "application/json", "Idempotency-Key": "11111111-1111-4111-8111-111111111111" } });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ error: "erc8004_rpc_unavailable" });
+      expect(gatewayInvoked).toBe(false);
+      expect(reserveInvoked).toBe(false);
+      expect(agentRiskInvoked).toBe(false);
+      process.env.ERC8004_RPC_OVERRIDE_1 = "http://rpc.fixture.invalid";
+      const invalid = await fetch(`${origin}/v1/agent/risk?chain=eip155:1&agentId=1`, { headers: { Accept: "application/json", "Idempotency-Key": "22222222-2222-4222-8222-222222222222" } });
+      expect(invalid.status).toBe(503);
+      expect(gatewayInvoked).toBe(false);
+      expect(reserveInvoked).toBe(false);
+    } finally {
+      if (originalRpc === undefined) delete process.env.ERC8004_RPC_OVERRIDE_1;
+      else process.env.ERC8004_RPC_OVERRIDE_1 = originalRpc;
+    }
+  });
+
   test("GET /v1/agent/risk rejects invalid uint256 with HTTP 400 before payment", async () => {
     let gatewayInvoked = false;
     const passThrough: RequestHandler = (_req, _res, next) => { gatewayInvoked = true; next(); };

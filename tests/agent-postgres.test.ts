@@ -76,7 +76,7 @@ describe("PostgreSQL agent subject schema and journal (CI TEST_DATABASE_URL)", (
     }
     expect(preMigrationAgentRejected).toBe(true);
 
-    const migration = await readFile(new URL("../db/migrations/001_agent_subject.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../db/migrations/003_agent_subject.sql", import.meta.url), "utf8");
     await setupDb.unsafe(migration);
     await setupDb.unsafe(migration);
     const preserved = await setupDb<{ subject_type: string; subject_id: string }[]>`

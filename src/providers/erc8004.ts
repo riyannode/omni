@@ -134,14 +134,25 @@ export const ERC8004_TESTNET_CHAINS: Readonly<Record<string, Erc8004ChainConfig>
   },
 } as const;
 
-export function getChainConfig(chainRef: string): Erc8004ChainConfig | undefined {
-  return ERC8004_CHAINS[chainRef] ?? ERC8004_TESTNET_CHAINS[chainRef];
+export function isErc8004TestnetEnabled(): boolean {
+  return process.env.OMNI_ERC8004_ENABLE_TESTNETS === "true";
+}
+
+export function getChainConfig(chainRef: string, includeTestnets = isErc8004TestnetEnabled()): Erc8004ChainConfig | undefined {
+  return ERC8004_CHAINS[chainRef] ?? (includeTestnets ? ERC8004_TESTNET_CHAINS[chainRef] : undefined);
 }
 
 export function getChainRpcUrl(config: Erc8004ChainConfig): string {
   const override = process.env[`ERC8004_RPC_OVERRIDE_${config.chainId}`];
-  if (override) return override;
-  throw new Error(`No operator RPC configured for chain ${config.chainId}; set ERC8004_RPC_OVERRIDE_${config.chainId}`);
+  if (!override) throw new Error(`No operator RPC configured for chain ${config.chainId}; set ERC8004_RPC_OVERRIDE_${config.chainId}`);
+  let parsed: URL;
+  try {
+    parsed = new URL(override);
+  } catch {
+    throw new Error(`Invalid operator RPC URL for chain ${config.chainId}; HTTPS is required`);
+  }
+  if (parsed.protocol !== "https:") throw new Error(`Invalid operator RPC URL for chain ${config.chainId}; HTTPS is required`);
+  return override;
 }
 
 export const ERC8004_PRODUCTION_CHAINS: readonly Erc8004ChainConfig[] = Object.values(ERC8004_CHAINS).filter(c => c.enabled);
@@ -207,6 +218,27 @@ function parseIpv6(ip: string): number[] | undefined {
   return units === 8 ? [...left, ...right] : undefined;
 }
 
+function ipv6ToBigInt(units: number[]): bigint {
+  return units.reduce((value, unit) => (value << 16n) | BigInt(unit), 0n);
+}
+
+function ipv6Range(cidr: string): { start: bigint; end: bigint } {
+  const [base, bitsText] = cidr.split("/") as [string, string];
+  const bits = Number(bitsText);
+  const value = ipv6ToBigInt(parseIpv6(base)!);
+  const mask = ((1n << 128n) - 1n) ^ ((1n << BigInt(128 - bits)) - 1n);
+  const start = value & mask;
+  return { start, end: start | (((1n << 128n) - 1n) ^ mask) };
+}
+
+// IPv6 destinations are allowed only outside special-use, documentation, and
+// other non-global ranges. This keeps the SSRF policy fail-closed as new
+// special-purpose allocations appear unless explicitly reviewed here.
+const NON_PUBLIC_IPV6_RANGES = [
+  "::/128", "::1/128", "2001:0::/32", "2001:2::/48", "2001:10::/28",
+  "2001:20::/28", "2001:db8::/32", "3fff::/20", "fc00::/7", "fe80::/10", "ff00::/8",
+].map(ipv6Range);
+
 function isPrivateIpv4(ip: string): boolean {
   const octets = parseIpv4(ip);
   if (!octets) return false;
@@ -217,14 +249,13 @@ function isPrivateIpv4(ip: string): boolean {
 function isPrivateIpv6(ip: string): boolean {
   const units = parseIpv6(ip);
   if (!units) return false;
-  const first = units[0]!;
   const isMapped = units.slice(0, 5).every(unit => unit === 0) && units[5] === 0xffff;
   if (isMapped) {
     const mapped = `${units[6]! >> 8}.${units[6]! & 0xff}.${units[7]! >> 8}.${units[7]! & 0xff}`;
     return isPrivateIpv4(mapped);
   }
-  return units.every(unit => unit === 0) || (units.slice(0, 7).every(unit => unit === 0) && units[7] === 1)
-    || (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+  const value = ipv6ToBigInt(units);
+  return NON_PUBLIC_IPV6_RANGES.some(range => value >= range.start && value <= range.end);
 }
 
 export function isPrivateIp(ip: string): boolean {
@@ -253,8 +284,11 @@ export async function hostnameResolvesToPrivate(hostname: string, network: Erc80
 // ---------------------------------------------------------------------------
 
 const MAX_REGISTRATION_BODY_BYTES = 256 * 1024;
+export const MAX_REDIRECTS = 5;
 
-async function hardenedFetch(url: string, timeoutMs = 5000, network: Erc8004Network = DEFAULT_NETWORK): Promise<{ status: number; body: string; finalUrl: string }> {
+type HardenedFetchResult = { status: number; body: string; finalUrl: string };
+
+async function hardenedFetch(url: string, timeoutMs = 5000, network: Erc8004Network = DEFAULT_NETWORK): Promise<HardenedFetchResult> {
   const parsed = new URL(url);
   if (parsed.protocol !== "https:") {
     throw new Error(`hardenedFetch: only https:// is supported (got ${parsed.protocol})`);
@@ -285,9 +319,9 @@ async function hardenedFetch(url: string, timeoutMs = 5000, network: Erc8004Netw
     };
     const req = network.request(options, (res) => {
       const location = res.headers.location;
-      if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) && location) {
+      if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 303 || res.statusCode === 307 || res.statusCode === 308) && location) {
         res.resume();
-        resolve({ status: 0, body: location, finalUrl: location });
+        resolve({ status: res.statusCode ?? 0, body: location, finalUrl: location });
         return;
       }
       const chunks: Buffer[] = [];
@@ -308,6 +342,23 @@ async function hardenedFetch(url: string, timeoutMs = 5000, network: Erc8004Netw
     req.on("error", reject);
     req.end();
   });
+}
+
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+async function hardenedFetchWithRedirects(url: string, timeoutMs: number, network: Erc8004Network): Promise<HardenedFetchResult> {
+  let currentUrl = url;
+  for (let redirectCount = 0; ; redirectCount++) {
+    const result = await hardenedFetch(currentUrl, timeoutMs, network);
+    if (!isRedirectStatus(result.status)) return result;
+    if (!result.body) throw new Error("hardenedFetch: redirect response has no Location header");
+    if (redirectCount >= MAX_REDIRECTS) throw new Error(`hardenedFetch: redirect limit exceeded (${MAX_REDIRECTS})`);
+    const nextUrl = new URL(result.body, currentUrl);
+    if (nextUrl.protocol !== "https:") throw new Error(`hardenedFetch: redirect to non-HTTPS protocol rejected: ${nextUrl.protocol}`);
+    currentUrl = nextUrl.toString();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +470,7 @@ export type AgentCard = {
 
 export type AgentCardValidationResult = {
   card?: AgentCard;
-  status: "PARSED" | "VALID" | "SELF_REFERENCE_MATCH" | "SELF_REFERENCE_MISMATCH" | "INVALID" | "UNAVAILABLE";
+  status: "PARSED" | "VALID" | "INACTIVE" | "SELF_REFERENCE_MATCH" | "SELF_REFERENCE_MISMATCH" | "INVALID" | "UNAVAILABLE";
   parseError?: string;
   structuralError?: string;
   selfReferenceMatch?: boolean;
@@ -441,7 +492,6 @@ function validateAgentCardStructure(card: AgentCard): string | undefined {
   }
   if (typeof card.x402Support !== "boolean") return "x402Support must be a boolean";
   if (typeof card.active !== "boolean") return "active must be a boolean";
-  if (card.active === false) return "registration is inactive";
   if (!Array.isArray(card.registrations) || card.registrations.length > 32) return "registrations must be a bounded array";
   for (const registration of card.registrations) {
     if (typeof registration !== "object" || registration === null || Array.isArray(registration)) return "registration must be an object";
@@ -462,13 +512,14 @@ export function parseAgentCard(uri: string, json: unknown, expected?: AgentCardE
   const card = json as AgentCard;
   const structuralError = validateAgentCardStructure(card);
   if (structuralError) return { status: "INVALID", card, parseError: structuralError, structuralError };
-  if (!expected) return { status: "VALID", card };
+  const inactive = card.active === false;
+  if (!expected) return { status: inactive ? "INACTIVE" : "VALID", card };
   const expectedId = String(expected.agentId);
   const matches = card.registrations?.some(registration => {
     const entry = registration as Record<string, unknown>;
     return typeof entry.agentRegistry === "string" && entry.agentRegistry.toLowerCase() === expected.agentRegistry.toLowerCase() && String(entry.agentId) === expectedId;
   }) ?? false;
-  return { status: matches ? "SELF_REFERENCE_MATCH" : "SELF_REFERENCE_MISMATCH", card, selfReferenceMatch: matches };
+  return { status: matches ? (inactive ? "INACTIVE" : "SELF_REFERENCE_MATCH") : "SELF_REFERENCE_MISMATCH", card, selfReferenceMatch: matches };
 }
 
 export function extractServices(card: AgentCard): AgentServiceObservation[] {
@@ -781,8 +832,9 @@ export async function fetchAgentCard(registrationUri: string, expected?: AgentCa
   try {
     if (registrationUri.startsWith("data:application/json;base64,")) {
       const b64 = registrationUri.slice("data:application/json;base64,".length);
-      if (b64.length > MAX_REGISTRATION_BODY_BYTES) {
-        return { status: "UNAVAILABLE", rawUri: registrationUri, error: `data URI payload exceeds ${MAX_REGISTRATION_BODY_BYTES} bytes` };
+      const maxEncodedBytes = 4 * Math.ceil(MAX_REGISTRATION_BODY_BYTES / 3);
+      if (b64.length > maxEncodedBytes) {
+        return { status: "UNAVAILABLE", rawUri: registrationUri, error: `data URI encoded payload exceeds ${maxEncodedBytes} bytes` };
       }
       const decoded = Buffer.from(b64, "base64");
       if (decoded.length > MAX_REGISTRATION_BODY_BYTES) {
@@ -815,22 +867,7 @@ export async function fetchAgentCard(registrationUri: string, expected?: AgentCa
 
 async function fetchAgentCardFromHttps(url: string, rawUri: string, expected?: AgentCardExpectation, network: Erc8004Network = DEFAULT_NETWORK): Promise<AgentCardResult> {
   try {
-    const result = await hardenedFetch(url, 6000, network);
-    if (result.status === 0 && result.body) {
-      const redirectUrl = result.body;
-      const redirectParsed = new URL(redirectUrl);
-      if (redirectParsed.protocol !== "https:") {
-        return { status: "UNAVAILABLE", rawUri, error: `redirect to non-HTTPS protocol rejected: ${redirectParsed.protocol}` };
-      }
-      const redirected = await hardenedFetch(redirectUrl, 5000, network);
-      if (redirected.status !== 200) {
-        return { status: "UNAVAILABLE", rawUri, error: `agent card HTTP ${redirected.status} after redirect` };
-      }
-      const json = JSON.parse(redirected.body) as unknown;
-      const parsed = parseAgentCard(rawUri, json, expected);
-      if (parsed.parseError) return { status: parsed.status, rawUri, error: parsed.parseError };
-      return { status: parsed.status, rawUri, ...(parsed.card ? { card: parsed.card } : {}), ...(parsed.selfReferenceMatch === undefined ? {} : { selfReferenceMatch: parsed.selfReferenceMatch }) };
-    }
+    const result = await hardenedFetchWithRedirects(url, 6000, network);
     if (result.status !== 200) return { status: "UNAVAILABLE", rawUri, error: `agent card HTTP ${result.status}` };
     const json = JSON.parse(result.body) as unknown;
     const parsed = parseAgentCard(rawUri, json, expected);
@@ -850,20 +887,14 @@ export async function probeTargetUrlRedirectsToPrivate(targetUrl: string, networ
     const parsed = new URL(targetUrl);
     if (parsed.protocol !== "https:") return { redirectsToPrivate: false };
 
-    const result = await hardenedFetch(targetUrl, 5000, network).catch(e => {
+    const result = await hardenedFetchWithRedirects(targetUrl, 5000, network).catch(e => {
       if (e instanceof Error && e.message.includes("SSRF rejected")) {
-        return { status: 0, body: "", finalUrl: targetUrl, ssrfRejected: true } as { status: number; body: string; finalUrl: string; ssrfRejected?: boolean };
+        return { status: 0, body: "", finalUrl: targetUrl, ssrfRejected: true } as HardenedFetchResult & { ssrfRejected?: boolean };
       }
       throw e;
     });
 
     if ((result as { ssrfRejected?: boolean }).ssrfRejected) return { redirectsToPrivate: true };
-
-    if (result.status === 0 && result.body) {
-      const redirectHostname = new URL(result.body).hostname;
-      const isPrivate = await hostnameResolvesToPrivate(redirectHostname, network);
-      return { redirectsToPrivate: isPrivate };
-    }
 
     return { redirectsToPrivate: false };
   } catch (e) {
