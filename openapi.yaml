@@ -333,18 +333,23 @@ paths:
         - in: query
           name: agentId
           required: true
-          description: ERC-8004 agent token id as a decimal uint256 string (hex not accepted).
+          description: >
+            ERC-8004 agent token id as a canonical decimal uint256 string. Hex, negative values,
+            leading zeros except "0", and values greater than UINT256_MAX are rejected.
+            UINT256_MAX is 115792089237316195423570985008687907853269984665640564039457584007913129639935;
+            runtime validation is authoritative for this numeric upper bound.
           schema:
             type: string
-            pattern: '^[0-9]{1,78}$'
+            pattern: '^(0|[1-9][0-9]{0,77})$'
+            maxLength: 78
           example: "42"
         - in: query
           name: targetUrl
           required: false
           description: >
-            Optional HTTPS URL to probe for redirect-to-private. Only probed when it matches
-            a service endpoint advertised in the verified agent card. Caller-supplied URLs that
-            are not advertised in the agent card are rejected before any probe (no risk increase).
+            Optional HTTPS URL. It is actively probed only when it matches a service endpoint
+            advertised in the verified agent card. A supplied URL that is not advertised is not
+            probed and is recorded as NOT_ADVERTISED, which contributes deterministic risk.
             HTTP (non-HTTPS) URLs are rejected during input validation before payment.
           schema:
             type: string
