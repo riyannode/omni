@@ -17,6 +17,15 @@
 
 The x402 preflight probe above has separate transport behavior from ERC-8004 registration fetching; its redirect and host policy must not be assumed to be identical.
 
+## ERC-8004 reputation scoring policy
+
+- ReputationRegistry feedback is raw public evidence, not OMNI's trust score. `agentReputation` is a canonical OMNI risk dimension, not a quality rating.
+- A complete scan with active feedback produces `reputationSummary.status=OBSERVED`; a complete scan with no active feedback is `ABSENT`; source failure is `UNAVAILABLE`; incomplete or ambiguous history is `UNKNOWN`.
+- Only non-revoked feedback from operator-configured trusted reviewers, recognized tags, valid decimals, and deterministic tag policy contributes to scoring. The strongest contribution wins with existing OMNI thresholds (`MAX`).
+- Missing, revoked, unrecognized, untrusted, or malformed feedback does not become low risk and does not become malicious risk. Public feedback can be observed while `agentReputation=unknown`.
+- Current production `trustedReviewers` and `recognizedTags` remain empty. The current official-spec/mainnet observation found activity, but no reviewer/entity provenance and policy-qualified tag semantics sufficient for production scoring. See the ERC-8004 sources and bounded observation notes in the PR research record.
+- ERC-8004 identity/reputation chain selection is separate from Circle payment-network selection. `/v1/agent/risk` accepts only `chain` and `agentId`; endpoint verification remains `/v1/x402/endpoint/preflight`, and `targetUrl` is rejected.
+
 ## Trust-boundary implications
 
 - Agent-provided intent is untrusted input.

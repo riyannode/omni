@@ -935,26 +935,39 @@ components:
     AgentChainIdentityResult:
       type: object
       additionalProperties: false
-      required: [chainId, registered]
+      required: [chainId, registered, status]
       properties:
         chainId: { type: integer }
         registered: { type: boolean }
+        status: { type: string, enum: [REGISTERED, NOT_REGISTERED, UNAVAILABLE] }
         ownerAddress: { type: string }
         agentWallet: { type: string }
         registrationUri: { type: string }
         error: { type: string }
+    AgentRegistrationSummary:
+      type: object
+      additionalProperties: false
+      required: [status, servicesObserved]
+      properties:
+        status: { type: string, enum: [VALID, INACTIVE, MISMATCH, UNAVAILABLE, UNKNOWN] }
+        active: { type: boolean }
+        registrationUri: { type: string }
+        servicesObserved: { type: integer, minimum: 0 }
     AgentReputationSummary:
       type: object
       additionalProperties: false
-      required: [chainId, totalFeedback, activeFeedback, revokedFeedback, positiveRatings, negativeRatings, neutralRatings, historyCoverage, blocksScanned, errors]
+      required: [chainId, status, totalFeedback, activeFeedback, revokedFeedback, uniqueReviewers, recognizedTags, unrecognizedTags, validDecimalsFeedback, scoreEligibleFeedback, historyCoverage, blocksScanned, errors]
       properties:
         chainId: { type: integer }
+        status: { type: string, enum: [OBSERVED, ABSENT, UNAVAILABLE, UNKNOWN] }
         totalFeedback: { type: integer, minimum: 0 }
         activeFeedback: { type: integer, minimum: 0 }
         revokedFeedback: { type: integer, minimum: 0 }
-        positiveRatings: { type: integer, minimum: 0 }
-        negativeRatings: { type: integer, minimum: 0 }
-        neutralRatings: { type: integer, minimum: 0 }
+        uniqueReviewers: { type: integer, minimum: 0 }
+        recognizedTags: { type: integer, minimum: 0 }
+        unrecognizedTags: { type: integer, minimum: 0 }
+        validDecimalsFeedback: { type: integer, minimum: 0 }
+        scoreEligibleFeedback: { type: integer, minimum: 0 }
         historyCoverage: { type: string, enum: [complete, partial] }
         blocksScanned: { type: string, description: "Number of blocks scanned, as a decimal string." }
         errors:
@@ -971,43 +984,42 @@ components:
     AgentRiskDimensions:
       type: object
       additionalProperties: false
-      required: [agentIdentity, agentReputation, agentValidation]
+      required: [agentIdentity, agentReputation, agentRegistration]
       properties:
         agentIdentity:
           type: string
-          enum: [registered_verified, not_registered, unknown]
-          description: Whether the agent is verifiably registered in the ERC-8004 IdentityRegistry on a production chain.
+          enum: [low, medium, high, critical, unknown]
+          description: Identity risk dimension. Factual registration status is in identity.status.
         agentReputation:
           type: string
-          enum: [positive, neutral, negative, insufficient, unknown]
-          description: Aggregated reputation signal derived from on-chain feedback.
-        agentValidation:
+          enum: [low, medium, high, critical, unknown]
+          description: Reputation risk dimension, not a quality rating. Unknown means no policy-qualified evidence scored.
+        agentRegistration:
           type: string
-          enum: [services_observed, no_services, inactive_registration, card_unavailable, unknown]
-          description: Service / x402 endpoint evidence from the agent card.
+          enum: [low, medium, high, critical, unknown]
+          description: Registration integrity risk dimension; advertised services are passive metadata.
     AgentRisk:
       type: object
       additionalProperties: false
-      required: [agentId, primaryChainId, dimensions, chainEvidence]
+      required: [agentId, primaryChainId, identity, registration, dimensions, reputationSummary, policyVersion, coverageVersion]
       description: >
         Agent-specific risk extension. Present only when subject.type === "agent".
-        agentId is the token id as a decimal string.
-        registered=false is not a malicious signal: it produces scoreStatus=insufficient_evidence.
+        Identity and reputation statuses are factual evidence states; dimensions use
+        OMNI risk vocabulary. NOT_REGISTERED is not itself malicious risk.
       properties:
         agentId: { type: string, description: "ERC-8004 token id, decimal string." }
-        primaryChainId: { type: integer, description: "Chain where the agent was first found registered." }
-        agentWallet: { type: string }
-        registrationUri: { type: string, format: uri }
+        primaryChainId: { type: integer, description: "ERC-8004 identity/reputation chain." }
+        identity: { $ref: '#/components/schemas/AgentChainIdentityResult' }
+        registration: { $ref: '#/components/schemas/AgentRegistrationSummary' }
         agentName: { type: string }
         agentDescription: { type: string }
         dimensions: { $ref: '#/components/schemas/AgentRiskDimensions' }
-        chainEvidence:
-          type: array
-          items: { $ref: '#/components/schemas/AgentChainIdentityResult' }
         reputationSummary: { $ref: '#/components/schemas/AgentReputationSummary' }
         services:
           type: array
           items: { $ref: '#/components/schemas/AgentServiceObservation' }
+        policyVersion: { type: string }
+        coverageVersion: { type: string }
 
     AgentRiskResponse:
       type: object

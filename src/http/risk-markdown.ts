@@ -117,6 +117,44 @@ function renderRepositorySummary(result: CompactRiskAssessment, lines: string[])
   lines.push(`- Provenance unavailable: ${inline(summary.provenance.unavailable)}`);
 }
 
+function renderAgentRisk(result: CompactRiskAssessment, lines: string[]): void {
+  const agent = object((result as Record<string, unknown>).agentRisk);
+  if (!agent) return;
+  const identity = object(agent.identity);
+  const registration = object(agent.registration);
+  const reputation = object(agent.reputationSummary);
+  const subject = object(result.subject);
+  const chain = typeof subject?.id === "string" ? subject.id.split(":").slice(0, 2).join(":") : agent.primaryChainId;
+  const dimensions = object(agent.dimensions);
+
+  lines.push("", `Agent: ${inline(agent.agentId)}`, `Identity Chain: ${inline(chain)}`);
+  lines.push("", "## Agent Identity", "");
+  if (identity) {
+    lines.push(`- Status: ${inline(identity.status)}`);
+    if (identity.ownerAddress !== undefined) lines.push(`- Owner: ${inline(identity.ownerAddress)}`);
+    if (identity.agentWallet !== undefined) lines.push(`- Agent Wallet: ${inline(identity.agentWallet)}`);
+  }
+  lines.push(`- Identity Risk: ${inline(dimensions?.agentIdentity)}`);
+
+  lines.push("", "## Registration", "");
+  if (registration) {
+    lines.push(`- Status: ${inline(registration.status)}`);
+    if (registration.active !== undefined) lines.push(`- Active: ${inline(registration.active)}`);
+    if (registration.registrationUri !== undefined) lines.push(`- Registration URI: ${inline(registration.registrationUri)}`);
+    lines.push(`- Services observed: ${inline(registration.servicesObserved)}`);
+  }
+  lines.push(`- Registration Risk: ${inline(dimensions?.agentRegistration)}`);
+
+  lines.push("", "## Reputation", "");
+  if (reputation) {
+    lines.push(`- Status: ${inline(reputation.status)}`);
+    for (const [label, key] of [["Active feedback", "activeFeedback"], ["Revoked feedback", "revokedFeedback"], ["Unique reviewers", "uniqueReviewers"], ["Score-eligible feedback", "scoreEligibleFeedback"], ["History coverage", "historyCoverage"]] as const) {
+      if (reputation[key] !== undefined) lines.push(`- ${label}: ${inline(reputation[key])}`);
+    }
+  }
+  lines.push(`- Reputation Risk: ${inline(dimensions?.agentReputation)}`);
+}
+
 function renderLimitations(result: CompactRiskAssessment, lines: string[]): void {
   const limitations: string[] = [...result.sourceErrors];
   const summary = result.repositorySummary;
@@ -139,13 +177,15 @@ function renderLimitations(result: CompactRiskAssessment, lines: string[]): void
 function renderAssessment(result: CompactRiskAssessment): string {
   const subject = object(result.subject);
   const isRepository = subject?.type === "repository";
-  const lines: string[] = [isRepository ? "# OMNI Repository Risk Report" : "# OMNI Risk Report", ""];
+  const isAgent = subject?.type === "agent";
+  const lines: string[] = [isRepository ? "# OMNI Repository Risk Report" : isAgent ? "# OMNI Agent Risk Report" : "# OMNI Risk Report", ""];
   if (subject) lines.push(`Subject: ${inline(subject.id)}`);
   lines.push(`Risk Score: ${inline(result.riskScore)} / 100`);
   lines.push(`Recommendation: ${inline(result.recommendation)}`);
   lines.push(`Score Status: ${inline(result.scoreStatus)}`);
   lines.push(`Evidence Status: ${displayRecommendation(result.scoreStatus)}`);
   lines.push(`Evidence Coverage: ${coverage(result.evidenceCoverage)}`);
+  if (isAgent) renderAgentRisk(result, lines);
 
   const signals = strongestSignals(result.signals);
   lines.push("", "## Why this score", "");

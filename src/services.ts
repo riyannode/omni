@@ -1,6 +1,6 @@
-import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, AGENT_COVERAGE_MODEL_VERSION, DEFAULT_AGENT_REPUTATION_POLICY, type AgentReputationPolicy, type AgentRisk, type AgentRiskAssessment, type AgentChainIdentityResult, type AgentReputationSummary, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryDependencyVulnerabilitySummary, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RepositoryThreatIntelFinding, type RepositoryThreatIntelSummary, type RiskAssessment, type RiskSnapshot, type ThreatFinding, type RiskLevel } from "./domain/risk.ts";
+import { REPOSITORY_COVERAGE_MODEL_VERSION, PACKAGE_COVERAGE_MODEL_VERSION, AGENT_COVERAGE_MODEL_VERSION, DEFAULT_AGENT_REPUTATION_POLICY, type AgentReputationPolicy, type AgentRisk, type AgentRiskAssessment, type AgentChainIdentityResult, type AgentReputationSummary, type AgentRegistrationSummary, type DependencyObservation, type EvidenceCoverageSource, type ExactDependencyCoordinate, type RepositoryCollectionCoverage, type RepositoryDependencyVulnerabilityFinding, type RepositoryDependencyVulnerabilityObservation, type RepositoryDependencyVulnerabilitySummary, type RepositoryEvidence, type RepositoryThreatIntelObservation, type RepositoryThreatIntelFinding, type RepositoryThreatIntelSummary, type RiskAssessment, type RiskSnapshot, type ThreatFinding, type RiskLevel } from "./domain/risk.ts";
 import { RiskEngine } from "./domain/risk-engine.ts";
-import { RISK_POLICY_VERSION } from "./domain/risk-policy.ts";
+import { RISK_POLICY_VERSION, DEFAULT_RISK_POLICY } from "./domain/risk-policy.ts";
 import type { ObservedPaymentRequirement, X402EndpointPreflight } from "./domain/x402-preflight-consistency.ts";
 import { CachedLoader } from "./data/cache.ts";
 import type { HistoryStore } from "./data/history.ts";
@@ -86,6 +86,25 @@ function thresholdBreached(value: bigint, valueDecimals: number, policy: AgentRe
   const left = value * (10n ** BigInt(threshold.scale));
   const right = threshold.coefficient * (10n ** BigInt(valueDecimals));
   return policy.direction === "higher_is_better" ? left < right : left > right;
+}
+
+function scoreLevelFromRisk(score: number): Exclude<RiskLevel, "unknown"> {
+  if (score >= DEFAULT_RISK_POLICY.scoreLevelThresholds.critical) return "critical";
+  if (score >= DEFAULT_RISK_POLICY.scoreLevelThresholds.high) return "high";
+  if (score >= DEFAULT_RISK_POLICY.scoreLevelThresholds.medium) return "medium";
+  return "low";
+}
+
+function emptyAgentIdentity(chainId: number, status: AgentChainIdentityResult["status"], error?: string): AgentChainIdentityResult {
+  return { chainId, registered: status === "REGISTERED", status, ownerAddress: undefined, agentWallet: undefined, registrationUri: undefined, error };
+}
+
+function emptyReputationSummary(chainId: number, status: AgentReputationSummary["status"], errors: string[] = []): AgentReputationSummary {
+  return { chainId, status, totalFeedback: 0, activeFeedback: 0, revokedFeedback: 0, uniqueReviewers: 0, recognizedTags: 0, unrecognizedTags: 0, validDecimalsFeedback: 0, scoreEligibleFeedback: 0, historyCoverage: "partial", blocksScanned: "0", errors };
+}
+
+function registrationSummary(status: AgentRegistrationSummary["status"], servicesObserved = 0, values: { active?: boolean; registrationUri?: string } = {}): AgentRegistrationSummary {
+  return { status, servicesObserved, ...(values.active === undefined ? {} : { active: values.active }), ...(values.registrationUri === undefined ? {} : { registrationUri: values.registrationUri }) };
 }
 
 function githubCollectionFallback(repositoryEvidence: RepositoryEvidence): RepositoryCollectionCoverage {
@@ -902,8 +921,10 @@ export class OmniIntelligence {
       const agentRisk: AgentRisk = {
         agentId,
         primaryChainId: 0,
-        dimensions: { agentIdentity: "unknown", agentReputation: "unknown", agentValidation: "unknown" },
-        chainEvidence: [],
+        dimensions: { agentIdentity: "unknown", agentReputation: "unknown", agentRegistration: "unknown" },
+        identity: emptyAgentIdentity(0, "UNAVAILABLE", `unsupported chain: ${chainRef}`),
+        registration: registrationSummary("UNKNOWN"),
+        reputationSummary: emptyReputationSummary(0, "UNKNOWN", [`unsupported chain: ${chainRef}`]),
         policyVersion: "omni-agent-risk-v1",
         coverageVersion: AGENT_COVERAGE_MODEL_VERSION,
       };
@@ -933,8 +954,10 @@ export class OmniIntelligence {
       const agentRisk: AgentRisk = {
         agentId,
         primaryChainId: chain.chainId,
-        dimensions: { agentIdentity: "unknown", agentReputation: "unknown", agentValidation: "unknown" },
-        chainEvidence: [],
+        dimensions: { agentIdentity: "unknown", agentReputation: "unknown", agentRegistration: "unknown" },
+        identity: emptyAgentIdentity(chain.chainId, "UNAVAILABLE", `invalid agentId: ${agentId}`),
+        registration: registrationSummary("UNKNOWN"),
+        reputationSummary: emptyReputationSummary(chain.chainId, "UNKNOWN", [`invalid agentId: ${agentId}`]),
         policyVersion: "omni-agent-risk-v1",
         coverageVersion: AGENT_COVERAGE_MODEL_VERSION,
       };
@@ -1012,7 +1035,8 @@ export class OmniIntelligence {
     let agentName: string | undefined;
     let agentDescription: string | undefined;
     let services: AgentRisk["services"];
-    let agentValidation: AgentRisk["dimensions"]["agentValidation"] = "unknown";
+    let agentRegistrationRisk: AgentRisk["dimensions"]["agentRegistration"] = "unknown";
+    let registration = registrationSummary("UNKNOWN");
     let cardUnavailable = false;
     let registrationMismatch = false;
     if (isRegistered && primaryRegistrationUri) {
@@ -1023,12 +1047,14 @@ export class OmniIntelligence {
         });
         if (cardResult.status === "SELF_REFERENCE_MISMATCH") {
           registrationMismatch = true;
-          agentValidation = "unknown";
+          agentRegistrationRisk = "medium";
+          registration = registrationSummary("MISMATCH", 0, { registrationUri: primaryRegistrationUri });
           evidence.push({ source: "ERC-8004 Agent Card", kind: "agent_registration_mismatch", observedAt, detail: { reason: "self_reference_mismatch", registrationUri: primaryRegistrationUri } });
           coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "ABSENT"));
         } else if (cardResult.error) {
           errors.push(`agent card: ${cardResult.error}`);
-          agentValidation = "card_unavailable";
+          agentRegistrationRisk = "unknown";
+          registration = registrationSummary("UNAVAILABLE", 0, { registrationUri: primaryRegistrationUri });
           cardUnavailable = true;
           coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "UNAVAILABLE"));
           evidence.push({
@@ -1042,7 +1068,8 @@ export class OmniIntelligence {
           if (typeof card.name === "string") agentName = card.name.slice(0, 256);
           if (typeof card.description === "string") agentDescription = card.description.slice(0, 1024);
           services = extractServices(card);
-          agentValidation = cardResult.status === "INACTIVE" ? "inactive_registration" : services.length > 0 ? "services_observed" : "no_services";
+          agentRegistrationRisk = cardResult.status === "INACTIVE" ? "medium" : "low";
+          registration = registrationSummary(cardResult.status === "INACTIVE" ? "INACTIVE" : "VALID", services.length, { active: card.active === true, registrationUri: primaryRegistrationUri });
           coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", services.length > 0 ? "OBSERVED" : "ABSENT"));
           evidence.push(cardResult.status === "INACTIVE"
             ? {
@@ -1060,27 +1087,31 @@ export class OmniIntelligence {
           // Check registration match
 
         } else {
-          agentValidation = "card_unavailable";
+          agentRegistrationRisk = "unknown";
+          registration = registrationSummary("UNAVAILABLE", 0, { registrationUri: primaryRegistrationUri });
           cardUnavailable = true;
           coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "UNAVAILABLE"));
         }
       } catch (e) {
         errors.push(`agent card fetch: ${e instanceof Error ? e.message : String(e)}`);
-        agentValidation = "card_unavailable";
+        agentRegistrationRisk = "unknown";
+        registration = registrationSummary("UNAVAILABLE", 0, { registrationUri: primaryRegistrationUri });
         cardUnavailable = true;
         coverageSources.push(coverageSource("ERC-8004 Agent Card", "QUERIED", "UNAVAILABLE"));
       }
     } else if (isRegistered) {
-      agentValidation = "card_unavailable";
+      agentRegistrationRisk = "unknown";
+      registration = registrationSummary("UNAVAILABLE");
       cardUnavailable = true;
       coverageSources.push(coverageSource("ERC-8004 Agent Card", "NOT_QUERIED", "NOT_APPLICABLE"));
     } else {
-      agentValidation = "unknown";
+      agentRegistrationRisk = "unknown";
+      registration = registrationSummary("UNKNOWN");
       coverageSources.push(coverageSource("ERC-8004 Agent Card", "NOT_QUERIED", "NOT_APPLICABLE"));
     }
 
     // --- Phase 3: Reputation scan (only if registered) ---
-    let reputationSummary: AgentReputationSummary | undefined;
+    let reputationSummary: AgentReputationSummary = emptyReputationSummary(primaryChainId, "UNKNOWN");
     let agentReputation: AgentRisk["dimensions"]["agentReputation"] = "unknown";
     let trustedFeedbackExists = false;
     let strongestTrustedRisk: number | undefined;
@@ -1108,8 +1139,8 @@ export class OmniIntelligence {
                 ? policy.allowedDecimals === undefined || policy.allowedDecimals.includes(fb.valueDecimals)
                 : fb.valueDecimals === policy.expectedDecimals;
               const reviewerTrusted = configuredReviewers.has(fb.clientAddress.toLowerCase());
-              if (decimalsAllowed && fb.valueDecimals <= 18) validDecimalsFeedback++;
-              if (decimalsAllowed && reviewerTrusted && decimalParts(policy.threshold) && fb.valueDecimals <= 18) {
+              if (decimalsAllowed && fb.valueDecimals >= 0 && fb.valueDecimals <= 18) validDecimalsFeedback++;
+              if (decimalsAllowed && reviewerTrusted && decimalParts(policy.threshold) && fb.valueDecimals >= 0 && fb.valueDecimals <= 18) {
                 scoreEligibleFeedback++;
                 const riskScore = thresholdBreached(fb.value, fb.valueDecimals, policy) ? policy.riskWeight : 0;
                 maxRiskFromTrusted = Math.max(maxRiskFromTrusted, riskScore);
@@ -1122,8 +1153,15 @@ export class OmniIntelligence {
           trustedFeedbackExists = scoreEligibleFeedback > 0;
           strongestTrustedRisk = trustedFeedbackExists ? maxRiskFromTrusted : undefined;
 
+          const sourceUnavailable = scan.errors.length > 0 && scan.blocksScanned === 0n && scan.totalEventsObserved === 0;
+          const reputationStatus: AgentReputationSummary["status"] = sourceUnavailable
+            ? "UNAVAILABLE"
+            : scan.historyCoverage !== "complete"
+              ? "UNKNOWN"
+              : active.length > 0 ? "OBSERVED" : "ABSENT";
           reputationSummary = {
             chainId: primary.chainId,
+            status: reputationStatus,
             totalFeedback: scan.feedback.length,
             activeFeedback: active.length,
             revokedFeedback: scan.feedback.filter(f => f.revoked).length,
@@ -1138,30 +1176,16 @@ export class OmniIntelligence {
           };
           for (const e of scan.errors) errors.push(`reputation scan: ${e}`);
 
-          // Derive agentReputation dimension
-          if (active.length === 0) {
-            agentReputation = "insufficient";
-          } else if (recognizedTags === 0) {
-            // No recognized tags — feedback is evidence only, no score effect
-            agentReputation = "insufficient";
-          } else if (scoreEligibleFeedback === 0) {
-            // Recognized public feedback without score-eligible trusted entries is not positive evidence.
-            agentReputation = "insufficient";
-          } else if (maxRiskFromTrusted >= 60) {
-            agentReputation = "negative";
-          } else if (maxRiskFromTrusted > 0) {
-            agentReputation = "neutral";
+          // Factual status is independent from score eligibility. Public feedback can be OBSERVED while risk remains unknown.
+          if (reputationStatus === "UNKNOWN" || scoreEligibleFeedback === 0) {
+            agentReputation = "unknown";
           } else {
-            agentReputation = "positive";
+            agentReputation = scoreLevelFromRisk(maxRiskFromTrusted);
           }
 
-          const reputationEvidenceStatus: EvidenceCoverageSource["status"] =
-            active.length > 0
-              ? scan.historyCoverage === "complete" ? "OBSERVED" : "UNKNOWN"
-              : "ABSENT";
+          const reputationEvidenceStatus: EvidenceCoverageSource["status"] = reputationStatus;
           coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "QUERIED", reputationEvidenceStatus));
-          const reputationCompletenessStatus: EvidenceCoverageSource["status"] =
-            scan.historyCoverage === "complete" ? "OBSERVED" : "UNKNOWN";
+          const reputationCompletenessStatus: EvidenceCoverageSource["status"] = reputationStatus;
           coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "QUERIED", reputationCompletenessStatus));
 
           evidence.push({
@@ -1194,14 +1218,17 @@ export class OmniIntelligence {
         } catch (e) {
           errors.push(`reputation scan: ${e instanceof Error ? e.message : String(e)}`);
           agentReputation = "unknown";
+          reputationSummary = emptyReputationSummary(primary.chainId, "UNAVAILABLE", [e instanceof Error ? e.message : String(e)]);
           coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "QUERIED", "UNAVAILABLE"));
           coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "QUERIED", "UNAVAILABLE"));
         }
       } else {
+        reputationSummary = emptyReputationSummary(primaryChainId, "UNKNOWN");
         coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "NOT_QUERIED", "UNKNOWN"));
         coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "NOT_QUERIED", "UNKNOWN"));
       }
     } else {
+      reputationSummary = emptyReputationSummary(primaryChainId, "UNKNOWN");
       agentReputation = "unknown";
       coverageSources.push(coverageSource("ERC-8004 Reputation Evidence", "NOT_QUERIED", "NOT_APPLICABLE"));
       coverageSources.push(coverageSource("ERC-8004 Reputation History Completeness", "NOT_QUERIED", "NOT_APPLICABLE"));
@@ -1209,25 +1236,22 @@ export class OmniIntelligence {
 
     // --- Phase 4: assemble agentIdentity dimension ---
     const agentIdentity: AgentRisk["dimensions"]["agentIdentity"] =
-      identityProbeStatus === "REGISTERED" ? "registered_verified"
-      : identityProbeStatus === "NOT_REGISTERED" ? "not_registered"
-      : "unknown";
+      identityProbeStatus === "REGISTERED" ? "low" : "unknown";
 
     // --- Phase 5: assemble AgentRisk extension ---
     const agentRisk: AgentRisk = {
       agentId,
       primaryChainId,
-      ...(primaryAgentWallet ? { agentWallet: primaryAgentWallet } : {}),
-      ...(primaryRegistrationUri ? { registrationUri: primaryRegistrationUri } : {}),
+      identity: primary ?? emptyAgentIdentity(primaryChainId, identityProbeStatus),
+      registration,
       ...(agentName ? { agentName } : {}),
       ...(agentDescription ? { agentDescription } : {}),
       dimensions: {
         agentIdentity,
         agentReputation,
-        agentValidation,
+        agentRegistration: agentRegistrationRisk,
       },
-      chainEvidence: chainResults,
-      ...(reputationSummary ? { reputationSummary } : {}),
+      reputationSummary,
       ...(services && services.length > 0 ? { services } : {}),
       policyVersion: "omni-agent-risk-v1",
       coverageVersion: AGENT_COVERAGE_MODEL_VERSION,

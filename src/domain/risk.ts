@@ -174,8 +174,8 @@ export const UINT256_MAX = 11579208923731619542357098500868790785326998466564056
 
 /** Explicit identity status for unambiguous classification. */
 export type AgentIdentityStatus = "REGISTERED" | "NOT_REGISTERED" | "UNAVAILABLE";
-export type AgentIdentityRisk = "registered" | "unregistered" | "unknown";
-export type AgentReputationRisk = "positive" | "neutral" | "negative" | "insufficient" | "unknown";
+export type AgentReputationStatus = "OBSERVED" | "ABSENT" | "UNAVAILABLE" | "UNKNOWN";
+export type AgentRegistrationStatus = "VALID" | "INACTIVE" | "MISMATCH" | "UNAVAILABLE" | "UNKNOWN";
 
 /**
  * Operator-configured recognized tag policy.
@@ -212,17 +212,14 @@ export const DEFAULT_AGENT_REPUTATION_POLICY: AgentReputationPolicy = {
   recognizedTags: [],
 };
 
-/** Agent-specific risk dimensions, surfaced as a nested optional extension on RiskAssessment. */
+/** Agent-specific dimensions use OMNI's canonical risk vocabulary. */
 export type AgentRiskDimensions = {
-  /** Whether the agent is verifiably registered in the ERC-8004 IdentityRegistry on a production chain. */
-  agentIdentity: "registered_verified" | "not_registered" | "unknown";
-  /** Aggregated reputation signal derived from on-chain feedback, filtered to trusted reviewers when configured. */
-  agentReputation: AgentReputationRisk;
-  /** Service / x402 endpoint validity evidence from the agent card. */
-  agentValidation: "services_observed" | "no_services" | "inactive_registration" | "card_unavailable" | "unknown";
+  agentIdentity: RiskLevel;
+  agentReputation: RiskLevel;
+  agentRegistration: RiskLevel;
 };
 
-/** Per-chain identity probe result surfaced inside agentRisk.chainEvidence. */
+/** Factual identity probe result surfaced inside agentRisk.identity. */
 export type AgentChainIdentityResult = {
   chainId: number;
   registered: boolean;
@@ -233,9 +230,18 @@ export type AgentChainIdentityResult = {
   error: string | undefined;
 };
 
+/** Factual registration evidence; risk interpretation stays in dimensions.agentRegistration. */
+export type AgentRegistrationSummary = {
+  status: AgentRegistrationStatus;
+  active?: boolean;
+  registrationUri?: string;
+  servicesObserved: number;
+};
+
 /** Aggregated reputation summary derived from on-chain feedback. */
 export type AgentReputationSummary = {
   chainId: number;
+  status: AgentReputationStatus;
   totalFeedback: number;
   activeFeedback: number;
   revokedFeedback: number;
@@ -266,13 +272,12 @@ export type AgentServiceObservation = {
 export type AgentRisk = {
   agentId: string;
   primaryChainId: number;
-  agentWallet?: string;
-  registrationUri?: string;
+  identity: AgentChainIdentityResult;
+  registration: AgentRegistrationSummary;
   agentName?: string;
   agentDescription?: string;
   dimensions: AgentRiskDimensions;
-  chainEvidence: AgentChainIdentityResult[];
-  reputationSummary?: AgentReputationSummary;
+  reputationSummary: AgentReputationSummary;
   services?: AgentServiceObservation[];
   /** ERC-8004 specific policy version for agent scoring. */
   policyVersion: string;

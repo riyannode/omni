@@ -711,6 +711,25 @@ function agentProvider(identity: Record<string, unknown>, feedback: unknown[] = 
 }
 
 describe("OmniIntelligence agent service path", () => {
+  test("registered identity exposes factual status and standardized dimensions", async () => {
+    const assessment = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, ownerAddress: "0x0000000000000000000000000000000000000001" })).agentRisk("42", "eip155:1");
+    expect(assessment.agentRisk.identity?.status).toBe("REGISTERED");
+    expect(assessment.agentRisk.dimensions).toEqual({ agentIdentity: "low", agentReputation: "unknown", agentRegistration: "unknown" });
+  });
+
+  test("no active reputation is ABSENT and remains unknown risk", async () => {
+    const assessment = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [])).agentRisk("42", "eip155:1");
+    expect(assessment.agentRisk.reputationSummary?.status).toBe("ABSENT");
+    expect(assessment.agentRisk.dimensions.agentReputation).toBe("unknown");
+  });
+
+  test("partial reputation history is UNKNOWN and cannot score", async () => {
+    const provider = { ...agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ clientAddress: "0x00000000000000000000000000000000000000aa", feedbackIndex: 1n, value: 0n, valueDecimals: 0, tag1: "quality", tag2: "", endpoint: "", feedbackURI: "", feedbackHash: "0x", revoked: false }]), scanAgentReputation: async () => ({ feedback: [{ clientAddress: "0x00000000000000000000000000000000000000aa", feedbackIndex: 1n, value: 0n, valueDecimals: 0, tag1: "quality", tag2: "", endpoint: "", feedbackURI: "", feedbackHash: "0x", revoked: false }], blocksScanned: 100n, historyCoverage: "partial", truncated: true, totalEventsObserved: 1, errors: [] }) };
+    const assessment = await serviceForAgent(provider, { trustedReviewers: new Set(["0x00000000000000000000000000000000000000aa"]), recognizedTags: [{ tag: "quality", direction: "higher_is_better", threshold: "1", expectedDecimals: 0, riskWeight: 80 }] }).agentRisk("42", "eip155:1");
+    expect(assessment.agentRisk.reputationSummary?.status).toBe("UNKNOWN");
+    expect(assessment.agentRisk.dimensions.agentReputation).toBe("unknown");
+  });
+
   test("confirmed NOT_REGISTERED is insufficient evidence and RPC UNAVAILABLE stays unknown", async () => {
     const notRegistered = await serviceForAgent(agentProvider({ chainId: 1, status: "NOT_REGISTERED", registered: false })).agentRisk("42", "eip155:1");
     expect({ riskScore: notRegistered.riskScore, scoreStatus: notRegistered.scoreStatus, recommendation: notRegistered.recommendation }).toEqual({ riskScore: 0, scoreStatus: "insufficient_evidence", recommendation: "manual_review" });
@@ -722,7 +741,7 @@ describe("OmniIntelligence agent service path", () => {
 
   test("registered identity reaches normal measured evaluation", async () => {
     const assessment = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true })).agentRisk("42", "eip155:1");
-    expect(assessment.agentRisk.dimensions.agentIdentity).toBe("registered_verified");
+    expect(assessment.agentRisk.dimensions.agentIdentity).toBe("low");
     expect(assessment.scoreStatus).toBe("measured");
   });
 
@@ -730,10 +749,34 @@ describe("OmniIntelligence agent service path", () => {
   test("inactive self-referencing card is observed, not unavailable, and changes risk", async () => {
     const inactiveCard = { status: "INACTIVE", card: validCard({ active: false }), selfReferenceMatch: true };
     const assessment = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], inactiveCard)).agentRisk("42", "eip155:1");
-    expect(assessment.agentRisk.dimensions.agentValidation).toBe("inactive_registration");
+    expect(assessment.agentRisk.dimensions.agentRegistration).toBe("medium");
+    expect(assessment.agentRisk.registration?.status).toBe("INACTIVE");
     expect(assessment.evidence.some(item => item.kind === "agent_card_inactive")).toBe(true);
     expect(assessment.evidence.some(item => item.kind === "agent_card_unavailable")).toBe(false);
     expect(assessment.riskScore).toBeGreaterThan(0);
+  });
+
+  test("valid registration with no services is low risk and remains passive", async () => {
+    const card = { status: "SELF_REFERENCE_MATCH", card: validCard({ services: [] }), selfReferenceMatch: true };
+    const assessment = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], card)).agentRisk("42", "eip155:1");
+    expect(assessment.agentRisk.registration).toMatchObject({ status: "VALID", active: true, servicesObserved: 0 });
+    expect(assessment.agentRisk.dimensions.agentRegistration).toBe("low");
+  });
+
+  test("registration mismatch and unavailable card are distinct factual states", async () => {
+    const mismatch = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], { status: "SELF_REFERENCE_MISMATCH" })).agentRisk("42", "eip155:1");
+    expect(mismatch.agentRisk.registration.status).toBe("MISMATCH");
+    expect(mismatch.agentRisk.dimensions.agentRegistration).toBe("medium");
+    const unavailable = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true, registrationUri: "data:card" }, [], { status: "UNAVAILABLE", error: "RPC unavailable" })).agentRisk("42", "eip155:1");
+    expect(unavailable.agentRisk.registration.status).toBe("UNAVAILABLE");
+    expect(unavailable.agentRisk.dimensions.agentRegistration).toBe("unknown");
+  });
+
+  test("reputation RPC failure is UNAVAILABLE and remains unknown risk", async () => {
+    const provider = { ...agentProvider({ chainId: 1, status: "REGISTERED", registered: true }), scanAgentReputation: async () => { throw new Error("RPC timeout"); } };
+    const assessment = await serviceForAgent(provider).agentRisk("42", "eip155:1");
+    expect(assessment.agentRisk.reputationSummary.status).toBe("UNAVAILABLE");
+    expect(assessment.agentRisk.dimensions.agentReputation).toBe("unknown");
   });
 
   test("operator reputation direction, decimals, and trusted reviewer filtering are enforced", async () => {
@@ -747,9 +790,21 @@ describe("OmniIntelligence agent service path", () => {
     expect(higher.riskScore).toBe(70);
     expect(higher.agentRisk.reputationSummary?.totalFeedback).toBe(2);
     expect(higher.agentRisk.reputationSummary?.scoreEligibleFeedback).toBe(1);
+    expect(higher.agentRisk.reputationSummary?.status).toBe("OBSERVED");
+    expect(higher.agentRisk.dimensions.agentReputation).toBe("high");
     const untrustedOnly = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [feedback[1]!]), { trustedReviewers: new Set<string>(), recognizedTags: policy.recognizedTags }).agentRisk("42", "eip155:1");
-    expect(untrustedOnly.agentRisk.dimensions.agentReputation).toBe("insufficient");
+    expect(untrustedOnly.agentRisk.dimensions.agentReputation).toBe("unknown");
     expect(untrustedOnly.riskScore).toBe(0);
+
+    const revoked = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, revoked: true }]), policy).agentRisk("42", "eip155:1");
+    expect(revoked.agentRisk.reputationSummary?.scoreEligibleFeedback).toBe(0);
+    expect(revoked.agentRisk.dimensions.agentReputation).toBe("unknown");
+    const unknownTag = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, tag1: "unrecognized" }]), policy).agentRisk("42", "eip155:1");
+    expect(unknownTag.agentRisk.reputationSummary?.unrecognizedTags).toBe(1);
+    expect(unknownTag.agentRisk.dimensions.agentReputation).toBe("unknown");
+    const malformedDecimals = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, valueDecimals: 19 }]), policy).agentRisk("42", "eip155:1");
+    expect(malformedDecimals.agentRisk.reputationSummary?.scoreEligibleFeedback).toBe(0);
+    expect(malformedDecimals.agentRisk.dimensions.agentReputation).toBe("unknown");
 
     const lowerPolicy = { trustedReviewers: new Set([trusted]), recognizedTags: [{ tag: "quality", direction: "lower_is_better", threshold: "0.8", expectedDecimals: 1, riskWeight: 70 }] };
     const lowerFeedback = [{ ...feedback[0]!, value: 9n }];
@@ -760,6 +815,12 @@ describe("OmniIntelligence agent service path", () => {
     expect(higherSafe.riskScore).toBe(0);
     const lowerSafe = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [feedback[0]!]), lowerPolicy).agentRisk("42", "eip155:1");
     expect(lowerSafe.riskScore).toBe(0);
+    const lowRisk = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, value: 9n }]), { trustedReviewers: new Set([trusted]), recognizedTags: [{ tag: "quality", direction: "higher_is_better", threshold: "0", expectedDecimals: 1, riskWeight: 0 }] }).agentRisk("42", "eip155:1");
+    expect(lowRisk.agentRisk.dimensions.agentReputation).toBe("low");
+    for (const [riskWeight, expected] of [[25, "medium"], [50, "high"], [80, "critical"]] as const) {
+      const threshold = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, value: 0n }]), { trustedReviewers: new Set([trusted]), recognizedTags: [{ tag: "quality", direction: "higher_is_better", threshold: "1", expectedDecimals: 1, riskWeight }] }).agentRisk("42", "eip155:1");
+      expect(threshold.agentRisk.dimensions.agentReputation).toBe(expected);
+    }
     const negativePolicy = { trustedReviewers: new Set([trusted]), recognizedTags: [{ tag: "quality", direction: "higher_is_better", threshold: "0", expectedDecimals: 0, riskWeight: 70 }] };
     const negative = await serviceForAgent(agentProvider({ chainId: 1, status: "REGISTERED", registered: true }, [{ ...feedback[0]!, value: -1n, valueDecimals: 0 }]), negativePolicy).agentRisk("42", "eip155:1");
     expect(negative.riskScore).toBe(70);

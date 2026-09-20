@@ -147,7 +147,7 @@ function highestObservedVulnerabilitySeverity(features: RiskFeatures, policy: Re
  * Observed signals feed dimensions via MAX aggregation:
  * - agentIdentity: registration status
  * - agentReputation: trusted-reviewer feedback (if policy exists)
- * - agentValidation: service/card evidence
+ * - agentRegistration: registration/card evidence
  *
  * Registered=false => riskScore 0 + insufficient_evidence + manual_review.
  * RPC outage => sourceErrors + UNKNOWN coverage (not registered=false).
@@ -183,9 +183,9 @@ function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, pol
       push(signals, "AGENT_REPUTATION_HIGH", "high", "ERC-8004 ReputationRegistry", { score: reputationRiskScore });
     }
   }
-  // No trusted feedback => reputationRiskScore stays 0 (unknown/insufficient)
+  // No trusted feedback => reputationRiskScore stays 0 (unknown evidence)
 
-  // --- agentValidation dimension ---
+  // --- agentRegistration dimension ---
   let validationRiskScore = 0;
   if (agent.cardUnavailable) {
     // Card fetch failed — unknown, not malicious

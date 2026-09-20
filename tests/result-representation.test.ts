@@ -9,6 +9,33 @@ import {
 import { compactResultForHttp, MAX_PUBLIC_MARKDOWN_BYTES, MAX_PUBLIC_JSON_BYTES, sendResult } from "../src/http/result-representation.ts";
 import { renderRiskMarkdown } from "../src/http/risk-markdown.ts";
 
+function agentResult() {
+  return {
+    subject: { type: "agent", id: "eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432:42" },
+    policyVersion: "omni-agent-risk-v1",
+    scoreStatus: "measured_partial",
+    recommendation: "manual_review",
+    riskScore: 35,
+    evidenceCoverage: 0.75,
+    dimensions: { knownVulnerabilities: "not_applicable", knownExploitation: "not_applicable", packageSupplyChain: "not_applicable", repositorySecurityPractices: "not_applicable", maliciousInfrastructure: "not_applicable", serviceIdentity: "not_applicable", paymentConfigurationRisk: "not_applicable", endpointOperationalRisk: "not_applicable" },
+    signals: [],
+    evidence: [],
+    sourceErrors: [],
+    assessedAt: "2026-09-21T00:00:00.000Z",
+    freshness: { oldestEvidenceAt: null, newestEvidenceAt: null },
+    agentRisk: {
+      agentId: "42",
+      primaryChainId: 1,
+      identity: { chainId: 1, registered: true, status: "REGISTERED", ownerAddress: "0x0000000000000000000000000000000000000001" },
+      registration: { status: "VALID", active: true, registrationUri: "https://agent.example/card", servicesObserved: 0 },
+      dimensions: { agentIdentity: "low", agentReputation: "unknown", agentRegistration: "low" },
+      reputationSummary: { chainId: 1, status: "OBSERVED", totalFeedback: 1, activeFeedback: 1, revokedFeedback: 0, uniqueReviewers: 1, recognizedTags: 1, unrecognizedTags: 0, validDecimalsFeedback: 1, scoreEligibleFeedback: 0, historyCoverage: "complete", blocksScanned: "100", errors: [] },
+      policyVersion: "omni-agent-risk-v1",
+      coverageVersion: "agent-coverage-v1"
+    }
+  };
+}
+
 function repositoryResult() {
   return {
     subject: { type: "repository", id: "github.com/owner/repo" },
@@ -126,6 +153,25 @@ describe("compact HTTP representations", () => {
     });
     expect(JSON.stringify(compact)).not.toContain("rawProviderPayload");
     expect(Buffer.byteLength(JSON.stringify(compact))).toBeLessThan(MAX_PUBLIC_JSON_BYTES);
+  });
+
+  test("renders the same bounded agent facts and risks in JSON and Markdown", () => {
+    const result = agentResult();
+    const json = compactResultForHttp(result) as Record<string, any>;
+    const markdown = renderRiskMarkdown(result);
+    expect(json.agentRisk.identity.status).toBe("REGISTERED");
+    expect(json.agentRisk.registration.status).toBe("VALID");
+    expect(json.agentRisk.reputationSummary.status).toBe("OBSERVED");
+    expect(json.agentRisk.dimensions).toEqual({ agentIdentity: "low", agentReputation: "unknown", agentRegistration: "low" });
+    expect(markdown).toContain("# OMNI Agent Risk Report");
+    expect(markdown).toContain("Agent: `42`");
+    expect(markdown).toContain("Status: `REGISTERED`");
+    expect(markdown).toContain("Identity Risk: `low`");
+    expect(markdown).toContain("Registration Risk: `low`");
+    expect(markdown).toContain("Status: `OBSERVED`");
+    expect(markdown).toContain("Reputation Risk: `unknown`");
+    expect(markdown).not.toContain("positive");
+    expect(markdown).not.toContain("agentValidation");
   });
 
   test("renders deterministic human Markdown from the same compact assessment", () => {
