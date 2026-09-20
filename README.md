@@ -10,7 +10,7 @@ OMNI is runtime-agnostic: Hermes, Codex, Claude, OpenClaw, MCP clients, CI, or p
 Three intelligence planes feed one deterministic `RiskEngine`:
 
 1. **Supply-chain intelligence** — OSV vulnerabilities, CISA KEV known exploitation, npm registry lifecycle/integrity/maintainer metadata, OpenSSF repository security practices, and licensed package IOC matches.
-2. **Service/identity intelligence** — Circle Discovery identity, safe x402 handshake observations, provider/schema history, and licensed URL/hostname IOC matches.
+2. **Service/identity intelligence** — Circle Discovery identity, safe x402 handshake observations, ERC-8004 IdentityRegistry and ReputationRegistry evidence, verified registration/agent-card evidence, advertised service observations, and licensed URL/hostname IOC matches.
 3. **Payment intelligence** — x402 payout address/network/price history, payout-destination changes, and licensed wallet IOC matches.
 
 OMNI does **not** equate “not found in a threat feed” with “safe”. Results expose `evidenceCoverage`, `signals`, `sourceErrors`, and an advisory `recommendation`.
@@ -31,14 +31,19 @@ For x402, a marketplace listing or earlier preflight is evidence, not authority.
 
 ## Paid endpoints
 
+The current source and API contract define five paid endpoints.
+
 | Endpoint | Price | Purpose |
 |---|---:|---|
 | `GET /v1/package/risk` | `$0.005` | Exact package/version risk before install |
 | `GET /v1/repo/risk` | `$0.01` | Repository security-practice evidence |
 | `POST /v1/dependencies/risk` | `$0.05` | Up to 100 exact dependency assessments |
 | `GET /v1/x402/endpoint/preflight` | `$0.01` | Service + payment preflight before an agent pays |
+| `GET /v1/agent/risk` | `$0.05` | ERC-8004 agent identity, reputation, and registration integrity |
 
-OMNI's paid API can be purchased over any compatible mainnet option currently offered by the live Circle Gateway x402 challenge. Arc Mainnet is the pinned network only for the Try with your agent demo flow.
+OMNI's paid API can be purchased over any compatible mainnet option currently offered by the live Circle Gateway x402 challenge. For `/v1/agent/risk`, `chain` selects the ERC-8004 identity/reputation chain; it does not select the Circle payment network. Payment selection still comes from the live `PAYMENT-REQUIRED` challenge. Production identity chains currently include Ethereum Mainnet and Base Mainnet; no Arc Mainnet ERC-8004 deployment or support is claimed. Arc Mainnet is the pinned network only for the Try with your agent demo flow.
+
+Agent risk contract semantics: ERC-8004 ReputationRegistry data is raw public evidence, not an OMNI trust score. `identity.status` is factual (`REGISTERED`, `NOT_REGISTERED`, `UNAVAILABLE`); `reputationSummary.status` is factual (`OBSERVED`, `ABSENT`, `UNAVAILABLE`, `UNKNOWN`); and `agentIdentity`, `agentReputation`, and `agentRegistration` use only `low`, `medium`, `high`, `critical`, or `unknown`. Public feedback can be observed while `agentReputation` remains `unknown` when no policy-qualified evidence scores. Production trusted-reviewer/tag policy remains empty until provenance and semantics are defensible. `/v1/agent/risk` accepts only `chain` and `agentId`; service endpoint verification remains `/v1/x402/endpoint/preflight`, and `targetUrl` is rejected.
 
 Request path: **validate → admission control → durable paid-request reservation → persist payment-attempt identity → official Circle payment gate/settlement → cached evidence → RiskEngine → durable JSON result**. Validation, admission, and initial durable-store failures happen before settlement; post-settlement persistence failures fail closed into durable recovery. Paid calls require a UUID v4 `Idempotency-Key`; retries of one logical request must reuse the same key, while a different request with that key returns a conflict.
 
@@ -46,7 +51,7 @@ Successful paid results keep the canonical structured assessment fields inline. 
 
 ## Data sources
 
-Built-in network sources are OSV, CISA KEV, npm Registry, OpenSSF Scorecard, and Circle Discovery. Repository assessments also use GitHub repository evidence and deps.dev observations. Exact repository dependencies resolved from supported NPM/Cargo lockfiles, exact `requirements*.txt` pins, authoritative `pyproject.toml` + uv/Poetry locks, and proven selected Go module snapshots from `vendor/modules.txt` are queried against OSV as `npm`, `crates.io`, `PyPI`, and `Go`; bare `go.mod` requirements remain minimum-version evidence and are unresolved without vendor selection proof; CVE IDs from successful OSV observations are correlated with CISA KEV in one bounded repository lookup. Unresolved or deferred dependencies remain explicitly uncertain, and unsupported formats are not silently broadened. A configured `GITHUB_TOKEN` enables authenticated GitHub reads for higher upstream limits. The KEV loader tries `www.cisa.gov` first and falls back to the `cisagov/kev-data` mirror, because some egress ranges receive HTTP 403 from cisa.gov; override the ordered list with `OMNI_KEV_FEED_URLS`. The resolved `feedUrl` and `catalogVersion` are reported in the evidence detail. OMNI-owned PostgreSQL history accumulates endpoint/provider/schema/payment configuration changes over time. OpenSSF Scorecard reports `available`, `not_indexed`, `unavailable`, or `error`; `not_indexed` means that no Scorecard result is indexed for the repository, not that the provider is generally unavailable.
+Built-in network sources are OSV, CISA KEV, npm Registry, OpenSSF Scorecard, Circle Discovery, and ERC-8004 registries. ERC-8004 IdentityRegistry and ReputationRegistry reads are on-chain evidence; registration URI and agent-card/service metadata are off-chain evidence. Reputation contributes to scoring only when feedback satisfies the configured trusted-reviewer/tag policy. Repository assessments also use GitHub repository evidence and deps.dev observations. Exact repository dependencies resolved from supported NPM/Cargo lockfiles, exact `requirements*.txt` pins, authoritative `pyproject.toml` + uv/Poetry locks, and proven selected Go module snapshots from `vendor/modules.txt` are queried against OSV as `npm`, `crates.io`, `PyPI`, and `Go`; bare `go.mod` requirements remain minimum-version evidence and are unresolved without vendor selection proof; CVE IDs from successful OSV observations are correlated with CISA KEV in one bounded repository lookup. Unresolved or deferred dependencies remain explicitly uncertain, and unsupported formats are not silently broadened. A configured `GITHUB_TOKEN` enables authenticated GitHub reads for higher upstream limits. The KEV loader tries `www.cisa.gov` first and falls back to the `cisagov/kev-data` mirror, because some egress ranges receive HTTP 403 from cisa.gov; override the ordered list with `OMNI_KEV_FEED_URLS`. The resolved `feedUrl` and `catalogVersion` are reported in the evidence detail. OMNI-owned PostgreSQL history accumulates endpoint/provider/schema/payment configuration changes over time. OpenSSF Scorecard reports `available`, `not_indexed`, `unavailable`, or `error`; `not_indexed` means that no Scorecard result is indexed for the repository, not that the provider is generally unavailable.
 
 Commercial threat feeds are deliberately **not hard-coded**. `threat_indicators` is a vendor-neutral IOC store for URL, hostname, wallet, and package indicators. Import only data whose license permits your commercial use and derived API responses. This avoids coupling OMNI's business to a feed whose terms prohibit redistribution.
 
@@ -109,7 +114,7 @@ Buyer clients can compare the selected official x402 `PaymentRequirements` from 
 - Replay of the same logical request returned the completed result
 - Replay did not create a duplicate settlement
 
-Scope: this verifies the tested `package-risk` paid lifecycle on Arc Mainnet. It does not claim that every OMNI paid route or every supported mainnet network has been paid-tested.
+Scope: this verifies the tested `package-risk` paid lifecycle on Arc Mainnet. It does not claim that every OMNI paid route or every supported mainnet network has been paid-tested. No live-paid production acceptance, production migration, or persistence verification is claimed for `/v1/agent/risk`.
 
 ### Mainnet payment behavior
 

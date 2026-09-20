@@ -10,9 +10,9 @@ Service name: OMNI
 
 Category: INFRASTRUCTURE
 
-Description: Pre-execution trust and risk evidence for autonomous agents before software installation or x402 payment, combining supply-chain, service-identity, payment-history, and licensed threat-intelligence signals.
+Description: Pre-execution trust and risk evidence for autonomous agents before software installation, ERC-8004 agent invocation, or x402 payment, combining supply-chain, ERC-8004 identity/reputation/service, service-identity, payment-history, and licensed threat-intelligence signals.
 
-Suggested tags: `security`, `software-supply-chain`, `x402`, `agent-security`, `provenance`
+Suggested tags: `security`, `software-supply-chain`, `x402`, `erc-8004`, `agent-security`, `provenance`
 
 OpenAPI: `https://api.askomni.xyz/openapi.yaml`
 

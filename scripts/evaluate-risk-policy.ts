@@ -43,12 +43,16 @@ function validatePolicy(input: unknown): RiskPolicy {
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
 const candidatePath = process.argv[2];
 const policy = candidatePath ? validatePolicy(JSON.parse(await readFile(candidatePath, "utf8"))) : DEFAULT_RISK_POLICY;
-const rows = await createAssessmentJournal(process.env.DATABASE_URL).loadLabelled();
-// Replay compatibility: current 4/4 rows always evaluate. Historical 3/3 and
+const allRows = await createAssessmentJournal(process.env.DATABASE_URL).loadLabelled();
+// Exclude agent rows: the agentRisk scoring model lives outside the RiskEngine
+// and its features are not tracked in the assessment_records features column.
+// Replaying agent rows through RiskEngine would produce a meaningless zero score.
+const rows = allRows.filter(row => row.subjectType !== "agent");
+// Replay compatibility: current 5/5 rows always evaluate. Historical 4/4, 3/3 and
 // v1 package/x402/dependency_set rows are replayed because their feature
 // extraction semantics are unchanged. Historical repository rows stay
 // incompatible so old repository evidence is never silently re-scored under
-// the v4 repository model.
+// the v4/v5 repository model.
 const cohorts = partitionCompatibleRows(rows, RISK_SNAPSHOT_SCHEMA_VERSION, RISK_FEATURE_SCHEMA_VERSION);
 const engine = new RiskEngine(policy); let currentSchemaDrift = 0; let legacySchemaDrift = 0;
 const replayed = cohorts.compatible.map(row => {

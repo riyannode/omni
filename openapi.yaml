@@ -284,6 +284,83 @@ paths:
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
         '406': { $ref: '#/components/responses/NotAcceptable' }
+  /v1/agent/risk:
+    get:
+      operationId: getAgentRisk
+      summary: Assess an ERC-8004 agent's identity, reputation, and registration integrity.
+      description: >
+        Price: $0.05 USDC per request.
+        Fetches identity from ERC-8004 IdentityRegistry (Ethereum Mainnet + Base Mainnet),
+        scans ReputationRegistry for bounded on-chain feedback (NewFeedback / FeedbackRevoked events),
+        and fetches registration metadata or the agent card from the on-chain registration URI.
+        A missing or unregistered agent is not itself a malicious signal: it returns
+        scoreStatus=insufficient_evidence and recommendation=manual_review.
+        Advertised services are observed as passive registration metadata; OMNI does not
+        actively probe arbitrary service URLs for this endpoint.
+      x-payment-info:
+        price:
+          mode: fixed
+          currency: USDC
+          amount: "0.050000"
+        protocols:
+          - x402: {}
+        accepts:
+          - scheme: exact
+            network: "eip155:5042"
+            asset: "0x3600000000000000000000000000000000000000"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:8453"
+            asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+          - scheme: exact
+            network: "eip155:1"
+            asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+            payTo: "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5"
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/Accept' }
+        - in: query
+          name: chain
+          required: true
+          description: >
+            CAIP-2 chain reference (e.g. eip155:1 for Ethereum mainnet, eip155:8453 for Base mainnet).
+            ERC-8004 identity is chain-specific — the same token ID on different chains is a different subject.
+          schema:
+            type: string
+            pattern: '^eip155:[0-9]+$'
+          example: "eip155:1"
+        - in: query
+          name: agentId
+          required: true
+          description: >
+            ERC-8004 agent token id as a canonical decimal uint256 string. Hex, negative values,
+            leading zeros except "0", and values greater than UINT256_MAX are rejected.
+            UINT256_MAX is 115792089237316195423570985008687907853269984665640564039457584007913129639935;
+            runtime validation is authoritative for this numeric upper bound.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]{0,77})$'
+            maxLength: 78
+          example: "42"
+
+      responses:
+        '200':
+          description: Agent risk assessment with ERC-8004 identity, reputation, registration, and passive service metadata evidence.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: '#/components/headers/PaymentResponse'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentRiskResponse' }
+            text/markdown:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '503': { $ref: '#/components/responses/PaidRequestUnavailable' }
+        '406': { $ref: '#/components/responses/NotAcceptable' }
+
   /.well-known/x402:
     get:
       operationId: getX402DiscoveryManifest
@@ -405,8 +482,10 @@ components:
       type: object
       required: [type, id]
       properties:
-        type: { type: string, enum: [package, repository, dependency_set, x402_endpoint] }
-        id: { type: string }
+        type: { type: string, enum: [package, repository, dependency_set, x402_endpoint, agent] }
+        id:
+          type: string
+          description: "Canonical subject ID. For agents: eip155:<chainId>:<identityRegistry>:<agentId>"
     Evidence:
       type: object
       required: [source, kind, observedAt, detail]
@@ -853,6 +932,109 @@ components:
               additionalProperties: { type: integer, minimum: 0 }
         assessedAt: { type: string, format: date-time }
         omissions: { $ref: '#/components/schemas/ResponseOmissions' }
+    AgentChainIdentityResult:
+      type: object
+      additionalProperties: false
+      required: [chainId, registered, status]
+      properties:
+        chainId: { type: integer }
+        registered: { type: boolean }
+        status: { type: string, enum: [REGISTERED, NOT_REGISTERED, UNAVAILABLE] }
+        ownerAddress: { type: string }
+        agentWallet: { type: string }
+        registrationUri: { type: string }
+        error: { type: string }
+    AgentRegistrationSummary:
+      type: object
+      additionalProperties: false
+      required: [status, servicesObserved]
+      properties:
+        status: { type: string, enum: [VALID, INACTIVE, MISMATCH, UNAVAILABLE, UNKNOWN] }
+        active: { type: boolean }
+        registrationUri: { type: string }
+        servicesObserved: { type: integer, minimum: 0 }
+    AgentReputationSummary:
+      type: object
+      additionalProperties: false
+      required: [chainId, status, totalFeedback, activeFeedback, revokedFeedback, uniqueReviewers, recognizedTags, unrecognizedTags, validDecimalsFeedback, scoreEligibleFeedback, historyCoverage, blocksScanned, errors]
+      properties:
+        chainId: { type: integer }
+        status: { type: string, enum: [OBSERVED, ABSENT, UNAVAILABLE, UNKNOWN] }
+        totalFeedback: { type: integer, minimum: 0 }
+        activeFeedback: { type: integer, minimum: 0 }
+        revokedFeedback: { type: integer, minimum: 0 }
+        uniqueReviewers: { type: integer, minimum: 0 }
+        recognizedTags: { type: integer, minimum: 0 }
+        unrecognizedTags: { type: integer, minimum: 0 }
+        validDecimalsFeedback: { type: integer, minimum: 0 }
+        scoreEligibleFeedback: { type: integer, minimum: 0 }
+        historyCoverage: { type: string, enum: [complete, partial] }
+        blocksScanned: { type: string, description: "Number of blocks scanned, as a decimal string." }
+        errors:
+          type: array
+          items: { type: string }
+    AgentServiceObservation:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string }
+        endpoint: { type: string, format: uri }
+        schema: { type: string }
+    AgentRiskDimensions:
+      type: object
+      additionalProperties: false
+      required: [agentIdentity, agentReputation, agentRegistration]
+      properties:
+        agentIdentity:
+          type: string
+          enum: [low, medium, high, critical, unknown]
+          description: Identity risk dimension. Factual registration status is in identity.status.
+        agentReputation:
+          type: string
+          enum: [low, medium, high, critical, unknown]
+          description: Reputation risk dimension, not a quality rating. Unknown means no policy-qualified evidence scored.
+        agentRegistration:
+          type: string
+          enum: [low, medium, high, critical, unknown]
+          description: Registration integrity risk dimension; advertised services are passive metadata.
+    AgentRisk:
+      type: object
+      additionalProperties: false
+      required: [agentId, primaryChainId, identity, registration, dimensions, reputationSummary, policyVersion, coverageVersion]
+      description: >
+        Agent-specific risk extension. Present only when subject.type === "agent".
+        Identity and reputation statuses are factual evidence states; dimensions use
+        OMNI risk vocabulary. NOT_REGISTERED is not itself malicious risk.
+      properties:
+        agentId: { type: string, description: "ERC-8004 token id, decimal string." }
+        primaryChainId: { type: integer, description: "ERC-8004 identity/reputation chain." }
+        identity: { $ref: '#/components/schemas/AgentChainIdentityResult' }
+        registration: { $ref: '#/components/schemas/AgentRegistrationSummary' }
+        agentName: { type: string }
+        agentDescription: { type: string }
+        dimensions: { $ref: '#/components/schemas/AgentRiskDimensions' }
+        reputationSummary: { $ref: '#/components/schemas/AgentReputationSummary' }
+        services:
+          type: array
+          items: { $ref: '#/components/schemas/AgentServiceObservation' }
+        policyVersion: { type: string }
+        coverageVersion: { type: string }
+
+    AgentRiskResponse:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/CompactRiskAssessmentFields'
+        - type: object
+          required: [agentRisk]
+          properties:
+            agentRisk: { $ref: '#/components/schemas/AgentRisk' }
+      unevaluatedProperties: false
+      description: >
+        Compact machine-readable JSON response for an ERC-8004 agent risk assessment.
+        The standard CompactRiskAssessmentFields carry the base risk score and coverage;
+        the agentRisk extension carries agent-specific identity, reputation, registration,
+        and passive service metadata evidence.
     Error:
       type: object
       required: [error]

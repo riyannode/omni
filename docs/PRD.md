@@ -38,6 +38,7 @@ OMNI does not authorize or execute a payment. Its assessment and recommendation 
 ## Users
 
 - autonomous coding/tool agents before package installation
+- autonomous agents deciding whether to invoke or trust another ERC-8004 agent
 - procurement/research agents before a paid API call
 - x402 buyers before authorizing an Agent Wallet payment
 - CI and agent platforms that need a deterministic policy input
@@ -48,10 +49,32 @@ OMNI does not authorize or execute a payment. Its assessment and recommendation 
 OSV + CISA KEV + npm registry metadata + OpenSSF Scorecard + optional licensed package IOC feeds.
 
 ### Service identity
-Circle Discovery + constrained unpaid x402 probe + OMNI historical provider/schema observations + optional licensed URL/hostname IOC feeds.
+Circle Discovery + constrained unpaid x402 probe + OMNI historical provider/schema observations + optional licensed URL/hostname IOC feeds. ERC-8004 agent identity and reputation are read-only evidence from the IdentityRegistry and ReputationRegistry; registration URI, agent-card, and advertised-service observations are external evidence, not authorization.
 
 ### Payment configuration
 OMNI history tracks `payTo`, network and price changes. Licensed wallet IOCs can produce direct high-severity signals. A wallet relationship is evidence, not proof that two providers share an operator.
+
+## ERC-8004 agent risk — current capability
+
+`GET /v1/agent/risk` is an implemented current capability for autonomous agents deciding whether to invoke or trust another ERC-8004 agent. It evaluates:
+
+- chain-specific ERC-8004 identity from the IdentityRegistry;
+- raw public ReputationRegistry evidence, with score eligibility requiring the configured trusted-reviewer, recognized-tag, and decimal policy;
+- registration URI and verified agent-card/registration metadata; advertised service endpoints are observed passively and are not actively probed by this endpoint.
+
+The canonical agent extension keeps factual states separate from risk dimensions:
+
+- `identity.status` is `REGISTERED`, `NOT_REGISTERED`, or `UNAVAILABLE`; `NOT_REGISTERED` is not automatically malicious and maps to `agentIdentity=unknown`;
+- `registration.status` is factual registration/card state, while `agentRegistration` is `low`, `medium`, `high`, `critical`, or `unknown`; no advertised services alone is not a high-risk verdict;
+- `reputationSummary.status` is `OBSERVED`, `ABSENT`, `UNAVAILABLE`, or `UNKNOWN`; public feedback may be `OBSERVED` while `agentReputation=unknown` when no feedback is score-eligible;
+- `agentIdentity`, `agentReputation`, and `agentRegistration` are OMNI risk dimensions, not quality ratings; missing or unqualified evidence never becomes low risk or malicious risk;
+- global `scoreStatus` remains `measured`, `measured_partial`, or `insufficient_evidence`, and `recommendation` remains `proceed`, `proceed_with_caution`, `manual_review`, or `do_not_proceed`.
+
+The endpoint requires only a CAIP-2 `chain` identity-chain input and a canonical decimal uint256 `agentId`; the ERC-8004 identity/reputation chain is separate from the Circle/x402 payment chain used to purchase the OMNI request. Service endpoint verification remains `/v1/x402/endpoint/preflight`; `/v1/agent/risk` has no `targetUrl` input. Reputation scoring is production-disabled until reviewer provenance and tag semantics are defensible. `active: false` is observed as an inactive registration and contributes deterministic registration risk.
+
+OMNI remains advisory: the caller or runtime policy decides whether to proceed, the wallet/runtime enforces that decision, and Circle settles payment. Registry data and agent-card metadata are evidence, not absolute truth or authorization. This current implementation does not claim live-paid production acceptance, production migration completion, or production persistence verification for the agent route. No Arc Mainnet ERC-8004 deployment or support is claimed.
+
+Persistence/replay review: the journal stores the existing v5 `RiskSnapshot`, `RiskFeatures`, and base `RiskAssessment`; the additive `agentRisk` public extension is assembled after journaling and is not persisted in the assessment record. Agent rows remain excluded from historical replay cohorts. Renaming the public dimension and adding factual summaries therefore does not require a schema-version bump or a migration; `003_agent_subject.sql` remains the existing explicit subject-type migration and is unchanged.
 
 ## x402 endpoint accountability
 
