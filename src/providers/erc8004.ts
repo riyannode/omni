@@ -231,14 +231,23 @@ function ipv6Range(cidr: string): { start: bigint; end: bigint } {
   return { start, end: start | (((1n << 128n) - 1n) ^ mask) };
 }
 
-const IPV6_GLOBAL_UNICAST_RANGE = ipv6Range("2000::/3");
+const IPV6_ALLOCATED_PUBLIC_RANGES = [
+  "2001::/23", "2001:200::/23", "2001:400::/23", "2001:600::/23", "2001:800::/22",
+  "2001:c00::/23", "2001:e00::/23", "2001:1200::/23", "2001:1400::/22", "2001:1800::/23",
+  "2001:1a00::/23", "2001:1c00::/22", "2001:2000::/19", "2001:4000::/23", "2001:4200::/23",
+  "2001:4400::/23", "2001:4600::/23", "2001:4800::/23", "2001:4a00::/23", "2001:4c00::/23",
+  "2001:5000::/20", "2001:8000::/19", "2001:a000::/20", "2001:b000::/20", "2003::/18",
+  "2400::/12", "2410::/12", "2600::/12", "2610::/23", "2620::/23", "2630::/12",
+  "2800::/12", "2a00::/12", "2a10::/12", "2c00::/12",
+].map(ipv6Range);
+
 const IPV6_MAPPED_RANGE = ipv6Range("::ffff:0:0/96");
 const IPV6_NAT64_RFC6052_RANGE = ipv6Range("64:ff9b::/96");
 const IPV6_NAT64_RFC8215_RANGE = ipv6Range("64:ff9b:1::/48");
 
 // Allow-public policy based on the current IANA IPv6 Address Space and
 // IPv6 Special-Purpose Address registries. Ordinary destinations must be in
-// 2000::/3; everything outside that allocation is rejected by default.
+// an allocated public-unicast prefix; everything else is rejected by default.
 //
 // The entries below are the IANA special-purpose ranges whose current
 // registry semantics are not ordinary public destinations. The explicit
@@ -296,8 +305,8 @@ function isPublicIpv6(ip: string): boolean {
   const translatedIpv4 = nat64EmbeddedIpv4(units);
   if (translatedIpv4 !== undefined) return !isPrivateIpv4(translatedIpv4);
 
-  if (!ipv6ValueInRange(value, IPV6_GLOBAL_UNICAST_RANGE)) return false;
   if (IPV6_GLOBALLY_REACHABLE_SPECIAL_RANGES.some(range => ipv6ValueInRange(value, range))) return true;
+  if (!IPV6_ALLOCATED_PUBLIC_RANGES.some(range => ipv6ValueInRange(value, range))) return false;
   if (IPV6_NON_GLOBAL_SPECIAL_RANGES.some(range => ipv6ValueInRange(value, range))) return false;
   return true;
 }

@@ -668,7 +668,7 @@ describe("ERC-8004 reputation scan", () => {
 
 describe("ERC-8004 SSRF classification and registration fetch caps", () => {
   test("rejects non-public IPv6 and mapped private addresses", () => {
-    for (const ip of ["::1", "::", "fc00::", "fd12::", "fe80::", "fe90::", "fea0::", "febf::", "ff02::1", "2001:db8::1", "3fff::1", "4000::1", "100::1", "100:0:0:1::1", "::ffff:127.0.0.1", "0:0:0:0:0:ffff:192.168.1.1", "64:ff9b::7f00:1", "64:ff9b::c0a8:101", "64:ff9b:1:7f00:0:100::"]) expect(isPrivateIp(ip)).toBe(true);
+    for (const ip of ["::1", "::", "fc00::", "fd12::", "fe80::", "fe90::", "fea0::", "febf::", "ff02::1", "2001:db8::1", "2001:dead::1", "3fff::1", "4000::1", "100::1", "100:0:0:1::1", "::ffff:127.0.0.1", "0:0:0:0:0:ffff:192.168.1.1", "64:ff9b::7f00:1", "64:ff9b::c0a8:101", "64:ff9b:1:7f00:0:100::"]) expect(isPrivateIp(ip)).toBe(true);
     expect(isPrivateIp("2001:4860:4860::8888")).toBe(false);
     expect(isPrivateIp("2606:4700:4700::1111")).toBe(false);
     expect(isPrivateIp("2001:1::1")).toBe(false);
