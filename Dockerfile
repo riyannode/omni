@@ -2,8 +2,8 @@ FROM oven/bun:1.3.14-alpine AS base
 WORKDIR /app
 
 FROM base AS install
-COPY package.json ./
-RUN bun install --production
+COPY package.json bun.lock ./
+RUN bun install --production --frozen-lockfile
 
 FROM base AS runtime
 ENV NODE_ENV=production
