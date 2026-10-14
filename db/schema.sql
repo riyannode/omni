@@ -41,7 +41,7 @@ CREATE INDEX IF NOT EXISTS threat_indicators_expiry ON threat_indicators (expire
 
 CREATE TABLE IF NOT EXISTS assessment_records (
   assessment_id uuid PRIMARY KEY,
-  subject_type text NOT NULL CHECK (subject_type IN ('package', 'repository', 'dependency_set', 'x402_endpoint')),
+  subject_type text NOT NULL CHECK (subject_type IN ('package', 'repository', 'dependency_set', 'x402_endpoint', 'agent')),
   subject_id text NOT NULL,
   snapshot_schema_version integer NOT NULL CHECK (snapshot_schema_version > 0),
   feature_schema_version integer NOT NULL CHECK (feature_schema_version > 0),

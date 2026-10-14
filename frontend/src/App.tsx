@@ -14,6 +14,7 @@ import {
   type BuilderValues,
   type EndpointId,
   type InspectionInput,
+  type AgentInput,
   type PackageInput,
   type RepositoryInput,
 } from "./agent-inspection-prompt";
@@ -93,6 +94,7 @@ const INITIAL_BUILDER_VALUES: BuilderValues = {
   repo: { owner: "expressjs", repo: "express" },
   dependencies: [{ id: 1, ecosystem: "npm", name: "express", version: "5.2.1" }],
   preflight: { url: "" },
+  agent: { chain: "eip155:1", agentId: "42" },
 };
 
 type ApiPreviewSegment = { text: string; className?: string };
@@ -602,7 +604,9 @@ function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; 
       ? { endpointId, values: values.repo }
       : endpointId === "dependencies"
         ? { endpointId, values: values.dependencies }
-        : { endpointId, values: values.preflight };
+        : endpointId === "preflight"
+          ? { endpointId, values: values.preflight }
+          : { endpointId, values: values.agent };
   const endpoint = API_ENDPOINTS.find((candidate) => candidate.id === endpointId);
 
   useEffect(() => () => {
@@ -619,6 +623,7 @@ function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; 
     dependencies: values.dependencies.map((dependency) => dependency.id === id ? { ...dependency, [field]: value } : dependency),
   });
   const updatePreflight = (value: string) => onChange({ ...values, preflight: { url: value } });
+  const updateAgent = (field: keyof AgentInput, value: string) => onChange({ ...values, agent: { ...values.agent, [field]: value } });
 
   const copy = async (kind: "request" | "prompt") => {
     if (!request || validationError) return;
@@ -672,6 +677,14 @@ function ApiBuilder({ endpointId, values, onChange }: { endpointId: EndpointId; 
         {endpointId === "preflight" && <fieldset>
           <legend>What paid endpoint do you want OMNI to inspect?</legend>
           <label className="builder-field--full"><span>Target URL</span><input type="url" value={values.preflight.url} onChange={(event) => updatePreflight(event.target.value)} placeholder="https://example.com/api/resource" maxLength={2048} /></label>
+        </fieldset>}
+
+        {endpointId === "agent" && <fieldset>
+          <legend>Which ERC-8004 agent do you want to inspect?</legend>
+          <div className="builder-fields builder-fields--two">
+            <label><span>Chain</span><input value={values.agent.chain} onChange={(event) => updateAgent("chain", event.target.value)} placeholder="eip155:1" /></label>
+            <label><span>Agent ID</span><input inputMode="numeric" value={values.agent.agentId} onChange={(event) => updateAgent("agentId", event.target.value)} placeholder="42" /></label>
+          </div>
         </fieldset>}
       </form>
 
@@ -903,9 +916,16 @@ function getEndpointDocsArticle(endpointId: EndpointId): DocsArticle {
       result: "The response includes advisory evidence plus observed payment options. The execution-time HTTP 402 challenge remains the detail the caller must compare before paying.",
       decision: "Keep the preflight close to the paid call. Compare the live resource, USDC amount, network, and scheme against your own policy before the signed retry.",
     },
+    agent: {
+      title: "Assess an ERC-8004 agent before invocation.",
+      intro: "Use agent risk to inspect ERC-8004 identity, reputation, and registration integrity before an agent invokes another agent.",
+      subject: "Send the ERC-8004 identity/reputation chain and canonical decimal agent ID. The chain identifies the registry subject, not the Circle/x402 payment network.",
+      result: "The response reports IdentityRegistry, ReputationRegistry, registration URI, agent-card, and passive service metadata evidence.",
+      decision: "Review the evidence and coverage before invocation. The result is advisory and does not authorize a call or payment.",
+    },
   };
   const detail = details[endpointId];
-  const title = endpointId === "package" ? "Package risk" : endpointId === "repo" ? "Repository risk" : endpointId === "dependencies" ? "Dependency risk" : "x402 endpoint preflight";
+  const title = endpointId === "package" ? "Package risk" : endpointId === "repo" ? "Repository risk" : endpointId === "dependencies" ? "Dependency risk" : endpointId === "preflight" ? "x402 endpoint preflight" : "Agent risk";
   const requestExamples: Record<EndpointId, string> = {
     package: `curl -i --get 'https://api.askomni.xyz/v1/package/risk' \\
   --data-urlencode 'ecosystem=npm' \\
@@ -929,6 +949,11 @@ function getEndpointDocsArticle(endpointId: EndpointId): DocsArticle {
   }'`,
     preflight: `curl -i --get 'https://api.askomni.xyz/v1/x402/endpoint/preflight' \\
   --data-urlencode 'url=https://example.com/paid-resource' \\
+  -H 'Accept: application/json' \\
+  -H 'Idempotency-Key: <UUID-v4>'`,
+    agent: `curl -i --get 'https://api.askomni.xyz/v1/agent/risk' \\
+  --data-urlencode 'chain=eip155:1' \\
+  --data-urlencode 'agentId=42' \\
   -H 'Accept: application/json' \\
   -H 'Idempotency-Key: <UUID-v4>'`,
   };

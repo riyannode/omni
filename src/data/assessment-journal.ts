@@ -6,6 +6,7 @@ import type { RiskFeatures } from "../domain/risk-features.ts";
 import { RISK_FEATURE_SCHEMA_VERSION } from "../domain/risk-features.ts";
 
 export type AssessmentLabel = "benign" | "incident";
+// Widen subjectType to include "agent" (matches SubjectKind in risk-evaluation.ts).
 export type AssessmentRecord = {
   assessmentId: string;
   subjectType: RiskSnapshot["subject"]["type"];

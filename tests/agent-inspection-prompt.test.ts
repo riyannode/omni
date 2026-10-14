@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AGENT_QUICK_TEST_PROMPT } from "../frontend/src/agent-quick-test.ts";
-import { API_ENDPOINTS, buildAgentInspectionPrompt, buildRequest, type InspectionInput } from "../frontend/src/agent-inspection-prompt.ts";
+import { API_ENDPOINTS, buildAgentInspectionPrompt, buildRequest, validateInspection, type InspectionInput } from "../frontend/src/agent-inspection-prompt.ts";
 
 const packageInput: InspectionInput = { endpointId: "package", values: { ecosystem: "npm", name: "express", version: "5.2.1" } };
 const genericInputs: readonly InspectionInput[] = [
@@ -8,12 +8,29 @@ const genericInputs: readonly InspectionInput[] = [
   { endpointId: "repo", values: { owner: "expressjs", repo: "express" } },
   { endpointId: "dependencies", values: [{ id: 1, ecosystem: "npm", name: "express", version: "5.2.1" }] },
   { endpointId: "preflight", values: { url: "https://example.com/paid" } },
+  { endpointId: "agent", values: { chain: "eip155:1", agentId: "42" } },
 ];
 
 const GROUNDING_RULE = "Report only facts from OMNI JSON or observed payment. Do not infer omitted details or map riskScore to severity. OMNI dimensions are risk levels.";
 const EXPECTED_OMNI_SELLER = "0xd5154d79b52a5980e7b0e806f5e4bf3dca3798b5";
 
 describe("agent inspection prompt profiles", () => {
+  test("agent builder validates canonical decimal uint256 without Number coercion", () => {
+    const validIds = ["0", "1", "42", "115792089237316195423570985008687907853269984665640564039457584007913129639935"];
+    for (const agentId of validIds) expect(validateInspection({ endpointId: "agent", values: { chain: "eip155:1", agentId } })).toBeNull();
+    for (const agentId of ["01", "-1", "0x2a", "1.5", "115792089237316195423570985008687907853269984665640564039457584007913129639936"]) {
+      expect(validateInspection({ endpointId: "agent", values: { chain: "eip155:1", agentId } })).not.toBeNull();
+    }
+    expect(validateInspection({ endpointId: "agent", values: { chain: "ethereum", agentId: "42" } })).not.toBeNull();
+  });
+
+  test("agent request contains only chain and agentId", () => {
+    const input: InspectionInput = { endpointId: "agent", values: { chain: "eip155:1", agentId: "42" } };
+    const request = buildRequest(input);
+    expect(request.url).toBe("https://api.askomni.xyz/v1/agent/risk?chain=eip155%3A1&agentId=42");
+    expect(new URL(request.url).searchParams.get("targetUrl")).toBeNull();
+  });
+
   test("homepage quick test is Arc mainnet only", () => {
     expect(AGENT_QUICK_TEST_PROMPT).toContain("Accept: application/json");
     expect(AGENT_QUICK_TEST_PROMPT).toContain("ARC MAINNET ONLY:");
@@ -132,6 +149,11 @@ describe("agent inspection prompt profiles", () => {
         request: "GET https://api.askomni.xyz/v1/x402/endpoint/preflight?url=https%3A%2F%2Fexample.com%2Fpaid",
         price: "10000 / 0.010000 USDC",
       },
+      {
+        input: genericInputs[4]!,
+        request: "GET https://api.askomni.xyz/v1/agent/risk?chain=eip155%3A1&agentId=42",
+        price: "50000 / 0.050000 USDC",
+      },
     ];
     expect(expectedRequests).toHaveLength(API_ENDPOINTS.length);
 
@@ -155,8 +177,10 @@ describe("agent inspection prompt profiles", () => {
   test("COPY REQUEST and agent prompts use JSON", () => {
     for (const input of genericInputs) {
       const request = buildRequest(input);
-      expect(request.display).not.toMatch(/MAINNET|TESTNET|eip155:|Gateway/);
-      expect(request.curl).not.toMatch(/MAINNET|TESTNET|eip155:|Gateway/);
+      if (input.endpointId !== "agent") {
+        expect(request.display).not.toMatch(/MAINNET|TESTNET|eip155:|Gateway/);
+        expect(request.curl).not.toMatch(/MAINNET|TESTNET|eip155:|Gateway/);
+      }
       expect(request.display).toContain("Accept: application/json");
       expect(request.display).not.toContain("Accept: text/markdown");
       expect(request.curl).toContain("Accept: application/json");

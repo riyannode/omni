@@ -1,7 +1,7 @@
 export const OMNI_API_BASE_URL = "https://api.askomni.xyz";
 export const MAX_DEPENDENCIES = 100;
 
-export type EndpointId = "package" | "repo" | "dependencies" | "preflight";
+export type EndpointId = "package" | "repo" | "dependencies" | "preflight" | "agent";
 
 export type PackageInput = {
   ecosystem: string;
@@ -20,18 +20,25 @@ export type PreflightInput = {
   url: string;
 };
 
+export type AgentInput = {
+  chain: string;
+  agentId: string;
+};
+
 export type BuilderValues = {
   package: PackageInput;
   repo: RepositoryInput;
   dependencies: DependencyInput[];
   preflight: PreflightInput;
+  agent: AgentInput;
 };
 
 export type InspectionInput =
   | { endpointId: "package"; values: PackageInput }
   | { endpointId: "repo"; values: RepositoryInput }
   | { endpointId: "dependencies"; values: DependencyInput[] }
-  | { endpointId: "preflight"; values: PreflightInput };
+  | { endpointId: "preflight"; values: PreflightInput }
+  | { endpointId: "agent"; values: AgentInput };
 
 export type AgentPromptProfile = "generic-mainnet" | "arc-mainnet-quick-test";
 
@@ -85,6 +92,15 @@ export const API_ENDPOINTS: readonly EndpointMetadata[] = [
     displayPrice: "0.010000",
     atomicAmount: "10000",
     copy: "Check service identity and payment details before a paid call.",
+  },
+  {
+    id: "agent",
+    method: "GET",
+    path: "/v1/agent/risk",
+    price: "$0.05 USDC",
+    displayPrice: "0.050000",
+    atomicAmount: "50000",
+    copy: "Check ERC-8004 agent identity, reputation, and registration integrity before invocation.",
   },
 ];
 
@@ -142,6 +158,18 @@ function validatePackageCoordinate(values: PackageInput, subject: string): strin
 }
 
 const REPOSITORY_COMPONENT = /^[A-Za-z0-9_.-]{1,100}$/;
+const AGENT_CHAIN = /^eip155:[0-9]+$/;
+const AGENT_ID = /^(0|[1-9][0-9]*)$/;
+const UINT256_MAX_STR = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
+function validateAgentInput(values: AgentInput): string | null {
+  const chain = trim(values.chain);
+  const agentId = trim(values.agentId);
+  if (!AGENT_CHAIN.test(chain)) return "Chain must use the CAIP-2 format eip155:<chainId>.";
+  if (!AGENT_ID.test(agentId)) return "Agent ID must be a canonical decimal uint256.";
+  if (agentId.length > 78 || (agentId.length === 78 && agentId > UINT256_MAX_STR)) return "Agent ID must be between 0 and UINT256_MAX.";
+  return null;
+}
 
 export function validateInspection(input: InspectionInput): string | null {
   if (input.endpointId === "package") return validatePackageCoordinate(input.values, "package");
@@ -164,6 +192,8 @@ export function validateInspection(input: InspectionInput): string | null {
     const incompleteDependency = input.values[incompleteIndex];
     return incompleteDependency === undefined ? null : validatePackageCoordinate(incompleteDependency, `dependency ${incompleteIndex + 1}`);
   }
+
+  if (input.endpointId === "agent") return validateAgentInput(input.values);
 
   const url = trim(input.values.url);
   if (!url) return "Enter an HTTP or HTTPS URL.";
@@ -206,6 +236,11 @@ export function buildRequest(input: InspectionInput, representation: RequestRepr
     return makePostRequest(`${OMNI_API_BASE_URL}/v1/dependencies/risk`, body, representation);
   }
 
+  if (input.endpointId === "agent") {
+    const query = new URLSearchParams({ chain: trim(input.values.chain), agentId: trim(input.values.agentId) });
+    return makeGetRequest(`${OMNI_API_BASE_URL}/v1/agent/risk?${query.toString()}`, representation);
+  }
+
   const query = new URLSearchParams({ url: trim(input.values.url) });
   return makeGetRequest(`${OMNI_API_BASE_URL}/v1/x402/endpoint/preflight?${query.toString()}`, representation);
 }
@@ -220,6 +255,9 @@ function targetDescription(input: InspectionInput): string {
   if (input.endpointId === "dependencies") {
     const packages = input.values.map(({ ecosystem, name, version }) => `${trim(ecosystem)}:${trim(name)}@${trim(version)}`).join(", ");
     return `the exact dependency set in the JSON body: ${packages}`;
+  }
+  if (input.endpointId === "agent") {
+    return `ERC-8004 agent ${trim(input.values.agentId)} on ${trim(input.values.chain)}`;
   }
   return trim(input.values.url);
 }
@@ -274,6 +312,9 @@ export function buildAgentInspectionPrompt(input: InspectionInput, options: Agen
   const preflightRule = input.endpointId === "preflight"
     ? "OMNI is the service being paid; the inspected endpoint URL is input only. Never pay the inspected target. It may advertise TESTNET, MAINNET, or multiple networks; do not reject it merely for MAINNET, and do not create or check wallets for target networks."
     : "";
+  const agentRule = input.endpointId === "agent"
+    ? "For the default request, chain=eip155:1 identifies the ERC-8004 identity/reputation chain; it does not choose the Circle/x402 payment network. Payment network selection remains based on the live PAYMENT-REQUIRED challenge. Price: 50000 atomic / 0.050000 USDC. Do not claim Arc Mainnet ERC-8004 support."
+    : "";
 
   return `TASK
 ${profile.task}
@@ -298,6 +339,7 @@ ${walletReadiness} Use one fresh UUID v4 Idempotency-Key per logical request. Au
 
 Never expose wallet/signing/authentication secrets.
 ${preflightRule}
+${agentRule}
 
 OUTPUT
 Use only the successful OMNI JSON response. If Circle CLI wraps it, use data.response.

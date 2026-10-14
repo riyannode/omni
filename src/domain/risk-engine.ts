@@ -1,4 +1,5 @@
-import type { Recommendation, RepositoryDependencyVulnerabilityFinding, RepositoryThreatIntelFinding, RepositoryRiskSummary, RiskAssessment, RiskLevel, RiskSignal, RiskSnapshot, ScoreStatus } from "./risk.ts";
+import type { Recommendation, RepositoryDependencyVulnerabilityFinding, RepositoryThreatIntelFinding, RepositoryRiskSummary, RiskAssessment, RiskLevel, RiskDimensionLevel, RiskSignal, RiskSnapshot, ScoreStatus } from "./risk.ts";
+import { AGENT_POLICY_VERSION } from "./risk.ts";
 import { extractRiskFeatures, type RiskFeatures } from "./risk-features.ts";
 import { DEFAULT_RISK_POLICY, type ReadonlyRiskPolicy } from "./risk-policy.ts";
 
@@ -15,7 +16,7 @@ function worstSeverity(levels: RiskLevel[], policy: ReadonlyRiskPolicy): RiskLev
 
 function recommendation(score: number, policy: ReadonlyRiskPolicy, status: ScoreStatus, subjectType: RiskSnapshot["subject"]["type"]): Recommendation {
   if (score >= policy.recommendationThresholds.doNotProceed) return "do_not_proceed";
-  if (subjectType === "repository" && status !== "measured") return "manual_review";
+  if ((subjectType === "repository" || subjectType === "agent") && status !== "measured") return "manual_review";
   if (score >= policy.recommendationThresholds.manualReview) return "manual_review";
   if (score >= policy.recommendationThresholds.caution) return "proceed_with_caution";
   return "proceed";
@@ -86,6 +87,7 @@ function repositoryRiskSummary(snapshot: RiskSnapshot, features: RiskFeatures, p
 }
 
 function scoreStatus(features: RiskFeatures): ScoreStatus {
+  if (features.subject.type === "agent" && features.agent.identityStatus !== "REGISTERED") return "insufficient_evidence";
   if (features.coverage.expected === 0 || features.coverage.completed === 0) return "insufficient_evidence";
   if (features.subject.type === "repository" && features.repository.present && (
     (features.repository.dependencyVulnerabilityStatus !== undefined && features.repository.dependencyVulnerabilityStatus !== "NOT_CHECKED" && !features.repository.dependencyVulnerabilitySummaryValid)
@@ -139,6 +141,120 @@ function highestObservedVulnerabilitySeverity(features: RiskFeatures, policy: Re
   return worstSeverity(repository.retainedDependencyVulnerabilities.map(item => item.vulnerability.severity), policy);
 }
 
+/**
+ * Agent-specific risk scoring following omni-agent-risk-v1.
+ *
+ * Observed signals feed dimensions via MAX aggregation:
+ * - agentIdentity: registration status
+ * - agentReputation: trusted-reviewer feedback (if policy exists)
+ * - agentRegistration: registration/card evidence
+ *
+ * Registered=false => riskScore 0 + insufficient_evidence + manual_review.
+ * RPC outage => sourceErrors + UNKNOWN coverage (not registered=false).
+ * Registration/card contradictions are scored as observed validation evidence.
+ */
+function assessAgentFeatures(snapshot: RiskSnapshot, features: RiskFeatures, policy: ReadonlyRiskPolicy): RiskAssessment {
+  const signals: RiskSignal[] = [];
+  const agent = features.agent;
+
+  // --- agentIdentity dimension ---
+  let agentIdentityRisk: RiskLevel = "unknown";
+  let identityRiskScore = 0;
+  if (agent.identityStatus === "REGISTERED") {
+    agentIdentityRisk = "low";
+    identityRiskScore = 0;
+  } else if (agent.identityStatus === "NOT_REGISTERED") {
+    // Confirmed nonexistent token
+    agentIdentityRisk = "unknown"; // not_registered is not itself malicious
+    identityRiskScore = 0;
+  } else {
+    // RPC/transport failure
+    agentIdentityRisk = "unknown";
+    identityRiskScore = 0;
+  }
+
+  // --- agentReputation dimension ---
+  let reputationRiskScore = 0;
+  if (agent.trustedFeedbackExists && agent.strongestTrustedRisk !== undefined) {
+    reputationRiskScore = agent.strongestTrustedRisk;
+    if (reputationRiskScore >= policy.scoreLevelThresholds.critical) {
+      push(signals, "AGENT_REPUTATION_CRITICAL", "critical", "ERC-8004 ReputationRegistry", { score: reputationRiskScore });
+    } else if (reputationRiskScore >= policy.scoreLevelThresholds.high) {
+      push(signals, "AGENT_REPUTATION_HIGH", "high", "ERC-8004 ReputationRegistry", { score: reputationRiskScore });
+    }
+  }
+  // No trusted feedback => reputationRiskScore stays 0 (unknown evidence)
+
+  // --- agentRegistration dimension ---
+  let validationRiskScore = 0;
+  if (agent.cardUnavailable) {
+    // Card fetch failed — unknown, not malicious
+    validationRiskScore = 0;
+  } else if (agent.registrationMismatch) {
+    // Mismatch between advertised and actual
+    validationRiskScore = policy.endpoint.unlisted;
+    push(signals, "AGENT_CARD_MISMATCH", "medium", "ERC-8004 Agent Card", {});
+  } else if (snapshot.evidence.some(evidence => evidence.kind === "agent_card_inactive")) {
+    // Structurally valid and self-referencing, but the registration is observed inactive.
+    validationRiskScore = policy.endpoint.unlisted;
+    push(signals, "AGENT_CARD_INACTIVE", "medium", "ERC-8004 Agent Card", { active: false });
+  } else if (agent.servicesObserved) {
+    validationRiskScore = 0;
+  }
+
+  // --- MAX aggregation across independent dimensions ---
+  const observedRisk = Math.max(
+    identityRiskScore,
+    reputationRiskScore,
+    validationRiskScore,
+  );
+
+  const coverage = features.coverage.expected === 0 ? 0 : features.coverage.completed / features.coverage.expected;
+  const status = scoreStatus(features);
+  const rawScore = Math.min(policy.score.maximum, Math.max(policy.score.minimum, observedRisk));
+  let score = rawScore;
+
+  // Agent floor: if registered but no real contradictions observed, score can be 0
+  // Missing evidence affects coverage, not observed risk
+  if (agent.identityStatus === "NOT_REGISTERED") {
+    // Confirmed unregistered: score stays 0, force manual_review (never auto proceed/do_not_proceed)
+    score = 0;
+  }
+
+  // Confirmed unregistered => manual_review (not proceed, not do_not_proceed)
+  const finalRecommendation = (agent.identityStatus === "NOT_REGISTERED")
+    ? "manual_review" as Recommendation
+    : recommendation(score, policy, status, snapshot.subject.type);
+
+  const knownVulnerabilities: RiskDimensionLevel = "not_applicable";
+  const knownExploitation: RiskDimensionLevel = "not_applicable";
+
+  return {
+    subject: snapshot.subject,
+    policyVersion: AGENT_POLICY_VERSION,
+    scoreStatus: status,
+    recommendation: finalRecommendation,
+    riskScore: score,
+    evidenceCoverage: Number(coverage.toFixed(2)),
+    ...(features.coverage.modelVersion && features.coverage.sources ? { coverage: { modelVersion: features.coverage.modelVersion, resolvedWeight: features.coverage.completed, applicableWeight: features.coverage.expected, sources: features.coverage.sources } } : {}),
+    dimensions: {
+      knownVulnerabilities,
+      knownExploitation,
+      packageSupplyChain: "not_applicable" as const,
+      repositorySecurityPractices: "not_applicable" as const,
+      maliciousInfrastructure: "not_applicable" as const,
+      serviceIdentity: "not_applicable" as const,
+      paymentConfigurationRisk: "not_applicable" as const,
+      endpointOperationalRisk: "not_applicable" as const,
+    },
+    signals,
+    evidence: snapshot.evidence,
+    sourceErrors: snapshot.sourceErrors ?? [],
+    assessedAt: new Date().toISOString(),
+    freshness: freshness(snapshot.evidence),
+  };
+}
+
 export class RiskEngine {
   constructor(private readonly policy: ReadonlyRiskPolicy = DEFAULT_RISK_POLICY) {}
 
@@ -148,11 +264,17 @@ export class RiskEngine {
     const policy = this.policy;
     const signals: RiskSignal[] = [];
     const isRepository = snapshot.subject.type === "repository";
+    const isAgent = snapshot.subject.type === "agent";
     const maxVulnScore = features.vulnerabilities?.reduce((max, vuln) => Math.max(max, policy.severityWeights[vuln.severity]), 0) ?? 0;
     const exploitedScore = features.knownExploitedVulnerabilityCount > 0 ? policy.package.knownExploitation : 0;
     for (const vuln of features.vulnerabilities ?? []) {
       if (vuln.severity === "critical" || vuln.severity === "high") push(signals, "KNOWN_VULNERABILITY", vuln.severity, "OSV", { id: vuln.id });
       if (vuln.knownExploited) push(signals, "KNOWN_EXPLOITED_VULNERABILITY", "critical", "CISA KEV", { id: vuln.id });
+    }
+
+    // Agent subjects use dedicated scoring
+    if (isAgent) {
+      return assessAgentFeatures(snapshot, features, policy);
     }
 
     let packageRisk: number | undefined;
@@ -248,7 +370,7 @@ export class RiskEngine {
     }
 
     let maliciousInfrastructureRisk: number | undefined;
-    if (!isRepository && features.threatIntel.checked) {
+    if (!isRepository && !isAgent && features.threatIntel.checked) {
       maliciousInfrastructureRisk = 0;
       for (const finding of features.threatIntel.findings) {
         const weight = policy.threatIntel[finding.severity];
@@ -259,7 +381,7 @@ export class RiskEngine {
 
     let identityRisk: number | undefined;
     let endpointRisk: number | undefined;
-    if (features.endpoint.present) {
+    if (!isAgent && features.endpoint.present) {
       identityRisk = features.endpoint.listedOnCircle === true ? 0 : features.endpoint.listedOnCircle === false ? policy.endpoint.unlisted : undefined;
       if (features.endpoint.listedOnCircle === false) push(signals, "NOT_LISTED_IN_CIRCLE_DISCOVERY", "medium", "Circle Discovery", {});
       endpointRisk = 0;
@@ -269,7 +391,7 @@ export class RiskEngine {
     }
 
     let paymentRisk: number | undefined;
-    if (features.history.checked) {
+    if (!isAgent && features.history.checked) {
       paymentRisk = 0;
       if (features.history.payToChangeCount > 0) { paymentRisk += policy.payment.payToChange; push(signals, "PAYMENT_DESTINATION_CHANGED", "high", "OMNI history", { changeCount: features.history.payToChangeCount }); }
       if (features.history.networkChangeCount > 0) { paymentRisk += policy.payment.networkChange; push(signals, "PAYMENT_NETWORK_CHANGED", "medium", "OMNI history", { changeCount: features.history.networkChangeCount }); }
@@ -280,14 +402,16 @@ export class RiskEngine {
 
     const coverage = features.coverage.expected === 0 ? 0 : features.coverage.completed / features.coverage.expected;
     const status = scoreStatus(features);
-    const sourcePenalty = isRepository ? 0 : Math.min(policy.score.sourceErrorPenaltyCap, features.sourceErrorCount * policy.score.sourceErrorPenalty);
+    const sourcePenalty = isRepository || isAgent ? 0 : Math.min(policy.score.sourceErrorPenaltyCap, features.sourceErrorCount * policy.score.sourceErrorPenalty);
     const observedRisk = isRepository
       ? Math.max(repositorySecurityPracticeRisk ?? 0, repositoryVulnerabilityRisk ?? 0, repositoryKnownExploitationRisk ?? 0, repositoryMaliciousPackageRisk ?? 0, repositoryThreatIntelRisk ?? 0)
-      : Math.max(maxVulnScore, exploitedScore, packageRisk ?? 0, maliciousInfrastructureRisk ?? 0, identityRisk ?? 0, paymentRisk ?? 0, endpointRisk ?? 0) + sourcePenalty;
+      : isAgent
+        ? 0 // agent scoring handled above in assessAgentFeatures
+        : Math.max(maxVulnScore, exploitedScore, packageRisk ?? 0, maliciousInfrastructureRisk ?? 0, identityRisk ?? 0, paymentRisk ?? 0, endpointRisk ?? 0) + sourcePenalty;
     let score = Math.min(policy.score.maximum, Math.max(policy.score.minimum, observedRisk));
-    if (!isRepository && coverage === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
-    else if (!isRepository && snapshot.subject.type !== "package" && coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
-    else if (!isRepository && snapshot.subject.type === "package" && features.coverage.sources?.some(source => source.source === "OSV" && (source.status === "UNAVAILABLE" || source.status === "UNKNOWN"))) score = Math.max(score, policy.recommendationThresholds.manualReview);
+    if (!isRepository && !isAgent && coverage === 0) score = Math.max(score, policy.score.zeroCoverageFloor);
+    else if (!isRepository && !isAgent && snapshot.subject.type !== "package" && coverage < 1 && features.sourceErrorCount > 0) score = Math.max(score, policy.score.partialCoverageFloor);
+    else if (!isRepository && !isAgent && snapshot.subject.type === "package" && features.coverage.sources?.some(source => source.source === "OSV" && (source.status === "UNAVAILABLE" || source.status === "UNKNOWN"))) score = Math.max(score, policy.recommendationThresholds.manualReview);
 
     const knownVulnerabilities: RiskLevel = isRepository ? repositoryKnownVulnerabilities : features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : worstSeverity(features.vulnerabilities.map(v => v.severity), policy);
     const knownExploitation: RiskLevel = isRepository ? repositoryKnownExploitation : features.vulnerabilities === undefined ? "unknown" : features.vulnerabilities.length === 0 ? "low" : features.exploitationChecked ? scoreLevel(exploitedScore, policy) : "unknown";
@@ -301,14 +425,14 @@ export class RiskEngine {
       evidenceCoverage: Number(coverage.toFixed(2)),
       ...(features.coverage.modelVersion && features.coverage.sources ? { coverage: { modelVersion: features.coverage.modelVersion, resolvedWeight: features.coverage.completed, applicableWeight: features.coverage.expected, sources: features.coverage.sources } } : {}),
       dimensions: {
-        knownVulnerabilities,
-        knownExploitation,
-        packageSupplyChain: isRepository ? "not_applicable" : packageRisk === undefined ? "unknown" : scoreLevel(packageRisk, policy),
-        repositorySecurityPractices: isRepository ? repositorySecurityPractices : features.scorecard === undefined ? "unknown" : scoreLevel(0, policy),
-        maliciousInfrastructure: isRepository ? repositoryMaliciousInfrastructure : maliciousInfrastructureRisk === undefined ? "unknown" : scoreLevel(maliciousInfrastructureRisk, policy),
-        serviceIdentity: isRepository ? "not_applicable" : identityRisk === undefined ? "unknown" : scoreLevel(identityRisk, policy),
-        paymentConfigurationRisk: isRepository ? "not_applicable" : paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
-        endpointOperationalRisk: isRepository ? "not_applicable" : endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
+        knownVulnerabilities: isAgent ? "not_applicable" : knownVulnerabilities,
+        knownExploitation: isAgent ? "not_applicable" : knownExploitation,
+        packageSupplyChain: isRepository || isAgent ? "not_applicable" : packageRisk === undefined ? "unknown" : scoreLevel(packageRisk, policy),
+        repositorySecurityPractices: isAgent ? "not_applicable" : isRepository ? repositorySecurityPractices : features.scorecard === undefined ? "unknown" : scoreLevel(0, policy),
+        maliciousInfrastructure: isAgent ? "not_applicable" : isRepository ? repositoryMaliciousInfrastructure : maliciousInfrastructureRisk === undefined ? "unknown" : scoreLevel(maliciousInfrastructureRisk, policy),
+        serviceIdentity: isRepository || isAgent ? "not_applicable" : identityRisk === undefined ? "unknown" : scoreLevel(identityRisk, policy),
+        paymentConfigurationRisk: isRepository || isAgent ? "not_applicable" : paymentRisk === undefined ? "unknown" : scoreLevel(paymentRisk, policy),
+        endpointOperationalRisk: isRepository || isAgent ? "not_applicable" : endpointRisk === undefined ? "unknown" : scoreLevel(endpointRisk, policy)
       },
       signals,
       evidence: snapshot.evidence,
